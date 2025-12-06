@@ -1,0 +1,9 @@
+# config/logging.json
+{
+    "log_dir": "logs",
+    "level": "DEBUG",
+    "console_level": "INFO",
+    "file_max_size_mb": 10,
+    "backup_count": 30,
+    "format": "%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s"
+}
