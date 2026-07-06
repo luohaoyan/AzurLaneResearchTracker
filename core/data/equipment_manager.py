@@ -1,532 +1,382 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-╔══════════════════════════════════════════════════════════════╗
-║               🎮 装备数据管理器 (EquipmentManager)           ║
-║                                                              ║
-║   【一句话解释】                                              ║
-║   这个文件就像"装备仓库的管理员"，负责记录、查找、修改、      ║
-║   删除碧蓝航线游戏里所有科研装备的信息。                      ║
-║                                                              ║
-║   【类比理解】                                                ║
-║   想象你有一个"装备收集册"（CSV文件），                      ║
-║   这个类就是帮你翻册子、写新内容、改旧内容的"助手"。          ║
-║                                                              ║
-║   【数据存储位置】                                            ║
-║   data/equipment_library.csv ── 就像一个Excel表格             ║
-╚══════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════════╗
+║              🎮 装备数据管理器 (EquipmentManager)                 ║
+║                                                                  ║
+║   【一句话解释】装备库的"增删改查"大管家                           ║
+║   【类比理解】就像仓库管理员，管每件装备的名称、类型、稀有度       ║
+║                                                                  ║
+║   【ID 规则】                                                     ║
+║   科研装备: S{期数}-{序号:03d}  例如: S1-001, S7-003              ║
+║   通用装备: 纯数字自增          例如: 1, 2, 3                     ║
+║                                                                  ║
+║   【期数编码】期数信息完全通过 ID 编码（S1-001 = 第1期第1件）     ║
+║   CSV 中不再单独存 research_phase 字段，消除数据冗余              ║
+║                                                                  ║
+║   【数据文件】                                                    ║
+║   data/equipment_library.csv  ← 装备数据                           ║
+║   data/equipment_images.csv   ← 图片映射表（独立管理，分离存储）   ║
+║   data/rarities.csv           ← 稀有度引用（通过 rarity_id 关联）  ║
+╚══════════════════════════════════════════════════════════════════╝
 """
-
-# ============================================================
-# 📦 第一部分：导入需要的"工具包"
-# ============================================================
-# csv       → 用来读写CSV表格文件（就像Excel的简单版）
-# os        → 用来检查文件是否存在等操作系统功能
-# typing    → 用来标注"这是什么类型的数据"，让代码更清楚
-# get_logger→ 我们之前写的"日志记录员"（记录谁动了装备）
-# PathManager→ 我们之前写的"路径管理员"（知道文件该放哪里）
-
 import csv
 import os
-from typing import Any, Dict, List, Optional
-
+import re
+from typing import Any, Dict, List, Optional, Tuple
 from ..utils.logger import get_logger
 from ..utils.path_manager import PathManager
 
 
-# ============================================================
-# 🏗️ 第二部分：装备管理器类（核心！）
-# ============================================================
 class EquipmentManager:
-    """
-    🎯 装备管理器 ── 管理所有科研装备的数据
-    
-    ┌─────────────────────────────────────┐
-    │  比喻：你是图书馆管理员              │
-    │  - 书架 = CSV文件                    │
-    │  - 每本书 = 一条装备记录             │
-    │  - 你的工作 = 增/删/改/查 装备       │
-    └─────────────────────────────────────┘
-    """
-
-    # ── 单例模式的"身份证" ──
-    # 整个程序只有一个装备管理器，就像一个国家只有一个总统
-    # _instance 存着那唯一一个实例
+    """🎮 装备数据管理器 — 管理装备库 CSV + 图片映射 CSV"""
     _instance = None
+    RESEARCH_ID_PATTERN = re.compile(r"^S(\d+)-(\d{3})$")  # 正则: 匹配 S1-001 这类 ID
 
-    # ── 稀有度等级表 ──
-    # 碧蓝航线中装备有5个稀有度等级，从低到高：
-    # 普通(白) → 稀有(蓝) → 精锐(紫) → 超稀有(金) → 海上传奇(彩/彩虹)
-    RARITIES = ["普通", "稀有", "精锐", "超稀有", "海上传奇"]
-
-    # ==========================================================
-    # 🔧 __new__：单例模式的"守门员"
-    # ==========================================================
-    # Python创建对象时会先调用__new__，再调用__init__
-    # 这里的逻辑是："如果还没有实例，就造一个；如果已经有了，直接用旧的"
-    # 这样就保证：不管你在哪里调用 EquipmentManager()，拿到的都是同一个对象
     def __new__(cls, *args, **kwargs):
-        """单例模式：确保整个程序只有一个装备管理器"""
+        """单例模式：确保全局只有一个装备管理器实例"""
         if not cls._instance:
-            # 第一次创建 → 造一个新的
-            cls._instance = super(EquipmentManager, cls).__new__(cls)
-        # 之后每次 → 返回之前造好的那个
+            cls._instance = super().__new__(cls)
         return cls._instance
 
-    # ==========================================================
-    # 🚀 __init__：初始化 ── 装备管理器"上班"时要做的事
-    # ==========================================================
     def __init__(self):
-        """
-        初始化装备管理器（只在第一次创建时执行）
-        
-        启动流程：
-        ① 准备日志本（记录操作）
-        ② 找到CSV文件的位置
-        ③ 如果CSV文件不存在 → 创建一个空的
-        ④ 把CSV里的数据读到内存里（这样查起来快）
-        """
-        # ── 防止重复初始化 ──
-        # 因为单例模式会让每次调用都返回同一个对象，
-        # 但__init__每次都会被调用，所以我们加个标记，
-        # 如果已经初始化过了，就直接跳过
-        if hasattr(self, '_initialized'):
-            return  # "我已经准备好了，不重复干活"
-
-        # ── 步骤①：拿到日志记录员 ──
-        # logger会帮我们记录每一步操作，出问题可以看日志找原因
+        if hasattr(self, "_initialized"):
+            return
         self.logger = get_logger()
-
-        # ── 步骤②：确定数据文件放在哪里 ──
-        # data_dir = 项目根目录/data/
-        # csv_path = 项目根目录/data/equipment_library.csv
         self.data_dir = PathManager.get_data_dir()
         self.csv_path = self.data_dir / "equipment_library.csv"
-
-        # ── 步骤③：定义CSV表格的列名（就像Excel的表头）──
-        # 每条装备记录都有这7个属性：
-        self.fieldnames = [
-            "equipment_id",      # ① 装备ID（独一无二的编号，如1,2,3...）
-            "name",              # ② 名称（如"试作型三联装406mm主炮Mk6"）
-            "rarity",            # ③ 稀有度（普通/稀有/精锐/超稀有/海上传奇）
-            "type",              # ④ 类型（战列炮/轻巡炮/驱逐炮/防空炮...）
-            "research_phase",    # ⑤ 所属科研期数（第1期/第2期...）
-            "owned_quantity",    # ⑥ 拥有数量（你仓库里有多少个）
-            "fragment_quantity"  # ⑦ 碎片数量（图纸碎片，够50个可以合成）
-        ]
-
-        # ── 步骤④：在内存中准备一个"临时列表"来存数据 ──
-        # 为什么要读到内存？因为读内存比读硬盘快几千倍！
-        # self._data 是一个列表，里面每个元素是一个字典（一行数据）
-        # 例如：self._data = [
-        #   {"equipment_id":1, "name":"试作型三联装406mm", "rarity":"海上传奇", ...},
-        #   {"equipment_id":2, "name":"试作型三联装152mm", "rarity":"超稀有", ...},
-        #   ...
-        # ]
+        self.images_csv_path = self.data_dir / "equipment_images.csv"
+        self.fieldnames = ["equipment_id", "name", "rarity_id", "type"]  # 4 个字段, 无 research_phase
         self._data: List[Dict[str, Any]] = []
+        self._images: Dict[str, str] = {}         # 图片映射 {equipment_id: image_path}
+        self._rarity_manager = None                # 延迟加载
+        self._ensure_csv_exists()
+        self._load_data()
+        self._load_images()
+        self._initialized = True
 
-        # ── 步骤⑤⑥：确保CSV存在，然后把数据读到内存 ──
-        self._ensure_csv_exists()  # 如果CSV文件不存在就创建一个空的
-        self._load_data()          # 把CSV内容读到self._data里
+    @property
+    def rarity_manager(self):
+        """延迟加载稀有度管理器（用的时候才加载，节省内存）"""
+        if self._rarity_manager is None:
+            from .rarity_manager import get_rarity_manager
+            self._rarity_manager = get_rarity_manager()
+        return self._rarity_manager
 
-        # ── 标记：初始化完成！ ──
-        self._initialized = True  # 下次别人再想初始化，看到这个标记就跳过了
-
-    # ==========================================================
-    # 🔒 私有方法（_开头）= 内部使用，外部不要直接调用
-    # ==========================================================
+    # ── CSV 文件读写（内部方法）──
 
     def _ensure_csv_exists(self):
-        """
-        🏠 确保装备库CSV文件存在
-        
-        逻辑：如果文件不存在 → 创建一个带表头的空表格
-        类比：如果仓库的登记本丢了 → 拿一本新的，写上栏目名
-        """
+        """两个 CSV 文件不存在时自动创建（带表头）"""
         if not os.path.exists(self.csv_path):
-            # 以utf-8-sig编码打开（加BOM头，Excel能正确识别中文）
-            # newline='' 防止Windows下多出空行
-            with open(self.csv_path, 'w', newline='', encoding='utf-8-sig') as f:
-                writer = csv.DictWriter(f, fieldnames=self.fieldnames)
-                # 先写表头（第一行：equipment_id,name,rarity,...）
-                writer.writeheader()
-            self.logger.info(f"📝 装备库CSV文件已创建: {self.csv_path}")
+            with open(self.csv_path, "w", newline="", encoding="utf-8-sig") as f:
+                csv.DictWriter(f, fieldnames=self.fieldnames).writeheader()
+        if not os.path.exists(self.images_csv_path):
+            with open(self.images_csv_path, "w", newline="", encoding="utf-8-sig") as f:
+                csv.DictWriter(f, fieldnames=["equipment_id", "image_path"]).writeheader()
 
     def _load_data(self):
-        """
-        📥 从CSV文件加载数据到内存
-        
-        类比：把登记本上的内容全部抄到脑子里（内存），
-        这样以后查找时就不用每次翻本子了
-        
-        注意：CSV里存的全是文字（字符串），
-        但"数量"应该是数字，所以要转换类型
-        """
+        """从 CSV 加载装备数据到内存列表 self._data"""
         try:
-            self._data.clear()  # 先清空内存中的数据
-
-            with open(self.csv_path, 'r', encoding='utf-8-sig') as f:
-                reader = csv.DictReader(f)
-                # reader 每次给你一行，自动把表头当作key
-                # 例如：{"equipment_id":"1", "name":"试作型三联装406mm", ...}
-
-                for row in reader:
-                    # ⚠️ CSV里的数字其实是字符串"1"，需要转成真正的数字1
-                    # 为什么要转？因为字符串"10" < "2"（按字母排序），
-                    # 数字10 > 2（按数值排序），不转会出bug！
-
-                    # owned_quantity: 拥有数量 → 转整数
-                    if 'owned_quantity' in row:
-                        row['owned_quantity'] = int(row['owned_quantity']) if row['owned_quantity'] else 0
-
-                    # fragment_quantity: 碎片数量 → 转整数
-                    if 'fragment_quantity' in row:
-                        row['fragment_quantity'] = int(row['fragment_quantity']) if row['fragment_quantity'] else 0
-
-                    # equipment_id: 装备编号 → 转整数
-                    if 'equipment_id' in row:
-                        row['equipment_id'] = int(row['equipment_id']) if row['equipment_id'] else 0
-
-                    # research_phase: 期数 → 转整数
-                    if 'research_phase' in row:
-                        row['research_phase'] = int(row['research_phase']) if row['research_phase'] else 0
-
-                    # 把处理好的这一行加到内存列表中
+            self._data.clear()
+            with open(self.csv_path, "r", encoding="utf-8-sig") as f:
+                for row in csv.DictReader(f):
+                    row["rarity_id"] = int(row.get("rarity_id", 0))
                     self._data.append(row)
-
-            self.logger.debug(f"📥 装备库数据已加载，共 {len(self._data)} 条记录")
-
         except Exception as e:
-            self.logger.error(f"❌ 加载装备库CSV失败: {e}")
+            self.logger.error(f"加载装备库失败:{e}")
+
+    def _load_images(self):
+        """从 equipment_images.csv 加载图片映射到内存字典 self._images"""
+        try:
+            self._images.clear()
+            if os.path.exists(self.images_csv_path):
+                with open(self.images_csv_path, "r", encoding="utf-8-sig") as f:
+                    for row in csv.DictReader(f):
+                        eid = row.get("equipment_id", "").strip()
+                        pth = row.get("image_path", "").strip()
+                        if eid:
+                            self._images[eid] = pth
+        except Exception as e:
+            self.logger.error(f"加载图片映射失败:{e}")
 
     def _save_data(self):
-        """
-        📤 把内存中的数据保存回CSV文件
-        
-        类比：把脑子里记的内容写回到登记本上
-        
-        ⚠️ 每次增/删/改操作后都要调用这个方法，
-        否则修改只存在内存里，程序关了数据就丢了！
-        """
-        try:
-            with open(self.csv_path, 'w', newline='', encoding='utf-8-sig') as f:
-                writer = csv.DictWriter(f, fieldnames=self.fieldnames)
-                writer.writeheader()      # 写表头
-                writer.writerows(self._data)  # 写所有数据行
-            self.logger.debug(f"📤 装备库数据已保存，共 {len(self._data)} 条记录")
-        except Exception as e:
-            self.logger.error(f"❌ 保存装备库CSV失败: {e}")
-            raise  # 保存失败是严重问题，把错误往上抛
+        """将内存中的装备数据写回 CSV 文件"""
+        with open(self.csv_path, "w", newline="", encoding="utf-8-sig") as f:
+            csv.DictWriter(f, fieldnames=self.fieldnames).writeheader()
+            csv.DictWriter(f, fieldnames=self.fieldnames).writerows(self._data)
 
-    # ==========================================================
-    # 📖 查询操作（Read - CRUD中的R）
-    # ==========================================================
+    def _save_images(self):
+        """将内存中的图片映射写回 CSV 文件"""
+        with open(self.images_csv_path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=["equipment_id", "image_path"])
+            w.writeheader()
+            for eid, pth in self._images.items():
+                w.writerow({"equipment_id": eid, "image_path": pth})
+
+    # ── ID 工具方法 ──
+
+    @classmethod
+    def parse_research_id(cls, equipment_id: str) -> Optional[Tuple[int, int]]:
+        """🔍 解析科研装备 ID → (期数, 序号)
+        输入: "S1-001" → 输出: (1, 1)
+        输入: "123"   → 输出: None（通用装备）"""
+        m = cls.RESEARCH_ID_PATTERN.match(equipment_id)
+        return (int(m.group(1)), int(m.group(2))) if m else None
+
+    @classmethod
+    def make_research_id(cls, phase: int, seq: int) -> str:
+        """🔧 生成科研装备 ID
+        输入: phase=7, seq=3 → 输出: "S7-003"（3位数字，不够补0）"""
+        return f"S{phase}-{seq:03d}"
+
+    def _generate_id(self, is_research: bool, phase: int = 0) -> str:
+        """🤖 自动生成下一个装备 ID
+        - is_research=True  → 找该期最大序号+1
+        - is_research=False → 找最大纯数字 ID+1"""
+        if is_research:
+            max_seq = 0
+            prefix = f"S{phase}-"
+            for eq in self._data:
+                eid = eq.get("equipment_id", "")
+                if eid.startswith(prefix):
+                    p = self.parse_research_id(eid)
+                    if p and p[1] > max_seq:
+                        max_seq = p[1]
+            return self.make_research_id(phase, max_seq + 1)
+        else:
+            nums = [int(eq.get("equipment_id", "0")) for eq in self._data if eq.get("equipment_id", "").isdigit()]
+            return str(max(nums, default=0) + 1)
+
+    def _is_research_equipment(self, equipment_id: str) -> bool:
+        """🔍 判断是否为科研装备（ID 格式为 S{期数}-{序号}）"""
+        return bool(self.RESEARCH_ID_PATTERN.match(equipment_id))
+
+    # ── 基础查询方法 ──
 
     def get_all(self) -> List[Dict[str, Any]]:
-        """
-        📋 获取所有装备数据
-        
-        输入：无
-        输出：一个列表，包含所有装备的字典
-        示例输出：
-        [
-          {"equipment_id":1, "name":"试作型三联装406mm", ...},
-          {"equipment_id":2, "name":"试作型三联装152mm", ...},
-          ...
-        ]
-        
-        注意：返回的是copy()（复制品），不是原始数据
-             这样外部修改副本不会影响内部数据，保护数据安全
-        """
-        return self._data.copy()
+        """📋 获取全部装备列表。返回: [{"equipment_id":"S1-001","name":"...","rarity_id":5,"type":"战列炮"}, ...]"""
+        return [eq.copy() for eq in self._data]
 
-    def get_by_id(self, equipment_id: int) -> Optional[Dict[str, Any]]:
-        """
-        🔍 根据装备ID查找装备
-        
-        输入：
-          equipment_id ── 整数，装备的编号，如 1
-        
-        输出：
-          找到了 → 返回装备字典（如{"equipment_id":1, "name":"试作型..."})
-          没找到 → 返回 None（相当于"空"）
-        
-        示例：
-          mgr.get_by_id(1)  → {"equipment_id":1, "name":"试作型三联装406mm主炮Mk6", ...}
-          mgr.get_by_id(999) → None  （因为不存在编号999的装备）
-        """
+    def get_by_id(self, equipment_id: str) -> Optional[Dict[str, Any]]:
+        """🔎 按 ID 查找装备。示例: get_by_id("S1-001") → 返回装备字典或 None"""
         for eq in self._data:
-            if eq.get('equipment_id') == equipment_id:
-                return eq.copy()  # 返回副本，保护原始数据
-        return None  # 循环结束还没找到 = 不存在
+            if eq.get("equipment_id") == equipment_id:
+                return eq.copy()
+        return None
 
-    def get_by_rarity(self, rarity: str) -> List[Dict[str, Any]]:
-        """
-        🌈 按稀有度筛选装备
-        
-        输入：
-          rarity ── 字符串，如 "海上传奇"、"超稀有"、"精锐"、"稀有"、"普通"
-        
-        输出：
-          符合该稀有度的所有装备列表
-        
-        示例：
-          mgr.get_by_rarity("海上传奇")  → 所有彩虹装备的列表
-          mgr.get_by_rarity("传说")       → []（无效稀有度，返回空列表）
-        """
-        # 先检查稀有度是否合法
-        if rarity not in self.RARITIES:
-            self.logger.warning(f"⚠️ 无效的稀有度: {rarity}")
-            return []
+    def get_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """🔎 按名称精确查找。示例: get_by_name("试作型三联装406mm主炮Mk6")"""
+        for eq in self._data:
+            if eq.get("name") == name:
+                return eq.copy()
+        return None
 
-        # 列表推导式（Python的快捷写法）：
-        # "对于data里每个装备eq，如果eq的稀有度==要查的稀有度，就把它放进结果"
-        return [eq.copy() for eq in self._data if eq.get('rarity') == rarity]
+    def search_by_name(self, keyword: str) -> List[Dict[str, Any]]:
+        """🔍 按名称模糊搜索（不区分大小写）。示例: search_by_name("406") → 找到包含"406"的所有装备"""
+        kw = keyword.lower()
+        return [eq.copy() for eq in self._data if kw in eq.get("name", "").lower()]
+
+    def get_by_rarity_id(self, rarity_id: int) -> List[Dict[str, Any]]:
+        """🎨 按稀有度筛选。示例: get_by_rarity_id(5) → 所有彩虹装备"""
+        return [eq.copy() for eq in self._data if eq.get("rarity_id") == rarity_id]
 
     def get_by_type(self, eq_type: str) -> List[Dict[str, Any]]:
-        """
-        🎯 按装备类型筛选
-        
-        输入：
-          eq_type ── 字符串，如 "战列炮"、"轻巡炮"、"驱逐炮"、"防空炮"
-        
-        输出：
-          符合该类型的所有装备列表
-        
-        示例：
-          mgr.get_by_type("战列炮")  → [试作型三联装406mm, 试作型双联装457mm, ...]
-        """
-        return [eq.copy() for eq in self._data if eq.get('type') == eq_type]
+        """📦 按装备类型筛选。示例: get_by_type("战列炮") → 所有战列炮"""
+        return [eq.copy() for eq in self._data if eq.get("type") == eq_type]
 
     def get_by_phase(self, phase_number: int) -> List[Dict[str, Any]]:
-        """
-        🔢 按所属科研期数筛选装备
-        
-        输入：
-          phase_number ── 整数，如 1 表示"科研一期"
-        
-        输出：
-          属于该期数的所有装备列表
-        
-        示例：
-          mgr.get_by_phase(1)  → [试作型三联装406mm, 试作型三联装152mm]
-        """
-        return [eq.copy() for eq in self._data if eq.get('research_phase') == phase_number]
+        """📅 按科研期数筛选（通过 ID 前缀匹配 S{期数}-）
+        示例: get_by_phase(1) → 返回第1期所有装备"""
+        prefix = f"S{phase_number}-"
+        return [eq.copy() for eq in self._data if str(eq.get("equipment_id", "")).startswith(prefix)]
 
-    def get_statistics(self) -> Dict[str, Any]:
-        """
-        📊 获取装备统计信息
-        
-        输入：无
-        输出：一个包含统计数据的字典
-        示例输出：
-        {
-          "total": 12,                          # 总装备数
-          "by_rarity": {                        # 各稀有度装备数量
-            "普通": 0,
-            "稀有": 0,
-            "精锐": 1,
-            "超稀有": 6,
-            "海上传奇": 5
-          }
-        }
-        """
-        total = len(self._data)  # 总共有多少件装备
+    def get_research_equipment(self) -> List[Dict[str, Any]]:
+        """🏆 获取所有科研装备（ID 匹配 S{期数}-{序号} 格式）"""
+        return [eq.copy() for eq in self._data if self._is_research_equipment(eq.get("equipment_id", ""))]
 
-        # 初始化计数器：每种稀有度初始都是0
-        by_rarity = {r: 0 for r in self.RARITIES}
-        # 等同于：{"普通":0, "稀有":0, "精锐":0, "超稀有":0, "海上传奇":0}
+    def get_general_equipment(self) -> List[Dict[str, Any]]:
+        """📦 获取所有通用装备（ID 不匹配科研格式的普通装备）"""
+        return [eq.copy() for eq in self._data if not self._is_research_equipment(eq.get("equipment_id", ""))]
 
-        # 遍历每件装备，统计稀有度分布
+    # ── 稀有度增强 ──
+
+    def get_rarity_info(self, rarity_id: int) -> Optional[Dict[str, Any]]:
+        """🎨 查稀有度详情（委托 rarity_manager 处理）"""
+        return self.rarity_manager.get_by_id(rarity_id)
+
+    def get_with_rarity_name(self, equipment: Dict[str, Any]) -> Dict[str, Any]:
+        """🎨 在装备字典上附加 rarity_name 和 rarity_color 两个字段
+        输入: {"equipment_id":"S1-001","rarity_id":5,...}
+        输出: {...加上 "rarity_name":"海上传奇","rarity_color":"#FF69B4"}"""
+        result = equipment.copy()
+        info = self.get_rarity_info(result.get("rarity_id", 0))
+        if info:
+            result["rarity_name"] = info["name"]
+            result["rarity_color"] = info["color_hex"]
+        return result
+
+    # ── 图片映射管理 ──
+
+    def get_image_path(self, equipment_id: str) -> Optional[str]:
+        """🖼️ 获取装备图片路径。返回: "images/equipment/S1-001.png" 或 None"""
+        pth = self._images.get(equipment_id, "")
+        return pth if pth else None
+
+    def set_image_path(self, equipment_id: str, image_path: str) -> bool:
+        """🖼️ 设置装备图片路径（自动保存到 CSV）。返回 True/False"""
+        if not self.get_by_id(equipment_id):
+            self.logger.warning(f"装备{equipment_id}不存在")
+            return False
+        self._images[equipment_id] = image_path
+        self._save_images()
+        self.logger.info(f"设置图片:{equipment_id} → {image_path}")
+        return True
+
+    def batch_set_images(self, mappings: Dict[str, str]) -> int:
+        """🖼️ 批量设置图片路径。输入: {"S1-001":"img/1.png","S1-002":"img/2.png"}
+        返回: 成功设置的数量"""
+        count = 0
+        for eid, pth in mappings.items():
+            if self.set_image_path(eid, pth):
+                count += 1
+        return count
+
+    def get_all_images(self) -> Dict[str, str]:
+        """🖼️ 获取全部图片映射字典 {equipment_id: image_path}"""
+        return dict(self._images)
+
+    def get_equipment_with_image(self) -> List[Dict[str, Any]]:
+        """🖼️ 获取全部装备及其图片路径（含稀有度名称）"""
+        result = []
         for eq in self._data:
-            rarity = eq.get('rarity', '')
-            if rarity in by_rarity:
-                by_rarity[rarity] += 1  # 该稀有度计数+1
+            eid = eq.get("equipment_id", "")
+            eq_copy = self.get_with_rarity_name(eq)
+            eq_copy["image_path"] = self._images.get(eid, "") or None
+            result.append(eq_copy)
+        return result
 
-        return {
-            "total": total,
-            "by_rarity": by_rarity,
-        }
-
-    # ==========================================================
-    # ✏️ 增删改操作（Create / Update / Delete - CRUD）
-    # ==========================================================
+    # ── CRUD 操作 ──
 
     def add_equipment(self, equipment: Dict[str, Any]) -> bool:
-        """
-        ➕ 添加新装备到装备库
-        
-        输入格式（一个字典）：
-        {
-          "name": "试作型三联装406mm主炮Mk6",  ← 必填：装备名称
-          "rarity": "海上传奇",                ← 必填：稀有度
-          "type": "战列炮",                     ← 必填：类型
-          "research_phase": 1,                  ← 必填：所属期数
-          "owned_quantity": 0,                  ← 可选：拥有数量（默认0）
-          "fragment_quantity": 0                ← 可选：碎片数量（默认0）
-        }
-        
-        输出：
-          True  → 添加成功 ✅
-          False → 添加失败 ❌（稀有度无效或ID重复）
-        
-        流程：
-        ① 自动分配一个新ID（当前最大ID + 1）
-        ② 检查ID是否已存在 → 存在则拒绝
-        ③ 检查稀有度是否合法 → 不合法则拒绝
-        ④ 补全默认值，构建完整记录
-        ⑤ 添加到内存 + 保存到CSV
-        ⑥ 记录日志
-        """
+        """✨ 添加装备（自动 ID + 名称去重 + 稀有度校验）
+        输入格式:
+            {"name":"试作型三联装406mm","rarity_id":5,"type":"战列炮",
+             "equipment_id":"S1-001"(可选, 不传自动生成),
+             "research_phase":7(仅用于生成ID时判断是否为科研装备, 不入CSV)}
+        输出: True=成功, False=失败"""
         try:
-            # ── 步骤①：自动生成ID ──
-            # 如果没提供ID或者ID为0，就自动找一个最大的ID然后+1
-            # 比如当前最大ID是12，新装备就是13号
-            if 'equipment_id' not in equipment or equipment['equipment_id'] == 0:
-                # 找到所有现有装备中最大的ID
-                max_id = max((eq.get('equipment_id', 0) for eq in self._data), default=0)
-                equipment['equipment_id'] = max_id + 1
-
-            # ── 步骤②：检查ID是否重复 ──
-            if self.get_by_id(equipment['equipment_id']) is not None:
-                self.logger.warning(f"⚠️ 装备ID {equipment['equipment_id']} 已存在，添加失败")
+            name = equipment.get("name", "").strip()
+            if not name:
+                self.logger.warning("装备名称不能为空")
                 return False
-
-            # ── 步骤③：检查稀有度是否合法 ──
-            if equipment.get('rarity') not in self.RARITIES:
-                self.logger.warning(f"⚠️ 无效的稀有度: {equipment.get('rarity')}")
+            if self.get_by_name(name):
+                self.logger.warning(f"装备名称已存在:{name}")
                 return False
-
-            # ── 步骤④：构建完整的装备记录 ──
-            # 用.get(字段名, 默认值)确保每个字段都有值
-            # int() 确保数字字段真的是整数
+            rarity_id = int(equipment.get("rarity_id", 0))
+            if not self.rarity_manager.get_by_id(rarity_id):
+                self.logger.warning(f"无效稀有度ID:{rarity_id}")
+                return False
+            eq_id = str(equipment.get("equipment_id", "")).strip()
+            if not eq_id:
+                # 没传 ID 就自动生成：通过 research_phase>0 判断是否为科研装备
+                research_phase = int(equipment.get("research_phase", 0))
+                eq_id = self._generate_id(research_phase > 0, research_phase)
+            elif self.get_by_id(eq_id):
+                self.logger.warning(f"装备ID已存在:{eq_id}")
+                return False
             record = {
-                'equipment_id': int(equipment.get('equipment_id', 0)),
-                'name': equipment.get('name', ''),
-                'rarity': equipment.get('rarity', '普通'),
-                'type': equipment.get('type', ''),
-                'research_phase': int(equipment.get('research_phase', 0)),
-                'owned_quantity': int(equipment.get('owned_quantity', 0)),
-                'fragment_quantity': int(equipment.get('fragment_quantity', 0)),
+                "equipment_id": eq_id,
+                "name": name,
+                "rarity_id": rarity_id,
+                "type": equipment.get("type", ""),
             }
-
-            # ── 步骤⑤：加入内存并保存 ──
-            self._data.append(record)  # 加到内存列表末尾
-            self._save_data()           # 保存到CSV文件
-
-            # ── 步骤⑥：记录日志 ──
-            self.logger.info(f"✅ 装备已添加: {record['name']} (ID:{record['equipment_id']})")
+            self._data.append(record)
+            self._save_data()
+            self.logger.info(f"装备已添加:{name}(ID:{eq_id})")
             return True
-
         except Exception as e:
-            self.logger.error(f"❌ 添加装备失败: {e}")
+            self.logger.error(f"添加装备失败:{e}")
             return False
 
-    def update_equipment(self, equipment_id: int, updates: Dict[str, Any]) -> bool:
-        """
-        ✏️ 更新装备信息（修改已有的装备）
-        
-        输入：
-          equipment_id ── 要修改的装备编号
-          updates       ── 一个字典，只包含要修改的字段
-                           不需要的字段可以省略
-        
-        输出：
-          True  → 更新成功 ✅
-          False → 更新失败 ❌
-        
-        示例：
-          # 把1号装备的拥有数量改为5，碎片数量改为20
-          mgr.update_equipment(1, {"owned_quantity": 5, "fragment_quantity": 20})
-          
-          # 修改装备的名称
-          mgr.update_equipment(1, {"name": "新名字"})
-        """
+    def update_equipment(self, equipment_id: str, updates: Dict[str, Any]) -> bool:
+        """🔄 更新装备信息（改名时自动检查是否重名）
+        输入: update_equipment("S1-001", {"name":"新名字","rarity_id":4})
+        注意: research_phase 不可更新（它编码在 ID 中）"""
         try:
-            # 遍历所有装备，找到ID匹配的那个
+            new_name = updates.get("name", "").strip()
+            if new_name:
+                existing = self.get_by_name(new_name)
+                if existing and existing["equipment_id"] != equipment_id:
+                    self.logger.warning(f"装备名称已存在:{new_name}")
+                    return False
             for i, eq in enumerate(self._data):
-                if eq.get('equipment_id') == equipment_id:
-                    # 找到了！
-                    
-                    # 如果要改稀有度，先检查新稀有度是否合法
-                    if 'rarity' in updates and updates['rarity'] not in self.RARITIES:
-                        self.logger.warning(f"⚠️ 无效的稀有度: {updates.get('rarity')}")
-                        return False
-
-                    # 逐个更新字段
-                    for key, value in updates.items():
-                        if key in self.fieldnames:  # 只更新合法的字段名
-                            # 数字字段需要转换类型
-                            if key in ('equipment_id', 'research_phase', 'owned_quantity', 'fragment_quantity'):
-                                self._data[i][key] = int(value) if value is not None else 0
-                            else:
-                                # 文字字段直接赋值
-                                self._data[i][key] = value
-
-                    self._save_data()  # 改动完了，记得保存！
-                    self.logger.info(f"✅ 装备已更新: ID={equipment_id}, 更新字段={list(updates.keys())}")
+                if eq.get("equipment_id") == equipment_id:
+                    if "rarity_id" in updates:
+                        rid = int(updates["rarity_id"])
+                        if not self.rarity_manager.get_by_id(rid):
+                            return False
+                    for k, v in updates.items():
+                        if k in self.fieldnames:
+                            self._data[i][k] = int(v) if k == "rarity_id" else str(v)
+                    self._save_data()
+                    self.logger.info(f"装备已更新:{equipment_id}")
                     return True
-
-            # 循环结束都没找到 → ID不存在
-            self.logger.warning(f"⚠️ 未找到装备ID {equipment_id}，更新失败")
+            self.logger.warning(f"装备ID不存在:{equipment_id}")
             return False
-
         except Exception as e:
-            self.logger.error(f"❌ 更新装备失败: {e}")
+            self.logger.error(f"更新装备失败:{e}")
             return False
 
-    def delete_equipment(self, equipment_id: int) -> bool:
-        """
-        🗑️ 删除装备
-        
-        输入：
-          equipment_id ── 要删除的装备编号
-        
-        输出：
-          True  → 删除成功 ✅
-          False → 删除失败 ❌（ID不存在）
-        
-        示例：
-          mgr.delete_equipment(13)  # 删除编号13的装备
-        """
-        try:
-            for i, eq in enumerate(self._data):
-                if eq.get('equipment_id') == equipment_id:
-                    name = eq.get('name', '')
-                    del self._data[i]  # 从列表中移除这条记录
-                    self._save_data()   # 保存更改
-                    self.logger.info(f"🗑️ 装备已删除: {name} (ID:{equipment_id})")
-                    return True
+    def delete_equipment(self, equipment_id: str) -> bool:
+        """🗑️ 删除装备（同步删除图片映射）"""
+        for i, eq in enumerate(self._data):
+            if eq.get("equipment_id") == equipment_id:
+                del self._data[i]
+                self._save_data()
+                self._images.pop(equipment_id, None)
+                self._save_images()
+                self.logger.info(f"装备已删除:{equipment_id}")
+                return True
+        return False
 
-            self.logger.warning(f"⚠️ 未找到装备ID {equipment_id}，删除失败")
-            return False
+    # ── 批量导入 ──
 
-        except Exception as e:
-            self.logger.error(f"❌ 删除装备失败: {e}")
-            return False
+    def import_equipment_batch(self, equipment_list: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """📦 批量导入装备，自动跳过重名
+        返回: {"total":总数, "added":成功数, "skipped":跳过数, "failed":失败数}"""
+        added = skipped = failed = 0
+        for eq in equipment_list:
+            if self.add_equipment(eq):
+                added += 1
+            elif self.get_by_name(eq.get("name", "")):
+                skipped += 1
+            else:
+                failed += 1
+        return {"total": len(equipment_list), "added": added, "skipped": skipped, "failed": failed}
+
+    # ── 统计 ──
+
+    def get_statistics(self) -> Dict[str, Any]:
+        """📊 装备统计: 总数、科研/通用数量、各稀有度数量
+        科研/通用通过 ID 格式自动判断，不依赖任何额外字段"""
+        total = len(self._data)
+        research = sum(1 for eq in self._data if self._is_research_equipment(eq.get("equipment_id", "")))
+        by_rarity: Dict[int, int] = {}
+        for eq in self._data:
+            rid = eq.get("rarity_id", 0)
+            by_rarity[rid] = by_rarity.get(rid, 0) + 1
+        by_name = {}
+        for rid, cnt in by_rarity.items():
+            info = self.get_rarity_info(rid)
+            by_name[info["name"] if info else f"ID:{rid}"] = cnt
+        return {"total": total, "research": research, "general": total - research, "by_rarity": by_name}
 
 
-# ============================================================
-# 🌐 第三部分：全局访问函数
-# ============================================================
-
-# 全局变量：存着装备管理器的唯一实例
-_equipment_manager_instance = None
-
+_instance_cache = None
 
 def get_equipment_manager() -> EquipmentManager:
-    """
-    🌍 获取全局唯一的装备管理器实例
-    
-    这是外部代码调用的"入口"：
-    from core.data.equipment_manager import get_equipment_manager
-    mgr = get_equipment_manager()  # 拿到全局唯一的装备管理器
-    mgr.get_all()                  # 然后就可以用了
-    
-    为什么需要这个函数？
-    因为装备管理器是单例的，这个函数确保所有人拿到的都是同一个对象
-    """
-    global _equipment_manager_instance
-    if _equipment_manager_instance is None:
-        _equipment_manager_instance = EquipmentManager()
-    return _equipment_manager_instance
+    """获取全局唯一的 EquipmentManager 实例"""
+    global _instance_cache
+    if _instance_cache is None:
+        _instance_cache = EquipmentManager()
+    return _instance_cache

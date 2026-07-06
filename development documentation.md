@@ -1,413 +1,237 @@
-# 碧蓝航线装备统计器 - 项目总结(0.0.0)
-## 基础项目格式:
+# 碧蓝航线科研装备统计器 — 开发文档
+
+## 项目概况
+
+| 属性 | 值 |
+|------|-----|
+| 项目名称 | 碧蓝航线科研装备统计器 (AzurLaneResearchTracker) |
+| 当前版本 | v0.2.0 |
+| 开发语言 | Python 3.12 |
+| IDE | PyCharm 2024 |
+| 测试框架 | pytest / unittest |
+| 测试状态 | 69 项测试，全部通过 |
+
+---
+
+## 版本历史
+
+### v0.1.0 — 基础设施层（已完成）
+
+**完成模块：**
+- `core/utils/logger.py` — 日志系统，单例模式，RotatingFileHandler（10MB、5个备份），双文件输出（普通+错误）
+- `core/utils/path_manager.py` — 路径管理器，基于 `Path(__file__)` 相对解析，提供 get_project_root/get_config_dir/get_log_dir/get_data_dir
+- `core/utils/config_loader.py` — JSON 配置加载器，单例模式+缓存，支持主配置、模拟器配置、游戏配置的加载/保存/深度更新
+- `config/*.json` — 主配置、MuMu/雷电模拟器配置、碧蓝航线游戏配置、自动化序列配置
+
+### v0.2.0 — 数据层（已完成）★
+
+**完成模块：**
+- `core/data/rarity_manager.py` — 稀有度独立管理器，CSV 存储（rarity_id/name/color_hex/sort_order），完整 CRUD
+- `core/data/equipment_manager.py` — 装备数据管理器，CSV 存储+图片映射分离，ID 编码/解析工具，延迟加载稀有度管理器
+- `core/data/research_manager.py` — 科研期数管理器，跨管理器关联查询（查某期→所有装备详情+稀有度名称），延迟加载装备管理器
+- `core/data/equipment_updater.py` — 批量添加整期科研装备（1行代码：1彩虹+5金色，自动生成ID+创建期数记录）
+
+**数据文件：**
+- `data/rarities.csv` — 5 种稀有度（普通/稀有/精锐/超稀有/海上传奇）
+- `data/equipment_library.csv` — 12 件初始科研装备（S1-001 ~ S6-002），4 字段（equipment_id/name/rarity_id/type）
+- `data/research_phases.csv` — 6 期科研（PR1~PR6），3 字段（phase_number/name/equipment_list）
+- `data/equipment_images.csv` — 装备图片映射表，独立存储
+
+**测试：**
+- `test/test_all.py` — 69 项测试，覆盖所有管理器和方法，全部通过
+
+---
+
+## 核心设计决策
+
+### 1. ID 编码方案
+
+| 装备类型 | ID 格式 | 示例 |
+|----------|---------|------|
+| 科研装备 | S{期数}-{序号:03d} | S1-001, S7-003 |
+| 通用装备 | 纯数字自增 | 1, 2, 3 |
+
+- 期数信息完全编码在 ID 中，CSV 不存 research_phase 字段
+- `EquipmentManager.parse_research_id("S1-001")` → (1, 1)
+- `EquipmentManager.make_research_id(7, 3)` → "S7-003"
+
+### 2. 稀有度独立管理
+
+- 稀有度存在 `rarities.csv` 中，通过 `rarity_id` 关联
+- 游戏更新稀有度等级时改 CSV 即可，无需改代码
+- 装备管理器通过 `@property rarity_manager` 延迟加载
+
+### 3. 图片映射分离
+
+- `equipment_images.csv` 独立存储 `{equipment_id → image_path}`
+- 和装备数据解耦，图片地址可以空缺
+- 提供 `batch_set_images()` 批量设置
+
+### 4. 欧非值剥离
+
+- `research_phases.csv` 不包含 `luck_benchmark` 字段
+- 欧非值计算公式待定，v0.3.0 单独处理
+
+---
+
+## 数据表结构
+
+### rarities.csv
+
+| rarity_id | name | color_hex | sort_order |
+|-----------|------|-----------|------------|
+| 1 | 普通 | #FFFFFF | 1 |
+| 2 | 稀有 | #4169E1 | 2 |
+| 3 | 精锐 | #800080 | 3 |
+| 4 | 超稀有 | #FFD700 | 4 |
+| 5 | 海上传奇 | #FF69B4 | 5 |
+
+### equipment_library.csv
+
+| equipment_id | name | rarity_id | type |
+|-------------|------|-----------|------|
+| S1-001 | 试作型三联装406mm主炮Mk6 | 5 | 战列炮 |
+| S1-002 | 试作型三联装152mm主炮Mk17 | 4 | 轻巡炮 |
+| S2-001 | 试作型双联装457mm主炮MkA | 5 | 战列炮 |
+| ... | ... | ... | ... |
+| S6-002 | 试作型四联装356mm主炮Mk7 | 4 | 战列炮 |
+
+### research_phases.csv
+
+| phase_number | name | equipment_list |
+|-------------|------|----------------|
+| 1 | 科研1期(PR1) | S1-001,S1-002 |
+| 2 | 科研2期(PR2) | S2-001,S2-002 |
+| ... | ... | ... |
+| 6 | 科研6期(PR6) | S6-001,S6-002 |
+
+### equipment_images.csv
+
+| equipment_id | image_path |
+|-------------|------------|
+| S1-001 | (待填入) |
+| S1-002 | (待填入) |
+| ... | ... |
+
+---
+
+## 模块方法清单
+
+### RarityManager (rarity_manager.py)
+
+| 类别 | 方法 | 说明 |
+|------|------|------|
+| 查询 | get_all() | 全部稀有度列表 |
+| 查询 | get_by_id(id) | 按 ID 查 |
+| 查询 | get_by_name(name) | 按名称查 |
+| 增删改 | add_rarity(dict) | 添加稀有度 |
+| 增删改 | update_rarity(id, dict) | 更新稀有度 |
+| 增删改 | delete_rarity(id) | 删除稀有度 |
+
+### EquipmentManager (equipment_manager.py)
+
+| 类别 | 方法 | 说明 |
+|------|------|------|
+| ID 工具 | parse_research_id(str) | 解析 S1-001 → (1, 1) |
+| ID 工具 | make_research_id(phase, seq) | 生成 S1-001 格式 |
+| 基础查询 | get_all() | 全部装备 |
+| 基础查询 | get_by_id(id) | 按 ID 查 |
+| 基础查询 | get_by_name(name) | 按名称查 |
+| 基础查询 | search_by_name(keyword) | 关键词模糊搜索 |
+| 分类筛选 | get_by_rarity_id(rid) | 按稀有度ID筛选 |
+| 分类筛选 | get_by_type(type) | 按类型筛选 |
+| 分类筛选 | get_by_phase(phase_number) | 按期数筛选 |
+| 分类筛选 | get_research_equipment() | 所有科研装备 |
+| 分类筛选 | get_general_equipment() | 所有通用装备 |
+| 稀有度增强 | get_rarity_info() | 获取稀有度管理器 |
+| 稀有度增强 | get_with_rarity_name(equipment) | 装备+稀有度名称 |
+| 图片映射 | get_image_path(id) | 获取图片路径 |
+| 图片映射 | set_image_path(id, path) | 设置图片路径 |
+| 图片映射 | batch_set_images(dict) | 批量设置图片 |
+| 图片映射 | get_all_images() | 全部图片映射 |
+| 图片映射 | get_equipment_with_image() | 有图片的装备列表 |
+| CRUD | add_equipment(dict) | 添加装备 |
+| CRUD | update_equipment(id, dict) | 更新装备 |
+| CRUD | delete_equipment(id) | 删除装备 |
+| 批量 | import_equipment_batch(list) | 批量导入，返回统计 |
+| 统计 | get_statistics() | 装备统计（总数/科研/通用/按稀有度） |
+
+### ResearchManager (research_manager.py)
+
+| 类别 | 方法 | 说明 |
+|------|------|------|
+| 查询 | get_all() | 全部科研期数 |
+| 查询 | get_by_phase(phase_number) | 按期数查 |
+| CRUD | add_phase(dict) | 添加期数 |
+| CRUD | update_phase(id, dict) | 更新期数 |
+| CRUD | delete_phase(id) | 删除期数 |
+| 关联查询 | get_phase_equipment(phase_number) | 查某期→所有装备详情+稀有度 |
+| 关联查询 | get_phase_equipment_count(phase_number) | 查某期装备数量 |
+| 统计 | get_statistics() | 科研统计（总期数/总装备数） |
+
+### EquipmentUpdater (equipment_updater.py)
+
+| 方法 | 说明 |
+|------|------|
+| add_research_phase_equipment(phase_number, phase_name, gold_list, rainbow_tuple) | 一行代码添加整期科研（1彩+5金） |
+
+---
+
+## 项目架构
+
 ```
 AzurLaneResearchTracker/
-├── main.py                             # 程序主入口
-├── launcher.py                         # 程序启动器（可选）
-├── requirements.txt                    # 依赖包列表
-├── README.md                          # 项目说明文档
-├── .gitignore                         # Git忽略文件配置
-├── config.json                        # 主配置文件
+├── main.py                     # 程序入口
+├── requirements.txt            # 依赖清单
+├── AGENTS.md                   # Codex 开发规范
 │
-├── core/                              # 核心功能模块
-│   ├── __init__.py
-│   ├── automation/                    # 自动化相关模块
-│   │   ├── __init__.py
-│   │   ├── base_automator.py          # 自动化基类
-│   │   ├── simulator_controller.py    # 模拟器控制器
-│   │   ├── game_automator.py          # 游戏自动化
-│   │   └── click_sequences/           # 点击序列定义
-│   │       ├── __init__.py
-│   │       ├── login_sequence.py      # 登录序列
-│   │       ├── equipment_sequence.py  # 装备界面序列
-│   │       └── research_sequence.py   # 科研界面序列
-│   │
-│   ├── recognition/                   # 识别相关模块
-│   │   ├── __init__.py
-│   │   ├── base_recognizer.py         # 识别基类
-│   │   ├── image_recognizer.py        # 图像识别
-│   │   ├── text_recognizer.py         # 文字识别（OCR）
-│   │   ├── template_manager.py        # 模板管理
-│   │   └── detectors/                 # 各种检测器
-│   │       ├── __init__.py
-│   │       ├── equipment_detector.py  # 装备检测
-│   │       ├── fragment_detector.py   # 碎片检测
-│   │       └── ui_detector.py         # UI元素检测
-│   │
-│   ├── data/                          # 数据管理模块
-│   │   ├── __init__.py
-│   │   ├── base_manager.py            # 数据管理基类
-│   │   ├── equipment_manager.py       # 装备数据管理
-│   │   ├── research_manager.py        # 科研数据管理
-│   │   ├── luck_manager.py            # 欧非数据管理
-│   │   └── export_manager.py          # 数据导出管理
-│   │
-│   ├── calculation/                   # 计算模块
-│   │   ├── __init__.py
-│   │   ├── base_calculator.py         # 计算基类
-│   │   ├── fragment_calculator.py     # 碎片计算
-│   │   ├── luck_calculator.py         # 欧非值计算
-│   │   └── formula_manager.py         # 公式管理
-│   │
-│   └── utils/                         # 核心工具
-│       ├── __init__.py
-│       ├── config_loader.py           # 配置加载器
-│       ├── logger.py                  # 日志工具
-│       └── file_utils.py              # 文件工具
+├── core/
+│   ├── utils/                  # ✅ v0.1.0 — 基础设施
+│   │   ├── logger.py           #   日志系统
+│   │   ├── path_manager.py     #   路径管理器
+│   │   └── config_loader.py    #   配置加载器
+│   ├── data/                   # ✅ v0.2.0 — 数据层
+│   │   ├── rarity_manager.py   #   稀有度管理器
+│   │   ├── equipment_manager.py#   装备数据管理器
+│   │   ├── research_manager.py #   科研期数管理器
+│   │   └── equipment_updater.py#   批量更新工具
+│   ├── calculation/            # 📋 v0.3.0 — 计算层
+│   ├── automation/             # 📋 v0.6.0 — 自动化
+│   └── recognition/            # 📋 v0.6.0 — 识别
 │
-├── ui/                                # 用户界面模块
-│   ├── __init__.py
-│   ├── main_window.py                 # 主窗口
-│   ├── equipment_library_ui.py        # 装备库管理
-│   ├── research_manager_ui.py         # 科研管理
-│   ├── data_display_ui.py             # 数据显示
-│   ├── automation_control_ui.py       # 自动化控制面板
-│   ├── settings_ui.py                 # 设置界面
-│   └── widgets/                       # 自定义UI组件
-│       ├── __init__.py
-│       ├── equipment_card.py
-│       ├── luck_chart.py
-│       ├── automation_panel.py        # 自动化控制面板组件
-│       └── config_editor.py           # 配置编辑器组件
-│
-├── data/                              # 数据存储目录
-│   ├── __init__.py
-│   ├── equipment_library.csv
-│   ├── research_phases.csv
-│   ├── research_equipment.csv
-│   ├── luck_records.csv
-│   ├── equipment_records/
-│   │   └── __init__.py
-│   ├── images/
-│   │   └── __init__.py
-│   └── exports/                       # 导出数据目录
-│       └── __init__.py
-│
-├── config/                            # 配置文件目录
-│   ├── __init__.py
-│   ├── simulators/                    # 模拟器配置目录
-│   │   ├── __init__.py
-│   │   ├── mumu.json                  # MuMu模拟器配置
-│   │   ├── leidian.json               # 雷电模拟器配置
-│   │   ├── bluestacks.json            # 蓝叠模拟器配置
-│   │   └── custom.json                # 自定义模拟器配置
-│   │
-│   ├── games/                         # 游戏配置目录
-│   │   ├── __init__.py
-│   │   ├── azur_lane.json             # 碧蓝航线配置
-│   │   └── template_mapping.json      # 模板映射配置
-│   │
-│   ├── automation/                    # 自动化配置
-│   │   ├── __init__.py
-│   │   ├── sequences.json             # 点击序列配置
-│   │   ├── timing.json                #  timing配置
-│   │   └── retry_policy.json          # 重试策略配置
-│   │
-│   └── ui/                            # UI配置
-│       ├── __init__.py
-│       ├── themes.json                # 主题配置
-│       └── layout.json                # 布局配置
-│
-├── resources/                         # 资源文件
-│   ├── templates/                     # 图像识别模板
-│   │   ├── azur_lane/                 # 碧蓝航线模板
-│   │   │   ├── ui_elements/
-│   │   │   ├── equipment/
-│   │   │   └── fragments/
-│   │   └── common/                    # 通用模板
-│   │
-│   ├── icons/                         # 程序图标
-│   │   ├── app_icon.ico
-│   │   ├── equipment.png
-│   │   └── ...
-│   │
-│   └── fonts/                         # 字体文件
-│       └── ...
-│
-├── plugins/                           # 插件目录（为未来扩展预留）
-│   ├── __init__.py
-│   ├── example_plugin.py
-│   └── README.md
-│
-└── tests/                             # 测试目录
-    ├── __init__.py
-    ├── test_automation.py
-    ├── test_recognition.py
-    └── test_data.py
+├── ui/                         # 📋 v0.5.0 — PySide6 界面
+├── config/                     # ✅ JSON 配置文件
+├── data/                       # ✅ 4 个 CSV 数据文件
+├── test/                       # ✅ 测试文件
+└── Logs/                       # 自动生成
 ```
 
-
-# 碧蓝航线科研装备统计器 - 项目总结（0.1.0）25.12.01
-
-## 🚀 项目概述
-
-**项目名称**：碧蓝航线科研装备统计器
-**当前版本**：v0.1.0
-**核心目标**：自动统计碧蓝航线游戏中科研装备数量和欧非值，提供可视化数据分析
-**项目类型**：桌面自动化应用 + 数据分析工具
-**项目状态**：基础架构已搭建，正在开发核心模块
-
-## 🏗️ 技术架构
-
-### 项目结构
-
-text
-
-复制下载
-
-```
-AzurLaneResearchTracker/
-├── main.py                    # 程序入口（待开发）
-├── core/                      # 核心功能模块
-│   ├── utils/                 # 工具模块
-│   │   └── logger.py          # 日志系统 ✅已完成
-│   ├── data/                  # 数据管理模块（待开发）
-│   ├── automation/            # 自动化模块（待开发）
-│   ├── recognition/           # 识别模块（待开发）
-│   └── calculation/           # 计算模块（待开发）
-├── ui/                        # 用户界面模块（待开发）
-├── config/                    # 配置文件目录（待开发）
-├── data/                      # 数据存储目录（待初始化）
-├── logs/                      # 日志目录 ✅已可用
-├── resources/                 # 资源文件目录（待创建）
-└── tests/                     # 测试文件目录
-```
-
-
-
-### 核心技术栈
-
-- **Python版本**：3.11.0
-- **开发工具**：PyCharm 2025
-- **目标平台**：Windows（雷电/MuMu模拟器）
-- **打包方式**：计划使用PyInstaller打包为exe
-
-### 关键依赖包及版本
-
-txt
-
-复制下载
-
-```
-opencv-python==4.8.1.78       # 图像识别（待添加）
-pillow==10.0.1                # 图像处理（待添加）
-pysimplegui==4.60.4           # UI界面（待添加）
-pyautogui==0.9.54             # 自动化控制（待添加）
-pandas==2.0.3                 # 数据处理（待添加）
-matplotlib==3.7.2             # 数据可视化（待添加）
-```
-
-
-
-## 📝 当前开发状态
-
-### ✅ 已完成功能
-
-**1. 日志系统模块**
-
-- 所在文件：`core/utils/logger.py`
-- 核心类：`Logger`（单例模式）
-- 功能：多级别日志记录、文件轮转、错误日志分离、自定义日志方法
-- 状态：✅ 已完成并测试通过
-- 输出：`Logs/AzurLaneResearchTracker_YYYYMMDD.log`
-
-**2. 项目基础架构**
-
-- 已建立完整的项目目录结构
-- 已创建各模块的`__init__.py`文件
-
-### 🚧 进行中的功能
-
-**暂无** - 已完成基础模块，等待下一步开发
-
-### 📋 待开发功能（TODO列表）
-
-**第一阶段：核心基础模块**
-
-1. **配置管理模块** (`core/utils/config_loader.py`)
-   - JSON配置文件管理
-   - 默认配置生成
-   - 模拟器/游戏配置加载
-2. **装备数据管理** (`core/data/equipment_manager.py`)
-   - CSV格式装备库管理
-   - 装备图片存储
-   - 每日装备记录保存
-3. **科研数据管理** (`core/data/research_manager.py`)
-   - 科研期数定义
-   - 科研装备关联
-   - 欧非值记录
-
-**第二阶段：计算模块**
-\4. **碎片计算器** (`core/calculation/fragment_calculator.py`)
-
-- 科研装备碎片公式计算
-- 普通装备碎片公式计算
-
-1. **欧非值计算器** (`core/calculation/luck_calculator.py`)
-   - 科研欧非值计算
-   - 公式可配置化
-
-**第三阶段：UI界面模块**
-\6. **主窗口界面** (`ui/main_window.py`)
-
-- 程序主界面
-- 功能导航面板
-
-1. **装备库管理界面** (`ui/equipment_library_ui.py`)
-   - 装备添加/删除/修改
-   - 图片导入功能
-2. **科研管理界面** (`ui/research_manager_ui.py`)
-   - 科研期数定义
-   - 欧非值可视化图表
-
-**第四阶段：自动化与识别模块**
-\9. **模拟器控制器** (`core/automation/simulator_controller.py`)
-
-- 模拟器连接控制
-- 点击/滑动操作
-
-1. **图像识别器** (`core/recognition/image_recognizer.py`)
-   - 装备识别
-   - 碎片数量识别
-   - 模板匹配
-
-**第五阶段：打包与分发**
-\11. **程序打包**
-\- PyInstaller配置文件
-\- 一键打包脚本
-\- 安装程序制作
-
-## ⚠️ 已知问题与解决方案
-
-| 问题描述           | 解决方案                                | 状态     |
-| :----------------- | :-------------------------------------- | :------- |
-| 日志模块递归错误   | 移除`__getattr__`委托，显式定义所有方法 | ✅ 已解决 |
-| 日志文件位置不统一 | 修改为项目根目录下的`Logs`文件夹        | ✅ 已解决 |
-| 后续模块依赖关系   | 按阶段顺序开发，避免循环依赖            | 🚧 进行中 |
-
-## 🔧 关键代码片段
-
-### 核心逻辑：日志系统初始化
-
-python
-
-复制下载
-
-```
-# 位置：core/utils/logger.py
-class Logger:
-    """日志管理类 - 安全版本，避免递归"""
-    _instance = None
-    
-    def __new__(cls, *args, **kwargs):
-        if not cls._instance:
-            cls._instance = super(Logger, cls).__new__(cls)
-        return cls._instance
-    
-    def __init__(self, name="AzurLaneResearchTracker", log_dir="../Logs", level=logging.DEBUG):
-        if hasattr(self, '_initialized'):
-            return
-        
-        self.name = name
-        self.log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), log_dir))
-        self.level = level
-        os.makedirs(self.log_dir, exist_ok=True)
-        self.start_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self._setup_logger()
-        self._initialized = True
-```
-
-
-
-### 核心逻辑：单例模式便捷函数
-
-python
-
-复制下载
-
-```
-# 位置：core/utils/logger.py
-def get_logger(name="AzurLaneResearchTracker"):
-    """获取全局日志器实例"""
-    global _logger_instance
-    if _logger_instance is None:
-        _logger_instance = Logger(name=name)
-    return _logger_instance
-
-def setup_logging(name="AzurLaneResearchTracker", log_dir="../Logs", level=logging.DEBUG):
-    """设置全局日志配置"""
-    global _logger_instance
-    _logger_instance = Logger(name=name, log_dir=log_dir, level=level)
-    return _logger_instance
-```
-
-
-
-## 🧪 运行与测试
-
-### 安装依赖（当前）
-
-bash
-
-复制下载
-
-```
-# 当前所需依赖较少，后续会增加
-pip install opencv-python pillow pysimplegui pyautogui pandas matplotlib
-```
-
-
-
-### 运行测试
-
-bash
-
-复制下载
-
-```
-# 测试日志模块
-python test_logger.py
-```
-
-
-
-### 运行程序（待开发）
-
-bash
-
-复制下载
-
-```
-# 主程序入口（待实现）
-python main.py
-```
-
-
-
-## 📊 数据流说明
-
-text
-
-复制下载
-
-```
-模拟器操作 → 图像识别 → 装备数据 → 碎片计算 → 欧非值计算 → UI展示
-    ↓           ↓           ↓           ↓           ↓         ↓
-日志记录    配置管理    数据存储    公式配置    数据记录    用户交互
-```
-
-
-
-## 🔄 开发建议顺序
-
-1. **配置管理模块** - 建立程序配置基础
-2. **数据管理模块** - 建立数据存储基础
-3. **计算模块** - 实现核心算法
-4. **UI界面模块** - 提供用户交互
-5. **自动化与识别模块** - 实现自动化功能
-6. **打包分发** - 制作可执行文件
-
-## 📞 快速开始新对话
-
-**复制此总结到新对话，然后说明：**
-"我已完成了碧蓝航线统计器的日志模块，现在需要开发配置管理模块，请帮我设计config_loader.py，要求使用JSON存储配置，支持模拟器配置、游戏配置和程序设置，并集成日志功能。"
+---
+
+## 开发路线图
+
+| 版本 | 内容 | 状态 |
+|------|------|------|
+| v0.1.0 | 基础设施（日志 + 配置 + 路径管理） | ✅ 已完成 |
+| v0.2.0 | 数据层（装备/科研/稀有度管理 + 4个CSV + 69项测试） | ✅ 已完成 |
+| v0.3.0 | 计算层（碎片计算 + 欧非值 + 公式管理） | 📋 下一步 |
+| v0.4.0 | CLI 入口 + 数据导出 | 📋 待开发 |
+| v0.5.0 | PySide6 GUI 界面（表格 + 图表 + 工具栏） | 📋 待开发 |
+| v0.6.0 | ADB 自动化 + PaddleOCR 识别 | 📋 待开发 |
+| v1.0.0 | 打包 & 发布 | 📋 待开发 |
+
+---
+
+## 技术栈
+
+| 类别 | 技术 |
+|------|------|
+| 语言 | Python 3.12 |
+| 数据存储 | CSV（utf-8-sig 编码） |
+| 配置格式 | JSON |
+| 图像处理 | OpenCV + Pillow |
+| OCR | PaddleOCR 3.x |
+| GUI | PySide6（LGPL 许可） |
+| 模拟器控制 | ADB（雷电 LDPlayer 优先） |
+| 测试 | pytest / unittest |
+| 版本控制 | Git（main / develop 双主干 + feature 分支） |

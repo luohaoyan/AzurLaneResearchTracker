@@ -38,7 +38,6 @@ class Logger:
 
         self.name = name
         self.log_dir = PathManager.get_log_dir()  # 将日志目录设置为程序目录/Logs文件夹
-        print(self.log_dir)
         self.level = level
 
         # 创建日志目录
