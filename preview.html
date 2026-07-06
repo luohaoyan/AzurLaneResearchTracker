@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1200">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; }
+body { background: #1a1b2e; display: flex; justify-content: center; padding: 20px; }
+.app { width: 1200px; background: #1e2036; border-radius: 12px; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.5); }
+.title-bar { background: #161824; padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; }
+.title-bar h1 { color: #c8d2e6; font-size: 20px; font-weight: 600; }
+.win-dots { display: flex; gap: 8px; }
+.win-dots span { width: 12px; height: 12px; border-radius: 50%; }
+.win-dots .r { background: #ff5a5a; }
+.win-dots .y { background: #ffbe3a; }
+.win-dots .g { background: #50c850; }
+.body { display: flex; min-height: 600px; }
+.sidebar { width: 180px; background: #23263a; padding: 16px 0; }
+.nav-item { padding: 12px 20px; color: #b4c0d2; cursor: pointer; font-size: 15px; transition: 0.2s; }
+.nav-item.active { background: #3c64c8; color: #64b4ff; }
+.nav-item:hover:not(.active) { background: #2a2d44; }
+.main { flex: 1; padding: 16px 20px; }
+.section-title { color: #c8d2e6; font-size: 18px; font-weight: 600; margin-bottom: 12px; }
+.cards { display: flex; gap: 12px; margin-bottom: 20px; }
+.card { flex: 1; padding: 14px; border-radius: 8px; border: 1px solid #4a5068; }
+.card h3 { color: #d0dae8; font-size: 14px; margin-bottom: 6px; }
+.card .count { color: #96c896; font-size: 13px; }
+.card .base { color: #c8b478; font-size: 13px; }
+.table-wrap { background: #23263a; border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
+table { width: 100%; border-collapse: collapse; }
+th { background: #2d3042; color: #96b4dc; font-size: 13px; padding: 8px 10px; text-align: left; border-bottom: 1px solid #33364a; }
+td { padding: 7px 10px; font-size: 13px; color: #d0dae8; border-bottom: 1px solid #282b3e; }
+tr:nth-child(even) td { background: #26293c; }
+.rarity-sr { color: #e8a040; }
+.rarity-elite { color: #a060e8; }
+.rarity-rare { color: #60a0e8; }
+.luck-great { color: #64dc82; font-weight: 600; }
+.luck-good { color: #64b4e8; font-weight: 600; }
+.luck-normal { color: #c8c8a0; font-weight: 600; }
+.luck-poor { color: #e88c78; font-weight: 600; }
+.right-panel { width: 220px; background: #26293c; border-radius: 8px; padding: 14px; margin-left: 20px; }
+.stat-item { margin-bottom: 16px; }
+.stat-label { color: #96aac8; font-size: 13px; }
+.stat-value { color: #dce6f4; font-size: 18px; font-weight: 600; margin-top: 2px; }
+.stat-value.green { color: #64dc82; }
+.progress-section { margin-top: 12px; }
+.bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.bar-label { color: #b4c0d2; font-size: 12px; width: 70px; flex-shrink: 0; }
+.bar-bg { flex: 1; height: 14px; background: #2d3042; border-radius: 7px; overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 7px; transition: 0.3s; }
+.bar-pct { color: #96aac8; font-size: 12px; width: 35px; text-align: right; }
+.footer { background: #161824; padding: 8px 20px; color: #7882a0; font-size: 12px; }
+.card.c1 { background: #375578; border-color: #4a6a8e; }
+.card.c2 { background: #3c5a78; border-color: #50708e; }
+.card.c3 { background: #465a6e; border-color: #587086; }
+.card.c4 { background: #4a5678; border-color: #5e6a8e; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="title-bar">
+    <h1>🔬 碧蓝航线科研装备统计器 v0.1.0</h1>
+    <div class="win-dots"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+  </div>
+  <div class="body">
+    <div class="sidebar">
+      <div class="nav-item">📦 装备库</div>
+      <div class="nav-item active">🔬 科研管理</div>
+      <div class="nav-item">📊 欧非统计</div>
+      <div class="nav-item">🤖 自动化</div>
+      <div class="nav-item">⚙️ 设置</div>
+    </div>
+    <div class="main">
+      <div class="section-title">🔬 科研期数概览</div>
+      <div class="cards">
+        <div class="card c1"><h3>科研一期 (PR1)</h3><div class="count">6 件装备</div><div class="base">欧非基准 100</div></div>
+        <div class="card c2"><h3>科研二期 (PR2)</h3><div class="count">8 件装备</div><div class="base">欧非基准 150</div></div>
+        <div class="card c3"><h3>科研三期 (PR3)</h3><div class="count">5 件装备</div><div class="base">欧非基准 200</div></div>
+        <div class="card c4"><h3>科研四期 (PR4)</h3><div class="count">7 件装备</div><div class="base">欧非基准 250</div></div>
+      </div>
+      <div class="section-title">📦 当前科研装备列表</div>
+      <div class="table-wrap">
+        <table>
+          <tr><th>ID</th><th>装备名称</th><th>稀有度</th><th>类型</th><th>拥有数</th><th>碎片数</th><th>欧非值</th></tr>
+          <tr><td>1</td><td>试作型三联装406mm主炮Mk6</td><td class="rarity-sr">超稀有</td><td>主炮</td><td>2</td><td>45</td><td class="luck-good">良好</td></tr>
+          <tr><td>2</td><td>试作型三联装152mm主炮</td><td class="rarity-sr">超稀有</td><td>主炮</td><td>1</td><td>30</td><td class="luck-normal">普通</td></tr>
+          <tr><td>3</td><td>双联装114mm高平两用炮</td><td class="rarity-elite">精锐</td><td>副炮</td><td>3</td><td>60</td><td class="luck-great">优秀</td></tr>
+          <tr><td>4</td><td>试作型四联装533mm鱼雷</td><td class="rarity-sr">超稀有</td><td>鱼雷</td><td>0</td><td>15</td><td class="luck-poor">较差</td></tr>
+          <tr><td>5</td><td>博福斯STAAG40mm高炮</td><td class="rarity-elite">精锐</td><td>防空</td><td>2</td><td>50</td><td class="luck-good">良好</td></tr>
+          <tr><td>6</td><td>高性能舵机</td><td class="rarity-rare">稀有</td><td>设备</td><td>4</td><td>80</td><td class="luck-great">优秀</td></tr>
+        </table>
+      </div>
+      <div style="display: flex; align-items: flex-start; gap: 20px;">
+        <div style="flex:1">
+          <div class="section-title">📈 收集进度</div>
+          <div class="bar-row"><span class="bar-label">科研一期</span><div class="bar-bg"><div class="bar-fill" style="width:75%;background:#50a0ff"></div></div><span class="bar-pct">75%</span></div>
+          <div class="bar-row"><span class="bar-label">科研二期</span><div class="bar-bg"><div class="bar-fill" style="width:60%;background:#64c888"></div></div><span class="bar-pct">60%</span></div>
+          <div class="bar-row"><span class="bar-label">科研三期</span><div class="bar-bg"><div class="bar-fill" style="width:40%;background:#dcb450"></div></div><span class="bar-pct">40%</span></div>
+          <div class="bar-row"><span class="bar-label">科研四期</span><div class="bar-bg"><div class="bar-fill" style="width:30%;background:#c878a0"></div></div><span class="bar-pct">30%</span></div>
+        </div>
+        <div class="right-panel">
+          <div style="color:#c8d2e6;font-weight:600;font-size:15px;margin-bottom:12px;">📊 统计概览</div>
+          <div class="stat-item"><div class="stat-label">总装备数</div><div class="stat-value">27 件</div></div>
+          <div class="stat-item"><div class="stat-label">总科研期数</div><div class="stat-value">4 期</div></div>
+          <div class="stat-item"><div class="stat-label">超稀有装备</div><div class="stat-value">12 件</div></div>
+          <div class="stat-item"><div class="stat-label">平均欧非值</div><div class="stat-value green">62.5%</div></div>
+          <div class="stat-item"><div class="stat-label">碎片收集率</div><div class="stat-value">45%</div></div>
+          <div class="stat-item"><div class="stat-label">自动化状态</div><div class="stat-value green">运行中 ✅</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="footer">数据自动同步 | 最后更新: 2026-07-02 10:30 | 碧蓝航线科研装备统计器</div>
+</div>
+</body>
+</html>

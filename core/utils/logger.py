@@ -9,6 +9,7 @@ import os
 import sys
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
+from .path_manager import PathManager
 
 
 class Logger:
@@ -22,7 +23,7 @@ class Logger:
             cls._instance = super(Logger, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self, name="AzurLaneResearchTracker", log_dir="Logs", level=logging.DEBUG):
+    def __init__(self, name="AzurLaneResearchTracker", level=logging.DEBUG):
         """
         初始化日志器
 
@@ -36,9 +37,8 @@ class Logger:
             return
 
         self.name = name
-        self.log_dir = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), f"../../{log_dir}"))  # 将日志目录设置为程序目录/Logs文件夹
-        print(os.path.dirname(__file__))
+        self.log_dir = PathManager.get_log_dir()  # 将日志目录设置为程序目录/Logs文件夹
+        print(self.log_dir)
         self.level = level
 
         # 创建日志目录
@@ -168,10 +168,10 @@ def get_std_logger(name="AzurLaneResearchTracker"):
     return _logger_instance.get_std_logger()
 
 
-def setup_logging(name="AzurLaneResearchTracker", log_dir="logs", level=logging.DEBUG):
+def setup_logging(name="AzurLaneResearchTracker",  level=logging.DEBUG):
     """设置全局日志配置（便捷函数）"""
     global _logger_instance
-    _logger_instance = Logger(name=name, log_dir=log_dir, level=level)
+    _logger_instance = Logger(name=name, level=level)
     return _logger_instance
 
 

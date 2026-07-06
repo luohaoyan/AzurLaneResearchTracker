@@ -15,3 +15,4 @@ def main():
 if __name__ == "__main__":
     # main()
     print("你好ALRT")
+    print("111111")

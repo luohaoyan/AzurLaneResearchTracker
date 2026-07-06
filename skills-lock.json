@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "csv-data-summarizer": {
+      "source": "ovachiever/droid-tings",
+      "sourceType": "github",
+      "skillPath": "skills/csv-data-summarizer/SKILL.md",
+      "computedHash": "2372d93a79ae33f3fbe3fd8562ff29be39ee80aa2841dc2816c678c3accc5ced"
+    },
+    "pyside6-reviewer": {
+      "source": "akiselev/qt-llm-template",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/qt-code-review/SKILL.md",
+      "computedHash": "d021110e8c24d2329bfb57e6ad1397dfdbf2021733acd5251c9591db305effef"
+    }
+  }
+}

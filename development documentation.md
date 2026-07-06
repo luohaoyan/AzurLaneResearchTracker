@@ -1,3 +1,142 @@
+# 碧蓝航线装备统计器 - 项目总结(0.0.0)
+## 基础项目格式:
+```
+AzurLaneResearchTracker/
+├── main.py                             # 程序主入口
+├── launcher.py                         # 程序启动器（可选）
+├── requirements.txt                    # 依赖包列表
+├── README.md                          # 项目说明文档
+├── .gitignore                         # Git忽略文件配置
+├── config.json                        # 主配置文件
+│
+├── core/                              # 核心功能模块
+│   ├── __init__.py
+│   ├── automation/                    # 自动化相关模块
+│   │   ├── __init__.py
+│   │   ├── base_automator.py          # 自动化基类
+│   │   ├── simulator_controller.py    # 模拟器控制器
+│   │   ├── game_automator.py          # 游戏自动化
+│   │   └── click_sequences/           # 点击序列定义
+│   │       ├── __init__.py
+│   │       ├── login_sequence.py      # 登录序列
+│   │       ├── equipment_sequence.py  # 装备界面序列
+│   │       └── research_sequence.py   # 科研界面序列
+│   │
+│   ├── recognition/                   # 识别相关模块
+│   │   ├── __init__.py
+│   │   ├── base_recognizer.py         # 识别基类
+│   │   ├── image_recognizer.py        # 图像识别
+│   │   ├── text_recognizer.py         # 文字识别（OCR）
+│   │   ├── template_manager.py        # 模板管理
+│   │   └── detectors/                 # 各种检测器
+│   │       ├── __init__.py
+│   │       ├── equipment_detector.py  # 装备检测
+│   │       ├── fragment_detector.py   # 碎片检测
+│   │       └── ui_detector.py         # UI元素检测
+│   │
+│   ├── data/                          # 数据管理模块
+│   │   ├── __init__.py
+│   │   ├── base_manager.py            # 数据管理基类
+│   │   ├── equipment_manager.py       # 装备数据管理
+│   │   ├── research_manager.py        # 科研数据管理
+│   │   ├── luck_manager.py            # 欧非数据管理
+│   │   └── export_manager.py          # 数据导出管理
+│   │
+│   ├── calculation/                   # 计算模块
+│   │   ├── __init__.py
+│   │   ├── base_calculator.py         # 计算基类
+│   │   ├── fragment_calculator.py     # 碎片计算
+│   │   ├── luck_calculator.py         # 欧非值计算
+│   │   └── formula_manager.py         # 公式管理
+│   │
+│   └── utils/                         # 核心工具
+│       ├── __init__.py
+│       ├── config_loader.py           # 配置加载器
+│       ├── logger.py                  # 日志工具
+│       └── file_utils.py              # 文件工具
+│
+├── ui/                                # 用户界面模块
+│   ├── __init__.py
+│   ├── main_window.py                 # 主窗口
+│   ├── equipment_library_ui.py        # 装备库管理
+│   ├── research_manager_ui.py         # 科研管理
+│   ├── data_display_ui.py             # 数据显示
+│   ├── automation_control_ui.py       # 自动化控制面板
+│   ├── settings_ui.py                 # 设置界面
+│   └── widgets/                       # 自定义UI组件
+│       ├── __init__.py
+│       ├── equipment_card.py
+│       ├── luck_chart.py
+│       ├── automation_panel.py        # 自动化控制面板组件
+│       └── config_editor.py           # 配置编辑器组件
+│
+├── data/                              # 数据存储目录
+│   ├── __init__.py
+│   ├── equipment_library.csv
+│   ├── research_phases.csv
+│   ├── research_equipment.csv
+│   ├── luck_records.csv
+│   ├── equipment_records/
+│   │   └── __init__.py
+│   ├── images/
+│   │   └── __init__.py
+│   └── exports/                       # 导出数据目录
+│       └── __init__.py
+│
+├── config/                            # 配置文件目录
+│   ├── __init__.py
+│   ├── simulators/                    # 模拟器配置目录
+│   │   ├── __init__.py
+│   │   ├── mumu.json                  # MuMu模拟器配置
+│   │   ├── leidian.json               # 雷电模拟器配置
+│   │   ├── bluestacks.json            # 蓝叠模拟器配置
+│   │   └── custom.json                # 自定义模拟器配置
+│   │
+│   ├── games/                         # 游戏配置目录
+│   │   ├── __init__.py
+│   │   ├── azur_lane.json             # 碧蓝航线配置
+│   │   └── template_mapping.json      # 模板映射配置
+│   │
+│   ├── automation/                    # 自动化配置
+│   │   ├── __init__.py
+│   │   ├── sequences.json             # 点击序列配置
+│   │   ├── timing.json                #  timing配置
+│   │   └── retry_policy.json          # 重试策略配置
+│   │
+│   └── ui/                            # UI配置
+│       ├── __init__.py
+│       ├── themes.json                # 主题配置
+│       └── layout.json                # 布局配置
+│
+├── resources/                         # 资源文件
+│   ├── templates/                     # 图像识别模板
+│   │   ├── azur_lane/                 # 碧蓝航线模板
+│   │   │   ├── ui_elements/
+│   │   │   ├── equipment/
+│   │   │   └── fragments/
+│   │   └── common/                    # 通用模板
+│   │
+│   ├── icons/                         # 程序图标
+│   │   ├── app_icon.ico
+│   │   ├── equipment.png
+│   │   └── ...
+│   │
+│   └── fonts/                         # 字体文件
+│       └── ...
+│
+├── plugins/                           # 插件目录（为未来扩展预留）
+│   ├── __init__.py
+│   ├── example_plugin.py
+│   └── README.md
+│
+└── tests/                             # 测试目录
+    ├── __init__.py
+    ├── test_automation.py
+    ├── test_recognition.py
+    └── test_data.py
+```
+
+
 # 碧蓝航线科研装备统计器 - 项目总结（0.1.0）25.12.01
 
 ## 🚀 项目概述

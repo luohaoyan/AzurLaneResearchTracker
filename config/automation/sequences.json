@@ -1,0 +1,24 @@
+{
+    "login": [
+        {
+            "action": "click",
+            "x": 100,
+            "y": 200,
+            "delay": 2.0
+        },
+        {
+            "action": "click",
+            "x": 300,
+            "y": 400,
+            "delay": 1.0
+        }
+    ],
+    "equipment": [
+        {
+            "action": "click",
+            "x": 500,
+            "y": 600,
+            "delay": 1.5
+        }
+    ]
+}

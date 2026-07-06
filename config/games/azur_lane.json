@@ -1,0 +1,33 @@
+{
+    "name": "碧蓝航线",
+    "package_name": "com.bilibili.azurlane",
+    "activity_name": "com.unity3d.player.UnityPlayerActivity",
+    "ui_elements": {
+        "game_icon": "resources/templates/azur_lane/ui_elements/game_icon.png",
+        "equipment_button": "resources/templates/azur_lane/ui_elements/equipment_button.png",
+        "research_button": "resources/templates/azur_lane/ui_elements/research_button.png"
+    },
+    "recognition": {
+        "equipment_region": [
+            100,
+            200,
+            800,
+            600
+        ],
+        "fragment_region": [
+            900,
+            200,
+            400,
+            600
+        ],
+        "confidence_threshold": 0.8
+    },
+    "calculations": {
+        "fragment_formulas": {
+            "gold_research": "equipment_count * 25 + fragment_count",
+            "rainbow": "equipment_count * 50 + fragment_count",
+            "gold_normal": "equipment_count * 15 + fragment_count"
+        },
+        "luck_formula": "rainbow_fragments / sum(gold_fragments)"
+    }
+}

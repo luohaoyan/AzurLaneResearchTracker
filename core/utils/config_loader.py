@@ -1,8 +1,14 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 # core/utils/config_loader.py
+# 整个系统的配置模块
+
 import json
 import os
 import shutil
 from typing import Any, Dict, List, Optional
+from .logger import get_logger
+from .path_manager import PathManager
 
 
 class ConfigLoader:
@@ -15,35 +21,34 @@ class ConfigLoader:
             cls._instance = super(ConfigLoader, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self, config_dir: str = "config"):
+    def __init__(self):
         if hasattr(self, '_initialized'):
             return
-
-        self.config_dir = config_dir
+        # 常用属性初始化
+        self.config_dir = PathManager.get_config_dir() # 存储地址
         self.cache = {}
+
+        self.logger = get_logger() # 日志单例
 
         # 确保配置目录存在
         os.makedirs(self.config_dir, exist_ok=True)
 
-        # 初始化默认配置
+        # 获得配置/进行初始化默认配置
         self._init_default_configs()
 
         self._initialized = True
 
-        # 记录日志
-        from .logger import get_logger
-        self.logger = get_logger()
-        self.logger.info(f"配置加载器已初始化，配置目录: {os.path.abspath(self.config_dir)}")
 
     def _init_default_configs(self):
         """初始化默认配置文件"""
-        # 主配置文件
+        # 主配置文件配置目录
         main_config_path = os.path.join(self.config_dir, "config.json")
+        flag = False  # 用来判断是否进行初始化
         if not os.path.exists(main_config_path):
             default_main_config = {
                 "app": {
                     "name": "碧蓝航线科研装备统计器",
-                    "version": "1.0.0",
+                    "version": "0.0.0",
                     "author": "Your Name"
                 },
                 "current_simulator": "mumu",
@@ -65,12 +70,13 @@ class ConfigLoader:
                     "auto_save_layout": True
                 }
             }
-            self._save_config_file(main_config_path, default_main_config)
+            flag = True
+            self.logger.debug(f"初始化主配置文件配置目录, 文件地址:{main_config_path}")
+            self._save_config_file("config.json",main_config_path, default_main_config)
 
         # 模拟器配置目录
         simulators_dir = os.path.join(self.config_dir, "simulators")
         os.makedirs(simulators_dir, exist_ok=True)
-
         # MuMu模拟器配置
         mumu_config_path = os.path.join(simulators_dir, "mumu.json")
         if not os.path.exists(mumu_config_path):
@@ -100,7 +106,10 @@ class ConfigLoader:
                     "stop_simulator": "taskkill /f /im MuMuPlayer.exe"
                 }
             }
-            self._save_config_file(mumu_config_path, default_mumu_config)
+            flag = True
+            self.logger.debug(f"初始化MuMu模拟器配置目录, 文件地址:{mumu_config_path}")
+            self._save_config_file("mumu.json",mumu_config_path, default_mumu_config)
+
 
         # 雷电模拟器配置
         leidian_config_path = os.path.join(simulators_dir, "leidian.json")
@@ -131,7 +140,9 @@ class ConfigLoader:
                     "stop_simulator": "taskkill /f /im LdBoxHeadless.exe"
                 }
             }
-            self._save_config_file(leidian_config_path, default_leidian_config)
+            flag = True
+            self.logger.debug(f"初始化雷电模拟器配置目录, 文件地址:{leidian_config_path}")
+            self._save_config_file("leidian.json",leidian_config_path, default_leidian_config)
 
         # 游戏配置目录
         games_dir = os.path.join(self.config_dir, "games")
@@ -163,7 +174,9 @@ class ConfigLoader:
                     "luck_formula": "rainbow_fragments / sum(gold_fragments)"
                 }
             }
-            self._save_config_file(azur_lane_config_path, default_azur_lane_config)
+            flag = True
+            self.logger.debug(f"初始化游戏配置目录, 文件地址:{azur_lane_config_path}")
+            self._save_config_file("azur_lane.json",azur_lane_config_path, default_azur_lane_config)
 
         # 自动化配置目录
         automation_dir = os.path.join(self.config_dir, "automation")
@@ -181,16 +194,23 @@ class ConfigLoader:
                     {"action": "click", "x": 500, "y": 600, "delay": 1.5}
                 ]
             }
-            self._save_config_file(sequences_config_path, default_sequences_config)
+            flag = True
+            self.logger.debug(f"初始化点击序列配置, 文件地址:{sequences_config_path}")
+            self._save_config_file("sequences.json",sequences_config_path, default_sequences_config)
 
-    def _save_config_file(self, file_path: str, config_data: Dict[str, Any]):
+        # 判断是否进行初始化
+        if flag:
+            self.logger.debug(f"配置加载器已初始化，配置目录: {os.path.abspath(self.config_dir)}")
+
+    def _save_config_file(self, file_name, file_path: str, config_data: Dict[str, Any]):
         """保存配置文件"""
         try:
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(config_data, f, ensure_ascii=False, indent=4)
-            self.logger.debug(f"已创建默认配置文件: {file_path}")
+            self.logger.debug(f"已保存配置文件{file_name}, 文件路径:{file_path}")
         except Exception as e:
-            self.logger.error(f"创建配置文件失败 {file_path}: {e}")
+            self.logger.error(f"保存配置文件{file_name}失败, 文件失败路径: {file_path}: {e}")
+
 
     def get_config(self, config_type: str, config_name: str = None) -> Dict[str, Any]:
         """
@@ -314,6 +334,20 @@ class ConfigLoader:
         """
         return self.get_config("config")
 
+    def _deep_update(self, original: Dict[str, Any], updates: Dict[str, Any]):
+        """
+        深度更新字典
+
+        Args:
+            original: 原始字典
+            updates: 更新字典
+        """
+        for key, value in updates.items():
+            if isinstance(value, dict) and key in original and isinstance(original[key], dict):
+                self._deep_update(original[key], value)
+            else:
+                original[key] = value
+
     def update_main_config(self, updates: Dict[str, Any]):
         """
         更新主配置
@@ -329,19 +363,7 @@ class ConfigLoader:
         # 保存更新后的配置
         self.save_config("", "config", main_config)
 
-    def _deep_update(self, original: Dict[str, Any], updates: Dict[str, Any]):
-        """
-        深度更新字典
 
-        Args:
-            original: 原始字典
-            updates: 更新字典
-        """
-        for key, value in updates.items():
-            if isinstance(value, dict) and key in original and isinstance(original[key], dict):
-                self._deep_update(original[key], value)
-            else:
-                original[key] = value
 
     def list_available_configs(self, config_type: str) -> List[str]:
         """
@@ -386,9 +408,9 @@ class ConfigLoader:
 _config_loader_instance = None
 
 
-def get_config_loader(config_dir: str = "config") -> ConfigLoader:
+def get_config_loader() -> ConfigLoader:
     """获取全局配置加载器实例"""
     global _config_loader_instance
     if _config_loader_instance is None:
-        _config_loader_instance = ConfigLoader(config_dir)
+        _config_loader_instance = ConfigLoader()
     return _config_loader_instance

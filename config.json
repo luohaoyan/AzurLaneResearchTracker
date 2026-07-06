@@ -1,7 +1,7 @@
 {
   "app": {
     "name": "碧蓝航线科研装备统计器",
-    "version": "1.0.0",
+    "version": "0.1.0",
     "author": "Your Name"
   },
   "current_simulator": "mumu",
