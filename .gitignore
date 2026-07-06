@@ -1,7 +1,7 @@
-# Python
+﻿# Python
 __pycache__/
 *.py[cod]
-*$py.class
+*.class
 *.so
 .Python
 env/
@@ -16,8 +16,10 @@ ENV/
 *.swp
 *.swo
 
-# 其他
+# Others
 .DS_Store
 thumbs.db
-Logs/ # 日志相关数据
-data/images # 装备相关数据
+Logs/
+data/images/
+*.zip
+*.exe
