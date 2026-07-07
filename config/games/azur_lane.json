@@ -23,11 +23,21 @@
         "confidence_threshold": 0.8
     },
     "calculations": {
-        "fragment_formulas": {
-            "gold_research": "equipment_count * 25 + fragment_count",
-            "rainbow": "equipment_count * 50 + fragment_count",
-            "gold_normal": "equipment_count * 15 + fragment_count"
+        "fragment_equivalents": {
+            "research_rainbow": 50,
+            "research_gold": 25,
+            "general_gold": 15,
+            "special_gold": 25,
+            "purple": 10,
+            "blue": 5
         },
-        "luck_formula": "rainbow_fragments / sum(gold_fragments)"
+        "luck_formula": "rainbow_total / gold_total",
+        "luck_levels": {
+            "极欧": 2.0,
+            "较欧": 1.3,
+            "正常": 0.7,
+            "较非": 0.4,
+            "极非": 0.0
+        }
     }
 }

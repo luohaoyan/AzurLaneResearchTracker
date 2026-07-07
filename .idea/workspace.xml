@@ -5,37 +5,10 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="0e3a1f43-94b8-468d-adb9-e0b7e26f9aba" name="更改" comment="AzurLaneResearchTracker v0.1.1版本">
-      <change beforePath="$PROJECT_DIR$/.agents/skills/csv-data-summarizer/.gitignore" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.agents/skills/csv-data-summarizer/README.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.agents/skills/csv-data-summarizer/SKILL.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.agents/skills/csv-data-summarizer/analyze.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.agents/skills/csv-data-summarizer/csv-data-summarizer.zip" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.agents/skills/csv-data-summarizer/examples/showcase_financial_pl_data.csv" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.agents/skills/csv-data-summarizer/requirements.txt" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.agents/skills/csv-data-summarizer/resources/README.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.agents/skills/csv-data-summarizer/resources/sample.csv" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.agents/skills/pyside6-reviewer/SKILL.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.agents/skills/pyside6-reviewer/anti-patterns.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.agents/skills/pyside6-reviewer/model-view.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.agents/skills/pyside6-reviewer/performance.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.agents/skills/pyside6-reviewer/qml-integration.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.agents/skills/pyside6-reviewer/review.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.agents/skills/pyside6-reviewer/signals-slots.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.agents/skills/pyside6-reviewer/threading.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.agents/skills/pyside6-reviewer/widgets.md" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/AGENTS.MD" beforeDir="false" afterPath="$PROJECT_DIR$/AGENTS.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/core/data/equipment_manager.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/data/equipment_manager.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/core/data/research_manager.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/data/research_manager.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/core/utils/logger.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/utils/logger.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/config/games/azur_lane.json" beforeDir="false" afterPath="$PROJECT_DIR$/config/games/azur_lane.json" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/data/equipment_library.csv" beforeDir="false" afterPath="$PROJECT_DIR$/data/equipment_library.csv" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/data/research_phases.csv" beforeDir="false" afterPath="$PROJECT_DIR$/data/research_phases.csv" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/development documentation.md" beforeDir="false" afterPath="$PROJECT_DIR$/development documentation.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/skills-lock.json" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/test/test.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/test/test_equipment_manager.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/test/test_research_manager.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/test/test_data_layer.py" beforeDir="false" afterPath="$PROJECT_DIR$/test/test_data_layer.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -53,6 +26,18 @@
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;luohaoyan&quot;
+  }
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;git@github.com:luohaoyan/AzurLaneResearchTracker.git&quot;,
+    &quot;accountId&quot;: &quot;d067361a-4fc2-49cb-8322-65164bbbd213&quot;
+  }
+}</component>
   <component name="ProblemsViewState">
     <option name="selectedTabId" value="CurrentFile" />
   </component>
@@ -67,40 +52,41 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ASKED_MARK_IGNORED_FILES_AS_EXCLUDED": "true",
-    "Python.a.executor": "Run",
-    "Python.config_loader.executor": "Run",
-    "Python.logger.executor": "Run",
-    "Python.main.executor": "Run",
-    "Python.path_manager.executor": "Run",
-    "Python.research_test.executor": "Run",
-    "Python.test.executor": "Run",
-    "Python.test_all.executor": "Run",
-    "Python.test_config_loader.executor": "Run",
-    "Python.test_equipment_manager.executor": "Run",
-    "Python.test_logger.executor": "Run",
-    "Python.test_research_manager.executor": "Run",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "com.google.cloudcode.ide_session_index": "20260707_0001",
-    "git-widget-placeholder": "main",
-    "node.js.detected.package.eslint": "true",
-    "node.js.detected.package.tslint": "true",
-    "node.js.selected.package.eslint": "(autodetect)",
-    "node.js.selected.package.tslint": "(autodetect)",
-    "nodejs_package_manager_path": "npm",
-    "settings.editor.selected.configurable": "preferences.pluginManager",
-    "vue.rearranger.settings.migration": "true"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ASKED_MARK_IGNORED_FILES_AS_EXCLUDED&quot;: &quot;true&quot;,
+    &quot;Python.a.executor&quot;: &quot;Run&quot;,
+    &quot;Python.config_loader.executor&quot;: &quot;Run&quot;,
+    &quot;Python.logger.executor&quot;: &quot;Run&quot;,
+    &quot;Python.main.executor&quot;: &quot;Run&quot;,
+    &quot;Python.path_manager.executor&quot;: &quot;Run&quot;,
+    &quot;Python.research_test.executor&quot;: &quot;Run&quot;,
+    &quot;Python.test.executor&quot;: &quot;Run&quot;,
+    &quot;Python.test_all.executor&quot;: &quot;Run&quot;,
+    &quot;Python.test_calculation.executor&quot;: &quot;Run&quot;,
+    &quot;Python.test_config_loader.executor&quot;: &quot;Run&quot;,
+    &quot;Python.test_equipment_manager.executor&quot;: &quot;Run&quot;,
+    &quot;Python.test_logger.executor&quot;: &quot;Run&quot;,
+    &quot;Python.test_research_manager.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;com.google.cloudcode.ide_session_index&quot;: &quot;20260707_0003&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;feature/v0.3.0-calculation&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;preferences.pluginManager&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
   }
-}]]></component>
+}</component>
   <component name="RecentsManager">
     <key name="MoveFile.RECENT_KEYS">
       <recent name="G:\ALLPeoject\PythonProject\AzurLaneResearchTracker" />
       <recent name="G:\ALLPeoject\PythonProject\AzurLaneResearchTracker\core" />
     </key>
   </component>
-  <component name="RunManager" selected="Python.test_all">
+  <component name="RunManager" selected="Python.test_calculation">
     <configuration name="main" type="PythonConfigurationType" factoryName="Python" nameIsGenerated="true">
       <module name="AzurLaneResearchTracker" />
       <option name="ENV_FILES" value="" />
@@ -147,7 +133,7 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
-    <configuration name="test_config_loader" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+    <configuration name="test_calculation" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="AzurLaneResearchTracker" />
       <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
@@ -161,7 +147,7 @@
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
       <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/test/test_config_loader.py" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/test/test_calculation.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
       <option name="EMULATE_TERMINAL" value="false" />
@@ -185,6 +171,29 @@
       <option name="ADD_SOURCE_ROOTS" value="true" />
       <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
       <option name="SCRIPT_NAME" value="$PROJECT_DIR$/test/test_equipment_manager.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration name="test_equipment_manager" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="AzurLaneResearchTracker" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/test" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <option name="SCRIPT_NAME" value="G:\ALLPeoject\PythonProject\AzurLaneResearchTracker\test\test_equipment_manager.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
       <option name="EMULATE_TERMINAL" value="false" />
@@ -241,11 +250,11 @@
     </configuration>
     <recent_temporary>
       <list>
+        <item itemvalue="Python.test_calculation" />
         <item itemvalue="Python.test_all" />
         <item itemvalue="Python.test_equipment_manager" />
+        <item itemvalue="Python.test_equipment_manager" />
         <item itemvalue="Python.test_research_manager" />
-        <item itemvalue="Python.test_logger" />
-        <item itemvalue="Python.test_config_loader" />
       </list>
     </recent_temporary>
   </component>
@@ -311,7 +320,8 @@
       <workItem from="1783095992857" duration="6861000" />
       <workItem from="1783337022573" duration="4411000" />
       <workItem from="1783348231564" duration="4314000" />
-      <workItem from="1783362395754" duration="3445000" />
+      <workItem from="1783362395754" duration="4542000" />
+      <workItem from="1783429173803" duration="7007000" />
     </task>
     <servers />
   </component>
@@ -349,9 +359,10 @@
     <SUITE FILE_PATH="coverage/AzurLaneResearchTracker$test_research_manager.coverage" NAME="test_research_manager 覆盖结果" MODIFIED="1783348360565" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/test" />
     <SUITE FILE_PATH="coverage/AzurLaneResearchTracker$path_manager.coverage" NAME="path_manager 覆盖结果" MODIFIED="1765313550156" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/core/utils" />
     <SUITE FILE_PATH="coverage/AzurLaneResearchTracker$test_equipment_manager.coverage" NAME="test_equipment_manager 覆盖结果" MODIFIED="1783351495118" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/test" />
+    <SUITE FILE_PATH="coverage/AzurLaneResearchTracker$test_calculation.coverage" NAME="test_calculation 覆盖结果" MODIFIED="1783441702940" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/test" />
     <SUITE FILE_PATH="coverage/AzurLaneResearchTracker$logger.coverage" NAME="logger 覆盖结果" MODIFIED="1764537197265" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/core/utils" />
     <SUITE FILE_PATH="coverage/AzurLaneResearchTracker$test_logger.coverage" NAME="test_logger 覆盖结果" MODIFIED="1783346249505" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/test" />
-    <SUITE FILE_PATH="coverage/AzurLaneResearchTracker$test_all.coverage" NAME="test_all 覆盖结果" MODIFIED="1783364650966" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/test" />
+    <SUITE FILE_PATH="coverage/AzurLaneResearchTracker$test_all.coverage" NAME="test_all 覆盖结果" MODIFIED="1783441690294" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/test" />
     <SUITE FILE_PATH="coverage/AzurLaneResearchTracker$main.coverage" NAME="main 覆盖结果" MODIFIED="1782681511488" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
   </component>
 </project>
