@@ -27,3 +27,6 @@ data/images/
 # QA 测试目录（内部测试，不纳入版本控制）
 qa_tests/
 
+
+# 导出文件目录（运行时生成，不纳入版本控制）
+data/exports/
