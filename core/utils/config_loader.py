@@ -48,7 +48,7 @@ class ConfigLoader:
             default_main_config = {
                 "app": {
                     "name": "碧蓝航线科研装备统计器",
-                    "version": "0.4.0",
+                    "version": "0.5.0",
                     "author": "Your Name"
                 },
                 "current_simulator": "mumu",

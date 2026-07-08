@@ -21,7 +21,7 @@ import sys
 from datetime import datetime
 from typing import List, Optional
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -98,9 +98,13 @@ class LogDrawer(QWidget):
         self._entries: List[dict[str, str]] = []
         self._handler: Optional[GuiLogHandler] = None
         self._expanded = False
+        self._animation: Optional[QPropertyAnimation] = None
+        self.collapsed_height = 48
+        self.expanded_height = 260
+        self.animation_duration_ms = 180
 
         self._build_ui()
-        self.set_expanded(False)
+        self.set_expanded(False, animate=False)
         self.logAdded.connect(self._on_log_added)
 
     def _build_ui(self) -> None:
@@ -115,7 +119,7 @@ class LogDrawer(QWidget):
         header_layout.setContentsMargins(12, 8, 12, 8)
         header_layout.setSpacing(8)
 
-        self.toggle_button = QPushButton(">>")
+        self.toggle_button = QPushButton("展开日志")
         self.toggle_button.setToolTip("展开或收起运行日志")
         self.toggle_button.clicked.connect(self.toggle)
         self.filter_combo = QComboBox()
@@ -130,8 +134,10 @@ class LogDrawer(QWidget):
         self.clear_button = QPushButton("清空")
         self.clear_button.clicked.connect(self.clear)
 
+        self.filter_label = QLabel("筛选")
+
         header_layout.addWidget(self.toggle_button)
-        header_layout.addWidget(QLabel("筛选"))
+        header_layout.addWidget(self.filter_label)
         header_layout.addWidget(self.filter_combo)
         header_layout.addWidget(self.auto_scroll_check)
         header_layout.addStretch(1)
@@ -204,27 +210,68 @@ class LogDrawer(QWidget):
         """
         self.set_expanded(not self._expanded)
 
-    def set_expanded(self, expanded: bool) -> None:
+    def set_expanded(self, expanded: bool, animate: bool = True) -> None:
         """
         设置日志抽屉展开状态。
         输入：
             expanded: True 展开，False 收起。
+            animate: 是否使用高度动画。
         输出：
             None。
         使用示例：
             drawer.set_expanded(True)
         """
         self._expanded = expanded
-        self.log_text.setVisible(expanded)
-        self.filter_combo.setVisible(expanded)
-        self.auto_scroll_check.setVisible(expanded)
-        self.copy_button.setVisible(expanded)
-        self.copy_diagnostic_button.setVisible(expanded)
-        self.clear_button.setVisible(expanded)
-        self.setMaximumHeight(260 if expanded else 42)
-        self.setMinimumHeight(260 if expanded else 42)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.toggle_button.setText("<<" if expanded else ">>")
+        self.toggle_button.setText("收起日志" if expanded else "展开日志")
+
+        detail_widgets = [
+            self.log_text,
+            self.filter_label,
+            self.filter_combo,
+            self.auto_scroll_check,
+            self.copy_button,
+            self.copy_diagnostic_button,
+            self.clear_button,
+        ]
+        if expanded:
+            for widget in detail_widgets:
+                widget.setVisible(True)
+
+        target_height = self.expanded_height if expanded else self.collapsed_height
+        if not animate:
+            self.setMinimumHeight(target_height)
+            self.setMaximumHeight(target_height)
+            if not expanded:
+                for widget in detail_widgets:
+                    widget.setVisible(False)
+            return
+
+        if self._animation is not None:
+            self._animation.stop()
+        self._animation = QPropertyAnimation(self, b"maximumHeight", self)
+        self._animation.setDuration(self.animation_duration_ms)
+        self._animation.setStartValue(self.height())
+        self._animation.setEndValue(target_height)
+        self._animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._animation.valueChanged.connect(lambda value: self.setMinimumHeight(int(value)))
+        self._animation.finished.connect(lambda: self._finish_expand_animation(expanded, detail_widgets))
+        self._animation.start()
+        QTimer.singleShot(
+            self.animation_duration_ms + 30,
+            lambda: self._finish_expand_animation(expanded, detail_widgets),
+        )
+
+    def _finish_expand_animation(self, expanded: bool, detail_widgets: List[QWidget]) -> None:
+        """动画结束后固定高度，并在收起时隐藏日志细节控件。"""
+        if self._expanded != expanded:
+            return
+        target_height = self.expanded_height if expanded else self.collapsed_height
+        self.setMinimumHeight(target_height)
+        self.setMaximumHeight(target_height)
+        if not expanded:
+            for widget in detail_widgets:
+                widget.setVisible(False)
 
     def refresh_view(self) -> None:
         """

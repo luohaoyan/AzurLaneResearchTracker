@@ -22,11 +22,13 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCharts import QChartView
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel
 
 from core.state.runtime_state import TaskStateKind, get_runtime_state_manager
 from ui.future_hooks import FeatureHookRegistry, get_feature_hook_registry
-from ui.main_window import AnimatedMascotPanel, MainWindow
+from ui.main_window import AnimatedMascotPanel, MainWindow, get_gui_version
 from ui.theme import ThemeTokens, build_stylesheet
 
 
@@ -66,9 +68,14 @@ def test_main_window_creates_navigation_and_pages(qapp: QApplication) -> None:
         "settings",
         "about",
     }
-    assert window.log_drawer.toggle_button.text() == ">>"
+    assert window.log_drawer.toggle_button.text() == "展开日志"
 
     window.close()
+
+
+def test_gui_version_reads_main_config() -> None:
+    """GUI 版本号应来自 config/config.json 的 app.version，而不是写死在窗口代码里。"""
+    assert get_gui_version() == "v0.5.0"
 
 
 def test_navigation_switches_page_stack(qapp: QApplication) -> None:
@@ -83,23 +90,29 @@ def test_navigation_switches_page_stack(qapp: QApplication) -> None:
     window.close()
 
 
-def test_collapsible_navigation_keeps_page_mapping(qapp: QApplication) -> None:
-    """左侧导航折叠后应显示短标记，展开后恢复完整页面名称。"""
+def test_collapsible_navigation_hides_content_and_keeps_mapping(qapp: QApplication) -> None:
+    """左侧导航折叠后应隐藏内部内容，展开后恢复完整页面名称。"""
     window = MainWindow()
 
     assert window.nav_toggle_button.text() == "<<"
 
     window.toggle_navigation()
+    QTest.qWait(window.nav_animation_duration_ms + 180)
 
     assert window.nav_collapsed is True
     assert window.nav_toggle_button.text() == ">>"
-    assert window.navigation_list.item(0).text() == "港"
-    assert window.navigation_panel.width() <= window.theme_tokens.nav_collapsed_width
+    assert window.navigation_list.isHidden() is True
+    assert window.app_title.isHidden() is True
+    assert window.navigation_list.item(0).text() == ""
+    assert window.navigation_panel.width() == window.theme_tokens.nav_collapsed_width
 
     window.toggle_navigation()
+    QTest.qWait(window.nav_animation_duration_ms + 180)
 
     assert window.nav_collapsed is False
     assert window.nav_toggle_button.text() == "<<"
+    assert window.navigation_list.isHidden() is False
+    assert window.app_title.isHidden() is False
     assert window.navigation_list.item(0).text() == "港区实况"
 
     window.close()
@@ -150,14 +163,56 @@ def test_user_data_missing_equipment_icon_uses_blank_pixmap(qapp: QApplication) 
     window.close()
 
 
-def test_trend_page_marks_equipment_count_chart_pending(qapp: QApplication) -> None:
-    """历史趋势页应明确说明装备数量折线图仍处于待接入状态。"""
+def test_trend_page_builds_chart_and_metric_controls(qapp: QApplication) -> None:
+    """历史趋势页应创建真实折线图、指标勾选和明细表。"""
     window = MainWindow()
     trend_page = window.pages["trend"]
-    labels = [label.text() for label in trend_page.findChildren(QLabel)]
+    headers = [
+        trend_page.trend_table.horizontalHeaderItem(index).text()
+        for index in range(trend_page.trend_table.columnCount())
+    ]
 
-    assert any("装备数量趋势" in text for text in labels)
-    assert any("还没正式实现" in text or "尚未接入真实历史数据" in text for text in labels)
+    assert trend_page.findChild(QChartView) is not None
+    assert set(trend_page.metric_checks) == {
+        "equipment_count",
+        "fragment_count",
+        "equivalent_score",
+        "luck_value",
+    }
+    assert headers == ["日期", "装备数量", "碎片总量", "等值分", "欧非值", "评价"]
+
+    window.close()
+
+
+def test_trend_page_refreshes_chart_series_from_rows(qapp: QApplication) -> None:
+    """历史趋势页应能把趋势行刷新成多条折线。"""
+    window = MainWindow()
+    trend_page = window.pages["trend"]
+
+    rows = [
+        {
+            "date": "2026-07-01",
+            "equipment_count": 1,
+            "fragment_count": 30,
+            "equivalent_score": 80,
+            "luck_value": 7.0,
+            "luck_level": "极欧",
+        },
+        {
+            "date": "2026-07-02",
+            "equipment_count": 3,
+            "fragment_count": 45,
+            "equivalent_score": 170,
+            "luck_value": 3.25,
+            "luck_level": "较欧",
+        },
+    ]
+
+    trend_page._refresh_chart(rows, ["equipment_count", "fragment_count"])
+
+    assert len(trend_page.chart.series()) == 2
+    assert "多指标" in trend_page.chart_status.text()
+    assert trend_page._normalize_chart_value(15.0, 10.0, 20.0) == 50.0
 
     window.close()
 

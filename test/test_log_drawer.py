@@ -23,6 +23,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtGui import QGuiApplication
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from core.state.runtime_state import TaskStateKind, get_runtime_state_manager
@@ -57,12 +58,21 @@ def log_drawer(qapp: QApplication) -> Generator[LogDrawer, None, None]:
 def test_log_drawer_starts_collapsed_and_can_toggle(log_drawer: LogDrawer) -> None:
     """日志抽屉默认应收起，并支持展开/收起切换。"""
     assert log_drawer.log_text.isHidden() is True
-    assert log_drawer.toggle_button.text() == ">>"
+    assert log_drawer.toggle_button.text() == "展开日志"
 
     log_drawer.set_expanded(True)
+    QTest.qWait(log_drawer.animation_duration_ms + 80)
 
     assert log_drawer.log_text.isHidden() is False
-    assert log_drawer.toggle_button.text() == "<<"
+    assert log_drawer.toggle_button.text() == "收起日志"
+    assert abs(log_drawer.maximumHeight() - log_drawer.expanded_height) <= 1
+
+    log_drawer.set_expanded(False)
+    QTest.qWait(log_drawer.animation_duration_ms + 80)
+
+    assert log_drawer.log_text.isHidden() is True
+    assert log_drawer.toggle_button.text() == "展开日志"
+    assert abs(log_drawer.maximumHeight() - log_drawer.collapsed_height) <= 1
 
 
 def test_log_drawer_appends_and_filters_messages(log_drawer: LogDrawer) -> None:

@@ -20,10 +20,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QMovie, QPixmap
+from PySide6.QtCore import QEasingCurve, QParallelAnimationGroup, QDate, QPropertyAnimation, Qt, QTimer, Signal
+from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
+from PySide6.QtGui import QAction, QColor, QMovie, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDateEdit,
     QFrame,
@@ -50,6 +52,7 @@ from PySide6.QtWidgets import (
 
 from core.data.equipment_manager import get_equipment_manager
 from core.data.research_manager import get_research_manager
+from core.calculation.trend_analyzer import get_trend_analyzer
 from core.state.runtime_state import TaskStateKind, get_runtime_state_manager
 from core.utils.config_loader import get_config_loader
 from core.utils.logger import get_logger
@@ -60,10 +63,24 @@ from ui.widgets.log_drawer import LogDrawer
 
 
 # ============================================================
-# 🧭 第二部分：模块常量
+# 🧭 第二部分：模块工具函数
 # ============================================================
 
-GUI_VERSION = "0.5.0"
+def get_gui_version() -> str:
+    """
+    从主配置读取 GUI 展示版本号。
+    输入：
+        无。
+    输出：
+        str: 带 v 前缀的版本号；配置缺失时使用 v0.5.0 兜底。
+    使用示例：
+        version = get_gui_version()
+    """
+    config = get_config_loader().get_main_config()
+    raw_version = str(config.get("app", {}).get("version", "0.5.0")).strip()
+    if not raw_version:
+        raw_version = "0.5.0"
+    return raw_version if raw_version.startswith("v") else f"v{raw_version}"
 
 
 # ============================================================
@@ -596,13 +613,28 @@ class TrendPage(BasePage):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """创建历史趋势页面。"""
         super().__init__("历史趋势", "选择时间区间和指标后，以折线图展示欧非值、装备数量和碎片总量变化。", parent)
+        self.trend_analyzer = get_trend_analyzer()
         controls = QHBoxLayout()
         self.start_date = QDateEdit()
         self.end_date = QDateEdit()
+        self.start_date.setCalendarPopup(True)
+        self.end_date.setCalendarPopup(True)
+        self.start_date.setDisplayFormat("yyyy-MM-dd")
+        self.end_date.setDisplayFormat("yyyy-MM-dd")
+        self._apply_available_date_range()
+        self.metric_specs = self.trend_analyzer.get_metric_specs()
         self.metric_combo = QComboBox()
-        self.metric_combo.addItems(["欧非值", "装备数量", "碎片总量", "等值分"])
+        for spec in self.metric_specs:
+            self.metric_combo.addItem(spec.title, spec.key)
+        self.metric_combo.currentIndexChanged.connect(lambda _index=0: self.refresh_trend_preview())
+        self.metric_checks: Dict[str, QCheckBox] = {}
         self.phase_combo = QComboBox()
-        self.phase_combo.addItems(["全部科研期"] + UserDataPage._phase_labels())
+        self.phase_combo.addItem("全部科研期", None)
+        for phase in get_research_manager().get_all():
+            phase_number = int(phase.get("phase_number", 0))
+            self.phase_combo.addItem(f"科研 {phase_number} 期", phase_number)
+        refresh_button = QPushButton("刷新趋势")
+        refresh_button.clicked.connect(self.refresh_trend_preview)
         controls.addWidget(QLabel("开始"))
         controls.addWidget(self.start_date)
         controls.addWidget(QLabel("结束"))
@@ -611,23 +643,237 @@ class TrendPage(BasePage):
         controls.addWidget(self.phase_combo)
         controls.addWidget(QLabel("指标"))
         controls.addWidget(self.metric_combo)
+        controls.addWidget(refresh_button)
         controls.addStretch(1)
         self.root.addLayout(controls)
+
+        metric_bar = QHBoxLayout()
+        metric_bar.setSpacing(10)
+        metric_bar.addWidget(QLabel("叠加曲线"))
+        for spec in self.metric_specs:
+            checkbox = QCheckBox(spec.title)
+            checkbox.setChecked(spec.key in {"equipment_count", "fragment_count", "luck_value"})
+            checkbox.stateChanged.connect(lambda _state=0: self.refresh_trend_preview())
+            self.metric_checks[spec.key] = checkbox
+            metric_bar.addWidget(checkbox)
+        metric_bar.addStretch(1)
+        self.root.addLayout(metric_bar)
 
         chart = QFrame()
         chart.setObjectName("chart_panel")
         chart_layout = QVBoxLayout(chart)
         chart_layout.setContentsMargins(18, 18, 18, 18)
-        title = QLabel("折线图展示区")
-        title.setObjectName("section_title")
-        body = QLabel("当前阶段已预留欧非值、装备数量、碎片总量和等值分的选择控件；装备数量趋势尚未接入真实历史数据绘制。QtCharts 接入后，可在同一张图里叠加多条趋势线。")
-        body.setObjectName("panel_body")
-        body.setWordWrap(True)
-        chart_layout.addWidget(title)
-        chart_layout.addWidget(body)
-        chart_layout.addWidget(BasePage.build_card("装备数量趋势", "还没正式实现。后续会读取用户历史记录，按日期统计装备数量变化并绘制折线。"))
+        self.chart_title = QLabel("趋势折线图")
+        self.chart_title.setObjectName("section_title")
+        self.chart_status = QLabel("等待历史记录数据。")
+        self.chart_status.setObjectName("panel_body")
+        self.chart_status.setWordWrap(True)
+        self.chart = QChart()
+        self.chart.setBackgroundVisible(False)
+        self.chart.legend().setVisible(True)
+        self.chart.legend().setAlignment(Qt.AlignmentFlag.AlignBottom)
+        self.chart_view = QChartView(self.chart)
+        self.chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.chart_view.setMinimumHeight(260)
+        chart_layout.addWidget(self.chart_title)
+        chart_layout.addWidget(self.chart_status)
+        chart_layout.addWidget(self.chart_view)
         chart_layout.addStretch(1)
         self.root.addWidget(chart, stretch=1)
+
+        self.trend_table = QTableWidget(0, 6)
+        self.trend_table.setHorizontalHeaderLabels(["日期", "装备数量", "碎片总量", "等值分", "欧非值", "评价"])
+        self.trend_table.verticalHeader().setVisible(False)
+        self.trend_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.root.addWidget(self.trend_table, stretch=1)
+        self.refresh_trend_preview()
+
+    def refresh_trend_preview(self) -> None:
+        """
+        刷新历史趋势预览表和折线图。
+        输入：
+            无。
+        输出：
+            None。
+        使用示例：
+            page.refresh_trend_preview()
+        """
+        phase_number = self.phase_combo.currentData()
+        rows = self.trend_analyzer.get_trend(
+            self.start_date.date().toString("yyyy-MM-dd"),
+            self.end_date.date().toString("yyyy-MM-dd"),
+            int(phase_number) if phase_number is not None else None,
+        )
+        selected_metrics = self._get_selected_metric_keys()
+        self._refresh_chart(rows, selected_metrics)
+        self.trend_table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            values = [
+                row.get("date", ""),
+                row.get("equipment_count", 0),
+                row.get("fragment_count", 0),
+                row.get("equivalent_score", 0),
+                self._format_luck_value(row.get("luck_value")),
+                row.get("luck_level", "未知"),
+            ]
+            for column, value in enumerate(values):
+                self.trend_table.setItem(row_index, column, QTableWidgetItem(str(value)))
+
+    def _get_selected_metric_keys(self) -> List[str]:
+        """
+        获取当前勾选的趋势指标。
+        输入：
+            无。
+        输出：
+            List[str]: 至少包含一个指标键。
+        使用示例：
+            keys = page._get_selected_metric_keys()
+        """
+        selected = [key for key, checkbox in self.metric_checks.items() if checkbox.isChecked()]
+        if selected:
+            return selected
+        current_key = self.metric_combo.currentData()
+        return [str(current_key or "equipment_count")]
+
+    def _refresh_chart(self, rows: List[Dict[str, object]], metric_keys: List[str]) -> None:
+        """
+        根据历史趋势数据刷新折线图。
+        输入：
+            rows: TrendAnalyzer 返回的按日期排列数据。
+            metric_keys: 需要绘制的指标键。
+        输出：
+            None。
+        使用示例：
+            page._refresh_chart(rows, ["equipment_count", "luck_value"])
+        """
+        self.chart.removeAllSeries()
+        if not rows:
+            self.chart_status.setText("当前时间区间暂无历史记录；完成一次识别或录入后这里会自动出现趋势。")
+            self._reset_chart_axes(1, 1, 0.0, 1.0, "记录序号", "数值")
+            return
+
+        specs = {spec.key: spec for spec in self.metric_specs}
+        use_normalized_value = len(metric_keys) > 1
+        y_values: List[float] = []
+        for metric_key in metric_keys:
+            spec = specs.get(metric_key)
+            if spec is None:
+                continue
+            raw_values = [self._coerce_chart_value(row.get(metric_key)) for row in rows]
+            visible_values = [value for value in raw_values if value is not None]
+            if not visible_values:
+                continue
+            series = QLineSeries()
+            series.setName(spec.title)
+            series.setPen(QPen(QColor(spec.color), 2))
+            min_value = min(visible_values)
+            max_value = max(visible_values)
+            for index, value in enumerate(raw_values, start=1):
+                if value is None:
+                    continue
+                chart_value = self._normalize_chart_value(value, min_value, max_value) if use_normalized_value else value
+                series.append(float(index), float(chart_value))
+                y_values.append(float(chart_value))
+            self.chart.addSeries(series)
+
+        if not self.chart.series():
+            self.chart_status.setText("当前指标暂时没有可绘制的数据，可以换一个指标或时间区间。")
+            self._reset_chart_axes(1, max(1, len(rows)), 0.0, 1.0, "记录序号", "数值")
+            return
+
+        x_max = max(1, len(rows))
+        y_min = min(y_values)
+        y_max = max(y_values)
+        if y_min == y_max:
+            y_min -= 1.0
+            y_max += 1.0
+        y_padding = max((y_max - y_min) * 0.12, 1.0)
+        self._reset_chart_axes(
+            1,
+            x_max,
+            y_min - y_padding,
+            y_max + y_padding,
+            "记录序号",
+            "归一化值" if use_normalized_value else "数值",
+        )
+        first_day = rows[0].get("date", "")
+        last_day = rows[-1].get("date", "")
+        mode = "多指标已按 0-100 归一化显示" if use_normalized_value else "单指标按原始数值显示"
+        self.chart_status.setText(f"{first_day} 至 {last_day}，共 {len(rows)} 条记录；{mode}。")
+
+    def _reset_chart_axes(
+        self,
+        x_min: int,
+        x_max: int,
+        y_min: float,
+        y_max: float,
+        x_title: str,
+        y_title: str,
+    ) -> None:
+        """
+        重建图表坐标轴，避免刷新后旧坐标轴残留。
+        输入：
+            x_min/x_max: 横轴范围。
+            y_min/y_max: 纵轴范围。
+            x_title/y_title: 坐标轴标题。
+        输出：
+            None。
+        使用示例：
+            page._reset_chart_axes(1, 3, 0.0, 100.0, "记录序号", "归一化值")
+        """
+        for axis in list(self.chart.axes()):
+            self.chart.removeAxis(axis)
+
+        axis_x = QValueAxis()
+        axis_x.setTitleText(x_title)
+        axis_x.setLabelFormat("%d")
+        axis_x.setRange(float(x_min), float(max(x_min, x_max)))
+        axis_x.setTickCount(max(2, min(8, x_max)))
+
+        axis_y = QValueAxis()
+        axis_y.setTitleText(y_title)
+        axis_y.setLabelFormat("%.2f")
+        axis_y.setRange(float(y_min), float(y_max))
+        axis_y.setTickCount(5)
+
+        self.chart.addAxis(axis_x, Qt.AlignmentFlag.AlignBottom)
+        self.chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
+        for series in self.chart.series():
+            series.attachAxis(axis_x)
+            series.attachAxis(axis_y)
+
+    @staticmethod
+    def _normalize_chart_value(value: float, min_value: float, max_value: float) -> float:
+        """把多指标数值压缩到 0-100，保证不同量纲可以叠加观察。"""
+        if min_value == max_value:
+            return 50.0
+        return (value - min_value) / (max_value - min_value) * 100.0
+
+    @staticmethod
+    def _coerce_chart_value(value: object) -> Optional[float]:
+        """把趋势值转换成图表可消费的浮点数；空值返回 None。"""
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _apply_available_date_range(self) -> None:
+        """按已有历史记录设置日期选择器默认值；没有记录时使用当天。"""
+        date_range = self.trend_analyzer.get_available_date_range()
+        today = QDate.currentDate()
+        start = QDate.fromString(str(date_range.get("start") or today.toString("yyyy-MM-dd")), "yyyy-MM-dd")
+        end = QDate.fromString(str(date_range.get("end") or today.toString("yyyy-MM-dd")), "yyyy-MM-dd")
+        self.start_date.setDate(start if start.isValid() else today)
+        self.end_date.setDate(end if end.isValid() else today)
+
+    @staticmethod
+    def _format_luck_value(value: object) -> str:
+        """把欧非值转换为用户可读文本。"""
+        if value is None:
+            return "暂无"
+        return f"{float(value):.3f}"
 
 
 class AutomationLabPage(BasePage):
@@ -802,9 +1048,12 @@ class MainWindow(QMainWindow):
         self.theme_tokens = theme_tokens or ThemeTokens()
         self.registry = registry or get_feature_hook_registry()
         self.runtime_manager = get_runtime_state_manager()
+        self.gui_version = get_gui_version()
         self.navigation_items = self._build_navigation_items()
         self.pages: Dict[str, QWidget] = {}
         self.nav_collapsed = False
+        self._nav_animation: Optional[QParallelAnimationGroup] = None
+        self.nav_animation_duration_ms = 180
 
         current_app = QApplication.instance()
         if current_app is not None:
@@ -827,7 +1076,7 @@ class MainWindow(QMainWindow):
         config = get_config_loader().get_main_config()
         app_config = config.get("app", {})
         name = app_config.get("name", "碧蓝航线科研装备统计器")
-        return f"{name} v{GUI_VERSION}"
+        return f"{name} {self.gui_version}"
 
     def _build_shell(self) -> None:
         """构建左侧导航、右侧页面栈和底部日志抽屉。"""
@@ -985,14 +1234,54 @@ class MainWindow(QMainWindow):
             window.toggle_navigation()
         """
         self.nav_collapsed = not self.nav_collapsed
-        width = self.theme_tokens.nav_collapsed_width if self.nav_collapsed else self.theme_tokens.nav_width
-        self.navigation_panel.setFixedWidth(width)
-        self.app_title.setVisible(not self.nav_collapsed)
-        self.app_subtitle.setVisible(not self.nav_collapsed)
+        target_width = self.theme_tokens.nav_collapsed_width if self.nav_collapsed else self.theme_tokens.nav_width
         self.nav_toggle_button.setText(">>" if self.nav_collapsed else "<<")
+        self._set_navigation_content_visible(True)
         for index, item in enumerate(self.navigation_items):
             list_item = self.navigation_list.item(index)
-            list_item.setText(item.icon if self.nav_collapsed else item.title)
+            list_item.setText(item.title)
+        self._animate_navigation_width(target_width)
+
+    def _animate_navigation_width(self, target_width: int) -> None:
+        """
+        使用宽度动画展开或收起左侧导航栏。
+        输入：
+            target_width: 动画结束后的导航栏宽度。
+        输出：
+            None。
+        使用示例：
+            window._animate_navigation_width(76)
+        """
+        if self._nav_animation is not None:
+            self._nav_animation.stop()
+
+        start_width = self.navigation_panel.width()
+        group = QParallelAnimationGroup(self)
+        for property_name in (b"minimumWidth", b"maximumWidth"):
+            animation = QPropertyAnimation(self.navigation_panel, property_name, group)
+            animation.setDuration(self.nav_animation_duration_ms)
+            animation.setStartValue(start_width)
+            animation.setEndValue(target_width)
+            animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+            group.addAnimation(animation)
+        group.finished.connect(self._finish_navigation_animation)
+        self._nav_animation = group
+        group.start()
+
+    def _finish_navigation_animation(self) -> None:
+        """导航栏动画结束后固定宽度并恢复展开内容。"""
+        width = self.theme_tokens.nav_collapsed_width if self.nav_collapsed else self.theme_tokens.nav_width
+        self.navigation_panel.setFixedWidth(width)
+        self._set_navigation_content_visible(not self.nav_collapsed)
+        for index, item in enumerate(self.navigation_items):
+            list_item = self.navigation_list.item(index)
+            list_item.setText("" if self.nav_collapsed else item.title)
+
+    def _set_navigation_content_visible(self, visible: bool) -> None:
+        """统一控制导航栏内部内容显隐，避免折叠后残留单字导航。"""
+        self.app_title.setVisible(visible)
+        self.app_subtitle.setVisible(visible)
+        self.navigation_list.setVisible(visible)
 
     def switch_to_page(self, key: str) -> None:
         """
@@ -1056,7 +1345,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "关于",
-            f"碧蓝航线科研装备统计器\nv{GUI_VERSION} GUI 界面开发\n港区控制台主题已就绪。",
+            f"碧蓝航线科研装备统计器\n{self.gui_version} GUI 界面开发\n港区控制台主题已就绪。",
         )
 
 

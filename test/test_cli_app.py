@@ -24,6 +24,8 @@ from typing import Callable, Sequence
 import pytest
 from openpyxl import load_workbook
 
+from core.utils.config_loader import get_config_loader
+
 
 # ============================================================
 # 📦 第一部分：导入依赖和准备路径
@@ -32,6 +34,12 @@ from openpyxl import load_workbook
 ROOT = Path(__file__).resolve().parents[1]
 MAIN_PATH = ROOT / "main.py"
 CLI_APP_PATH = ROOT / "core" / "cli" / "app.py"
+
+
+def _expected_app_version() -> str:
+    """从主配置读取 CLI 期望展示版本，避免测试写死版本号。"""
+    raw_version = str(get_config_loader().get_main_config().get("app", {}).get("version", "0.5.0"))
+    return raw_version if raw_version.startswith("v") else f"v{raw_version}"
 
 
 # ============================================================
@@ -108,7 +116,7 @@ def test_cli_help_lists_core_commands(
     run_cli: Callable[[Sequence[str]], subprocess.CompletedProcess[str]],
     command_name: str,
 ) -> None:
-    """--help 应展示 v0.4.0 只保留的三个核心子命令。"""
+    """--help 应展示当前保留的三个核心子命令。"""
     result = run_cli(["main.py", "--help"])
 
     assert result.returncode == 0
@@ -122,7 +130,7 @@ def test_status_command_runs_with_trend_phase(
     result = run_cli(["main.py", "status", "--trend-phase", "1"])
 
     assert result.returncode == 0
-    assert "v0.4.0" in result.stdout
+    assert _expected_app_version() in result.stdout
     assert "status" in result.stdout
     assert "今天的总览" in result.stdout
 
