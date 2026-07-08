@@ -23,3 +23,7 @@ Logs/
 data/images/
 *.zip
 *.exe
+
+# QA 测试目录（内部测试，不纳入版本控制）
+qa_tests/
+
