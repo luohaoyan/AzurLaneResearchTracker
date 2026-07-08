@@ -19,19 +19,30 @@
 
 ## 技术栈
 
-Python 3.12 ｜ CSV 数据存储 ｜ JSON 配置 ｜ OpenCV + Pillow 图像处理
-PaddleOCR 文字识别 ｜ PySide6 GUI ｜ ADB 模拟器控制 ｜ pytest 测试
-argparse + prettytable CLI ｜ openpyxl Excel 导出
+| 类别 | 技术 |
+|------|------|
+| 语言 | Python 3.12 |
+| 数据存储 | CSV |
+| 配置格式 | JSON |
+| 图像处理 | OpenCV + Pillow |
+| OCR | PaddleOCR |
+| GUI | PySide6 |
+| CLI | argparse + prettytable |
+| Excel 导出 | openpyxl |
+| 测试 | pytest |
+| 模拟器控制 | ADB |
 
 ## 当前版本：v0.4.0
 
 已完成基础设施层、数据层、计算层和 CLI 入口，462 项测试全部通过。
+
 下一步：v0.5.0 PySide6 GUI 界面。
 
 ## 项目架构
 
+```
 AzurLaneResearchTracker/
-├── main.py                     # 程序入口壳（仅sys.path + CLI转发）
+├── main.py                     # 程序入口壳（仅 sys.path + CLI 转发）
 ├── requirements.txt            # 依赖清单
 ├── AGENTS.md                   # Codex 开发规范
 │
@@ -49,9 +60,11 @@ AzurLaneResearchTracker/
 ├── test/                       # 225 项开发测试
 ├── qa_tests/                   # 237 项 QA 测试 + 报告
 └── Logs/                       # 运行日志
+```
 
 ## 快速开始
 
+```bash
 # 安装依赖
 pip install -r requirements.txt
 
@@ -65,3 +78,4 @@ python main.py export
 
 # 运行全部测试
 python -m pytest test/ -q
+```
