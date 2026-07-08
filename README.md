@@ -40,27 +40,21 @@
 
 ## 项目架构
 
-```
-AzurLaneResearchTracker/
-├── main.py                     # 程序入口壳（仅 sys.path + CLI 转发）
-├── requirements.txt            # 依赖清单
-├── AGENTS.md                   # Codex 开发规范
-│
-├── core/
-│   ├── utils/                  # ✅ 日志 / 路径 / 配置
-│   ├── data/                   # ✅ 装备 / 科研 / 稀有度 / 特殊装备 / 导出
-│   ├── calculation/            # ✅ 公式 / 用户数据 / 碎片 / 欧非值
-│   ├── cli/                    # ✅ CLI 主体逻辑
-│   ├── automation/             # 📋 ADB 模拟器控制
-│   └── recognition/            # 📋 OpenCV + PaddleOCR
-│
-├── ui/                         # 📋 PySide6 界面
-├── data/                       # 6 个 CSV + user_records/ + exports/
-├── config/                     # JSON 配置文件
-├── test/                       # 225 项开发测试
-├── qa_tests/                   # 237 项 QA 测试 + 报告
-└── Logs/                       # 运行日志
-```
+| 目录 | 模块 | 状态 | 说明 |
+|------|------|------|------|
+| core/utils/ | logger / path_manager / config_loader | ✅ | 日志 / 路径 / 配置加载 |
+| core/data/ | rarity / equipment / research manager | ✅ | 稀有度 / 装备 / 科研期数 |
+| core/data/ | special_equipment / equipment_updater | ✅ | 特殊装备 / 批量导入 |
+| core/data/ | export_manager | ✅ | CSV / Excel 数据导出 |
+| core/calculation/ | formula / user_data manager | ✅ | 公式配置 / 用户数据 |
+| core/calculation/ | fragment / luck calculator | ✅ | 碎片等值 / 欧非值 |
+| core/cli/ | app | ✅ | CLI 交互菜单 + 子命令 |
+| core/automation/ | — | 📋 | ADB 模拟器控制 |
+| core/recognition/ | — | 📋 | OpenCV + PaddleOCR 识别 |
+| ui/ | — | 📋 | PySide6 界面 |
+| config/ | games / simulators / automation | ✅ | 配置文件 |
+| data/ | CSV + user_records + exports | ✅ | 装备库 + 用户记录 + 导出 |
+| test/ + qa_tests/ | 462 项测试 | ✅ | 开发 + QA 测试 |
 
 ## 快速开始
 
