@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-╔══════════════════════════════════════════════════════════════════╗
-║              🎨 GUI 主题系统 (theme.py)                         ║
-║                                                                  ║
-║   【一句话解释】集中管理 PySide6 界面的颜色、字体和控件样式。    ║
-║   【类比理解】主题系统就像港区装修手册，所有窗口都按同一套审美。║
-║   【数据流说明】ThemeTokens → build_stylesheet() → QApplication。║
-╚══════════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════╗
+║                 🎨 GUI 主题系统 (theme.py)                   ║
+║                                                              ║
+║  【一句话解释】集中管理 PySide6 界面的颜色、字体和控件样式。   ║
+║  【类比理解】主题系统像港区装修手册，所有窗口都按同一套审美。 ║
+║  【数据流说明】ThemeTokens → build_stylesheet() → QApplication。║
+╚══════════════════════════════════════════════════════════════╝
 """
 from __future__ import annotations
 
@@ -33,30 +33,29 @@ from core.utils.path_manager import PathManager
 class ThemeTokens:
     """
     GUI 主题令牌。
-
     输入：
         无，使用默认字段即可。
-
     输出：
         一个不可变对象，保存颜色、字体和圆角等基础设计值。
-
     使用示例：
         tokens = ThemeTokens()
         qss = build_stylesheet(tokens)
     """
 
-    background: str = "#081827"
-    surface: str = "#10263A"
-    surface_soft: str = "#173651"
-    line: str = "#2E5A78"
+    background: str = "#07131F"
+    surface: str = "#102337"
+    surface_soft: str = "#193A56"
+    surface_glow: str = "#214E72"
+    line: str = "#2C607D"
     text: str = "#EAF7FF"
-    text_muted: str = "#9FB8C8"
+    text_muted: str = "#A5BDCB"
     sakura: str = "#FF8EC7"
     azure: str = "#58D7FF"
     gold: str = "#FFD36A"
     success: str = "#7EE0A7"
     danger: str = "#FF7A8A"
-    nav_width: int = 218
+    nav_width: int = 236
+    nav_collapsed_width: int = 76
     radius: int = 8
     font_family: str = '"Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Segoe UI"'
     utility_font_family: str = '"Consolas", "Cascadia Mono", "Microsoft YaHei UI"'
@@ -69,13 +68,10 @@ class ThemeTokens:
 def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
     """
     构建 QApplication 可直接使用的 QSS 样式表。
-
     输入：
         tokens: 可选主题令牌；不传则使用默认港区控制台主题。
-
     输出：
         str: QSS 文本。
-
     使用示例：
         app.setStyleSheet(build_stylesheet())
     """
@@ -88,7 +84,8 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
         font-size: 14px;
     }}
 
-    QWidget#central_shell {{
+    QWidget#central_shell,
+    QWidget#page_stack {{
         background: {t.background};
     }}
 
@@ -104,10 +101,47 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
     }}
 
     QLabel#app_subtitle,
-    QLabel#page_eyebrow,
     QLabel#page_summary,
-    QLabel#future_status {{
+    QLabel#card_caption,
+    QLabel#future_status,
+    QLabel#muted_text {{
         color: {t.text_muted};
+    }}
+
+    QLabel#page_title {{
+        color: {t.text};
+        font-size: 26px;
+        font-weight: 700;
+    }}
+
+    QLabel#section_title {{
+        color: {t.text};
+        font-size: 17px;
+        font-weight: 700;
+    }}
+
+    QLabel#page_marker {{
+        color: {t.gold};
+        font-family: {t.utility_font_family};
+        font-size: 12px;
+        letter-spacing: 0px;
+    }}
+
+    QLabel#stat_value {{
+        color: {t.text};
+        font-size: 22px;
+        font-weight: 700;
+    }}
+
+    QLabel#stat_label {{
+        color: {t.text_muted};
+        font-size: 12px;
+    }}
+
+    QLabel#prompt_text {{
+        color: {t.sakura};
+        font-size: 15px;
+        font-weight: 700;
     }}
 
     QListWidget#navigation_list {{
@@ -119,8 +153,8 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
 
     QListWidget#navigation_list::item {{
         min-height: 42px;
-        padding: 8px 12px;
-        margin: 3px 10px;
+        padding: 8px 10px;
+        margin: 3px 4px;
         border-radius: {t.radius}px;
     }}
 
@@ -135,26 +169,11 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
         background: rgba(88, 215, 255, 0.12);
     }}
 
-    QWidget#page_shell {{
-        background: {t.background};
-    }}
-
-    QLabel#page_title {{
-        color: {t.text};
-        font-size: 26px;
-        font-weight: 700;
-    }}
-
-    QLabel#page_marker {{
-        color: {t.gold};
-        font-family: {t.utility_font_family};
-        font-size: 12px;
-        letter-spacing: 0px;
-    }}
-
     QFrame#content_panel,
+    QFrame#stat_card,
     QFrame#future_feature_row,
-    QFrame#mascot_panel {{
+    QFrame#mascot_panel,
+    QFrame#chart_panel {{
         background: {t.surface};
         border: 1px solid {t.line};
         border-radius: {t.radius}px;
@@ -181,7 +200,69 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
 
     QPushButton:hover {{
         border-color: {t.azure};
-        background: #1A405F;
+        background: {t.surface_glow};
+    }}
+
+    QPushButton#nav_toggle_button {{
+        min-height: 32px;
+        padding: 4px 8px;
+    }}
+
+    QComboBox,
+    QLineEdit,
+    QDateEdit {{
+        background: {t.surface};
+        color: {t.text};
+        border: 1px solid {t.line};
+        border-radius: {t.radius}px;
+        padding: 7px 10px;
+    }}
+
+    QTableWidget {{
+        background: {t.surface};
+        color: {t.text};
+        border: 1px solid {t.line};
+        border-radius: {t.radius}px;
+        gridline-color: {t.line};
+        selection-background-color: {t.surface_glow};
+    }}
+
+    QHeaderView::section {{
+        background: {t.surface_soft};
+        color: {t.text};
+        border: none;
+        padding: 8px;
+    }}
+
+    QProgressBar {{
+        background: {t.surface};
+        color: {t.text};
+        border: 1px solid {t.line};
+        border-radius: {t.radius}px;
+        text-align: center;
+        min-height: 18px;
+    }}
+
+    QProgressBar::chunk {{
+        background: {t.azure};
+        border-radius: {t.radius}px;
+    }}
+
+    QWidget#log_drawer {{
+        background: {t.surface};
+        border-top: 1px solid {t.line};
+    }}
+
+    QFrame#log_drawer_header {{
+        background: {t.surface};
+    }}
+
+    QPlainTextEdit#log_text {{
+        background: #06111B;
+        color: {t.text};
+        border: none;
+        font-family: {t.utility_font_family};
+        font-size: 12px;
     }}
 
     QStatusBar {{
@@ -211,13 +292,10 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
 def install_application_fonts(app: QApplication) -> Optional[str]:
     """
     为 QApplication 注册中文字体，并设置默认字体。
-
     输入：
         app: 当前 QApplication 实例。
-
     输出：
         Optional[str]: 成功选中的字体族；没有找到时返回 None。
-
     使用示例：
         family = install_application_fonts(app)
     """

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-╔══════════════════════════════════════════════════════════════════╗
-║             🖥️ GUI 主窗口骨架 (main_window.py)                  ║
-║                                                                  ║
-║   【一句话解释】创建 v0.5.0 PySide6 桌面界面的主窗口和导航框架。║
-║   【类比理解】主窗口像港区指挥室，左侧选部门，右侧处理任务。    ║
-║   【数据流说明】导航点击 → QStackedWidget 切页 → 未来页面接入。║
-╚══════════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════╗
+║                 🖥️ GUI 主窗口骨架 (main_window.py)           ║
+║                                                              ║
+║  【一句话解释】创建 v0.5.0 PySide6 桌面界面的主窗口和页面框架。║
+║  【类比理解】主窗口像港区指挥室，左侧切换区域，右侧处理任务。 ║
+║  【数据流说明】导航点击 → QStackedWidget 切页 → 后续页面接入。║
+╚══════════════════════════════════════════════════════════════╝
 """
 from __future__ import annotations
 
@@ -20,70 +20,84 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QAction, QMovie
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QMovie, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
+    QDateEdit,
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSizePolicy,
     QStackedWidget,
     QStatusBar,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from core.data.equipment_manager import get_equipment_manager
+from core.data.research_manager import get_research_manager
+from core.state.runtime_state import TaskStateKind, get_runtime_state_manager
 from core.utils.config_loader import get_config_loader
 from core.utils.logger import get_logger
 from core.utils.path_manager import PathManager
 from ui.future_hooks import FeatureHookRegistry, FutureFeatureSpec, get_feature_hook_registry
 from ui.theme import ThemeTokens, build_stylesheet, install_application_fonts
+from ui.widgets.log_drawer import LogDrawer
 
 
 # ============================================================
-# 🏗️ 第二部分：核心类
+# 🧭 第二部分：模块常量
+# ============================================================
+
+GUI_VERSION = "0.5.0"
+
+
+# ============================================================
+# 🏗️ 第三部分：核心类
 # ============================================================
 
 @dataclass(frozen=True)
 class NavigationItem:
     """
     左侧导航项定义。
-
     输入：
         key: 页面稳定键。
         title: 导航展示文本。
+        icon: 折叠导航时展示的短标记。
         summary: 页面简介。
-
     输出：
         不可变导航对象。
-
     使用示例：
-        NavigationItem("dashboard", "港区总览", "查看今日状态")
+        NavigationItem("dashboard", "港区实况", "港", "查看状态")
     """
 
     key: str
     title: str
+    icon: str
     summary: str
 
 
 class AnimatedMascotPanel(QFrame):
     """
     二次元风格动效预留面板。
-
     输入：
         animation_path: 可选 GIF 路径；不存在时展示静态待机文案。
-
     输出：
-        QWidget，可嵌入任何页面。
-
+        QWidget，可嵌入任意页面。
     使用示例：
         panel = AnimatedMascotPanel("resources/animations/secretary_idle.gif")
     """
@@ -98,15 +112,15 @@ class AnimatedMascotPanel(QFrame):
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
 
-        self.title_label = QLabel(self.tr("秘书舰待机"))
+        self.title_label = QLabel("秘书舰待机")
         self.title_label.setObjectName("panel_title")
-        self.motion_label = QLabel(self.tr("动画槽位已就绪"))
+        self.motion_label = QLabel("✨")
         self.motion_label.setObjectName("panel_body")
         self.motion_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.motion_label.setMinimumHeight(92)
+        self.motion_label.setMinimumHeight(112)
         self.motion_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-        self.hint_label = QLabel(self.tr("后续可接入 GIF / APNG / 序列帧，用于待机、保存成功、识别完成等反馈。"))
+        self.hint_label = QLabel("后续可接入待机、识别完成、保存成功等轻量 GIF 动画。")
         self.hint_label.setObjectName("panel_body")
         self.hint_label.setWordWrap(True)
 
@@ -120,13 +134,10 @@ class AnimatedMascotPanel(QFrame):
     def load_animation(self, animation_path: str) -> bool:
         """
         加载 GIF 动画资源。
-
         输入：
             animation_path: 相对项目根目录或绝对路径。
-
         输出：
             bool: 成功加载可播放动画返回 True，否则返回 False。
-
         使用示例：
             panel.load_animation("resources/animations/secretary_idle.gif")
         """
@@ -134,12 +145,12 @@ class AnimatedMascotPanel(QFrame):
         if not path.is_absolute():
             path = PathManager.get_project_root() / path
         if not path.exists():
-            self.motion_label.setText(self.tr("待机动画未配置"))
+            self.motion_label.setText("待机动画未配置")
             return False
 
         movie = QMovie(str(path))
         if not movie.isValid():
-            self.motion_label.setText(self.tr("动画资源无法播放"))
+            self.motion_label.setText("动画资源无法播放")
             return False
 
         self._movie = movie
@@ -148,95 +159,525 @@ class AnimatedMascotPanel(QFrame):
         return True
 
 
-class PlaceholderPage(QWidget):
+class BasePage(QWidget):
     """
-    P1 阶段通用占位页。
-
+    GUI 业务页面基类。
     输入：
-        item: 导航项。
-        panels: 页面要展示的重点能力列表。
-
+        title: 页面标题。
+        summary: 页面说明。
     输出：
-        QWidget，占位展示后续页面将承载的能力。
-
+        带统一页头和内容布局的 QWidget。
     使用示例：
-        page = PlaceholderPage(item, ["筛选装备", "排序表格"])
+        page = BasePage("港区实况", "查看状态")
     """
 
-    def __init__(
-        self,
-        item: NavigationItem,
-        panels: Sequence[str],
-        parent: Optional[QWidget] = None,
-    ) -> None:
-        """创建页面头部、内容面板和动效预留区。"""
+    def __init__(self, title: str, summary: str, parent: Optional[QWidget] = None) -> None:
+        """创建统一页面外壳。"""
         super().__init__(parent)
         self.setObjectName("page_shell")
-        self.item = item
+        self.root = QVBoxLayout(self)
+        self.root.setContentsMargins(28, 24, 28, 24)
+        self.root.setSpacing(16)
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(28, 24, 28, 24)
-        root.setSpacing(18)
-
-        marker = QLabel(f"ALRT / {item.key}")
+        marker = QLabel("ALRT")
         marker.setObjectName("page_marker")
-        title = QLabel(item.title)
-        title.setObjectName("page_title")
-        summary = QLabel(item.summary)
-        summary.setObjectName("page_summary")
-        summary.setWordWrap(True)
+        title_label = QLabel(title)
+        title_label.setObjectName("page_title")
+        summary_label = QLabel(summary)
+        summary_label.setObjectName("page_summary")
+        summary_label.setWordWrap(True)
 
-        root.addWidget(marker)
-        root.addWidget(title)
-        root.addWidget(summary)
+        self.root.addWidget(marker)
+        self.root.addWidget(title_label)
+        self.root.addWidget(summary_label)
 
-        content_row = QHBoxLayout()
-        content_row.setSpacing(16)
-        root.addLayout(content_row, stretch=1)
+    @staticmethod
+    def build_card(title: str, body: str, caption: str = "") -> QFrame:
+        """
+        构建通用信息卡片。
+        输入：
+            title: 卡片标题。
+            body: 主要内容。
+            caption: 可选辅助说明。
+        输出：
+            QFrame: 可放入布局的卡片。
+        使用示例：
+            card = BasePage.build_card("装备更新", "待命中")
+        """
+        card = QFrame()
+        card.setObjectName("content_panel")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
 
-        panel_grid = QGridLayout()
-        panel_grid.setSpacing(12)
-        panel_grid.setContentsMargins(0, 0, 0, 0)
-        panel_holder = QWidget()
-        panel_holder.setLayout(panel_grid)
+        title_label = QLabel(title)
+        title_label.setObjectName("panel_title")
+        body_label = QLabel(body)
+        body_label.setObjectName("panel_body")
+        body_label.setWordWrap(True)
+        layout.addWidget(title_label)
+        layout.addWidget(body_label)
+        if caption:
+            caption_label = QLabel(caption)
+            caption_label.setObjectName("card_caption")
+            caption_label.setWordWrap(True)
+            layout.addWidget(caption_label)
+        layout.addStretch(1)
+        return card
 
-        for index, text in enumerate(panels):
-            panel_grid.addWidget(self._build_panel(index + 1, text), index // 2, index % 2)
 
-        content_row.addWidget(panel_holder, stretch=3)
-        content_row.addWidget(AnimatedMascotPanel(), stretch=1)
-        root.addStretch(1)
+class DashboardPage(BasePage):
+    """
+    港区实况页面。
+    输入：
+        runtime_manager: 运行期状态管理器。
+    输出：
+        QWidget，展示玩家资源、项目运行状态、快捷入口和提示语。
+    使用示例：
+        page = DashboardPage(get_runtime_state_manager())
+    """
 
-    def _build_panel(self, number: int, body: str) -> QFrame:
-        """构建一个能力占位面板。"""
+    quickActionRequested = Signal(str)
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        """创建港区实况页并启动轻量刷新定时器。"""
+        super().__init__("港区实况", "展示玩家资源、当前任务、快捷入口和港区提示。资源信息来自未来 OCR，仅在本次运行内显示。", parent)
+        self.runtime_manager = get_runtime_state_manager()
+        self.stat_labels: Dict[str, QLabel] = {}
+
+        content = QHBoxLayout()
+        content.setSpacing(16)
+        self.root.addLayout(content, stretch=1)
+
+        left = QVBoxLayout()
+        left.setSpacing(14)
+        right = QVBoxLayout()
+        right.setSpacing(14)
+        content.addLayout(left, stretch=3)
+        content.addLayout(right, stretch=2)
+
+        self._build_player_grid(left)
+        self._build_task_panel(left)
+        self._build_quick_actions(left)
+        self._build_prompt_panel(right)
+        right.addWidget(AnimatedMascotPanel(), stretch=1)
+        right.addWidget(BasePage.build_card("海报 / GIF 展示位", "后续可放置游戏相关海报、待机动效或识别完成反馈。"), stretch=1)
+
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.setInterval(5000)
+        self.refresh_timer.timeout.connect(self.refresh_state)
+        self.refresh_timer.start()
+        self.refresh_state()
+
+    def _build_player_grid(self, parent_layout: QVBoxLayout) -> None:
+        """构建玩家资源卡片区。"""
+        panel = QFrame()
+        panel.setObjectName("content_panel")
+        grid = QGridLayout(panel)
+        grid.setContentsMargins(16, 14, 16, 14)
+        grid.setSpacing(12)
+
+        for index, (key, label) in enumerate([
+            ("player_name", "玩家名称"),
+            ("oil", "石油"),
+            ("coins", "物资"),
+            ("gems", "钻石"),
+        ]):
+            card = QFrame()
+            card.setObjectName("stat_card")
+            layout = QVBoxLayout(card)
+            layout.setContentsMargins(14, 12, 14, 12)
+            value_label = QLabel("等待识别")
+            value_label.setObjectName("stat_value")
+            caption_label = QLabel(label)
+            caption_label.setObjectName("stat_label")
+            layout.addWidget(value_label)
+            layout.addWidget(caption_label)
+            self.stat_labels[key] = value_label
+            grid.addWidget(card, index // 2, index % 2)
+
+        parent_layout.addWidget(panel)
+
+    def _build_task_panel(self, parent_layout: QVBoxLayout) -> None:
+        """构建项目运行状态区。"""
         panel = QFrame()
         panel.setObjectName("content_panel")
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
 
-        title = QLabel(f"{number:02d}")
-        title.setObjectName("page_marker")
-        label = QLabel(body)
-        label.setObjectName("panel_body")
-        label.setWordWrap(True)
+        self.task_title = QLabel("当前状态：空闲")
+        self.task_title.setObjectName("panel_title")
+        self.task_message = QLabel("港区系统待命中，请选择操作。")
+        self.task_message.setObjectName("panel_body")
+        self.task_message.setWordWrap(True)
+        self.task_progress = QProgressBar()
+        self.task_progress.setRange(0, 100)
+        self.task_progress.setValue(0)
 
+        layout.addWidget(self.task_title)
+        layout.addWidget(self.task_message)
+        layout.addWidget(self.task_progress)
+        parent_layout.addWidget(panel)
+
+    def _build_quick_actions(self, parent_layout: QVBoxLayout) -> None:
+        """构建快捷入口区。"""
+        panel = QFrame()
+        panel.setObjectName("content_panel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+
+        title = QLabel("快捷切换")
+        title.setObjectName("panel_title")
+        button_row = QHBoxLayout()
+        button_row.setSpacing(8)
+        for key, label in [
+            ("user_data", "用户数据"),
+            ("research_progress", "科研进度"),
+            ("trend", "历史趋势"),
+            ("automation_lab", "自动化实验室"),
+            ("settings", "设置"),
+        ]:
+            button = QPushButton(label)
+            button.clicked.connect(lambda _checked=False, page_key=key: self.quickActionRequested.emit(page_key))
+            button_row.addWidget(button)
         layout.addWidget(title)
-        layout.addWidget(label)
-        layout.addStretch(1)
-        return panel
+        layout.addLayout(button_row)
+        parent_layout.addWidget(panel)
+
+    def _build_prompt_panel(self, parent_layout: QVBoxLayout) -> None:
+        """构建港区提示语区。"""
+        panel = QFrame()
+        panel.setObjectName("content_panel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
+
+        title = QLabel("今日提示")
+        title.setObjectName("panel_title")
+        prompt = QLabel("指挥官，装备清点还没开始。等 OCR 接入后，我会定时把港区资源更新到这里。")
+        prompt.setObjectName("prompt_text")
+        prompt.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(prompt)
+        parent_layout.addWidget(panel)
+
+    def refresh_state(self) -> None:
+        """
+        刷新运行期状态展示。
+        输入：
+            无。
+        输出：
+            None。
+        使用示例：
+            page.refresh_state()
+        """
+        state = self.runtime_manager.get_full_state()
+        player = state["player"]
+        task = state["task"]
+        self.stat_labels["player_name"].setText(str(player.get("player_name") or "等待识别"))
+        for key in ("oil", "coins", "gems"):
+            value = player.get(key)
+            self.stat_labels[key].setText("等待识别" if value is None else f"{int(value):,}")
+        self.task_title.setText(f"当前状态：{task.get('kind_name', '未知')}")
+        self.task_message.setText(str(task.get("user_message", "")))
+        self.task_progress.setValue(int(task.get("progress", 0)))
 
 
-class FutureDockPage(QWidget):
+class UserDataPage(BasePage):
     """
-    未来功能泊位页。
+    用户数据页面。
+    输入：
+        无。
+    输出：
+        QWidget，展示装备与碎片数据的表格筛选骨架。
+    使用示例：
+        page = UserDataPage()
+    """
 
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        """创建用户装备数据表格与筛选栏。"""
+        super().__init__("用户数据", "面向玩家展示装备与碎片记录。内部装备编号不会显示，也不会修改基础装备表。", parent)
+        self.icon_size = 36
+        self._build_filters()
+        self._build_table()
+
+    def _build_filters(self) -> None:
+        """构建装备筛选控件。"""
+        panel = QFrame()
+        panel.setObjectName("content_panel")
+        row = QHBoxLayout(panel)
+        row.setContentsMargins(16, 14, 16, 14)
+        row.setSpacing(10)
+
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("按装备名称搜索")
+        self.rarity_combo = QComboBox()
+        self.rarity_combo.addItems(["全部稀有度", "普通", "稀有", "精锐", "超稀有", "海上传奇"])
+        self.type_combo = QComboBox()
+        self.type_combo.addItems(["全部类型", "主炮", "鱼雷", "舰载机", "防空炮", "设备", "其他"])
+        self.phase_combo = QComboBox()
+        self.phase_combo.addItems(["全部科研期"] + self._phase_labels())
+
+        row.addWidget(self.search_input, stretch=2)
+        row.addWidget(self.rarity_combo)
+        row.addWidget(self.type_combo)
+        row.addWidget(self.phase_combo)
+        self.root.addWidget(panel)
+
+    def _build_table(self) -> None:
+        """构建用户可见装备表格。"""
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["装备名称", "稀有度", "类型", "科研期", "拥有数量", "碎片数量"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.verticalHeader().setDefaultSectionSize(52)
+        self.root.addWidget(self.table, stretch=1)
+        self._load_preview_rows()
+
+    def _load_preview_rows(self) -> None:
+        """加载基础装备表作为只读预览，不显示 equipment_id。"""
+        equipments = get_equipment_manager().get_equipment_with_image()[:20]
+        self.table.setRowCount(len(equipments))
+        for row, equipment in enumerate(equipments):
+            phase = self._phase_from_public_data(str(equipment.get("equipment_id", "")))
+            self.table.setCellWidget(row, 0, self._build_name_icon_cell(equipment))
+            values = [equipment.get("rarity_name", "未知"), equipment.get("type", ""), phase, "待识别", "待识别"]
+            for column, value in enumerate(values):
+                self.table.setItem(row, column + 1, QTableWidgetItem(str(value)))
+
+    def _build_name_icon_cell(self, equipment: Dict[str, object]) -> QWidget:
+        """
+        构建装备名称 + 小图标单元格。
+        输入：
+            equipment: 装备数据，包含 name 与 image_path。
+        输出：
+            QWidget: 固定尺寸图标不会撑大表格行高。
+        使用示例：
+            self.table.setCellWidget(row, 0, self._build_name_icon_cell(equipment))
+        """
+        cell = QWidget()
+        cell.setObjectName("equipment_name_icon_cell")
+        layout = QHBoxLayout(cell)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(8)
+
+        name_label = QLabel(str(equipment.get("name", "")))
+        name_label.setObjectName("equipment_name_label")
+        name_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        name_label.setWordWrap(False)
+
+        icon_label = QLabel()
+        icon_label.setObjectName("equipment_icon_label")
+        icon_label.setFixedSize(self.icon_size, self.icon_size)
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_label.setPixmap(self._load_equipment_icon(str(equipment.get("image_path") or "")))
+
+        layout.addWidget(name_label, stretch=1)
+        layout.addWidget(icon_label, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        return cell
+
+    def _load_equipment_icon(self, image_path: str) -> QPixmap:
+        """
+        加载并缩放装备图标；缺失时返回透明空白图标。
+        输入：
+            image_path: equipment_images.csv 中记录的相对路径或绝对路径。
+        输出：
+            QPixmap: 固定最大尺寸的小图标。
+        使用示例：
+            pixmap = self._load_equipment_icon("resources/equipment/S1-001.png")
+        """
+        blank = QPixmap(self.icon_size, self.icon_size)
+        blank.fill(Qt.GlobalColor.transparent)
+        resolved_path = self._resolve_equipment_image_path(image_path)
+        if resolved_path is None:
+            return blank
+
+        pixmap = QPixmap(str(resolved_path))
+        if pixmap.isNull():
+            return blank
+        return pixmap.scaled(
+            self.icon_size,
+            self.icon_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+    @staticmethod
+    def _resolve_equipment_image_path(image_path: str) -> Optional[Path]:
+        """
+        解析装备图片路径。
+        输入：
+            image_path: CSV 中的图片路径。
+        输出：
+            Optional[Path]: 存在则返回绝对路径，否则返回 None。
+        使用示例：
+            path = UserDataPage._resolve_equipment_image_path("img/a.png")
+        """
+        clean_path = image_path.strip()
+        if not clean_path:
+            return None
+        path = Path(clean_path)
+        candidates = [path] if path.is_absolute() else [
+            PathManager.get_project_root() / path,
+            PathManager.get_data_dir() / path,
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return None
+
+    @staticmethod
+    def _phase_from_public_data(equipment_id: str) -> str:
+        """从内部 ID 推断科研期，只展示给用户可理解的期数名称。"""
+        if equipment_id.startswith("S") and "-" in equipment_id:
+            return f"科研 {equipment_id.split('-', 1)[0][1:]} 期"
+        return "通用"
+
+    @staticmethod
+    def _phase_labels() -> List[str]:
+        """读取科研期列表并转换成用户可见标签。"""
+        phases = get_research_manager().get_all()
+        return [f"科研 {phase.get('phase_number')} 期" for phase in phases]
+
+
+class ResearchProgressPage(BasePage):
+    """
+    科研进度页面。
+    输入：
+        无。
+    输出：
+        QWidget，展示科研期选择、当前进度占位和欧非值图文评价。
+    使用示例：
+        page = ResearchProgressPage()
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        """创建科研进度页面。"""
+        super().__init__("科研进度", "默认展示最新科研期，也可以切换历史期数；非最新期会明确标注。", parent)
+        phases = get_research_manager().get_all()
+        latest_phase = max((int(phase.get("phase_number", 0)) for phase in phases), default=1)
+
+        top = QHBoxLayout()
+        self.phase_combo = QComboBox()
+        for phase in phases:
+            phase_number = int(phase.get("phase_number", 0))
+            suffix = "（最新）" if phase_number == latest_phase else "（历史期）"
+            self.phase_combo.addItem(f"科研 {phase_number} 期 {suffix}", phase_number)
+        if self.phase_combo.count() == 0:
+            self.phase_combo.addItem("科研数据待加载", 0)
+        top.addWidget(QLabel("科研期数"))
+        top.addWidget(self.phase_combo)
+        top.addStretch(1)
+        self.root.addLayout(top)
+
+        grid = QGridLayout()
+        grid.setSpacing(12)
+        self.root.addLayout(grid, stretch=1)
+        grid.addWidget(BasePage.build_card("装备数量进度", "后续接入 OCR 后展示每件装备拥有数量、碎片数量和合成进度。"), 0, 0)
+        grid.addWidget(BasePage.build_card("欧非值评价", "当前暂无识别数据。未来会用图片和文字展示极欧、较欧、正常、较非、极非。"), 0, 1)
+        grid.addWidget(BasePage.build_card("非最新期标注", "当选择历史科研期时，页面会提示这不是最新科研进度，避免误读。"), 1, 0)
+        grid.addWidget(AnimatedMascotPanel(), 1, 1)
+
+
+class TrendPage(BasePage):
+    """
+    历史趋势页面。
+    输入：
+        无。
+    输出：
+        QWidget，预留多指标折线图展示区域。
+    使用示例：
+        page = TrendPage()
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        """创建历史趋势页面。"""
+        super().__init__("历史趋势", "选择时间区间和指标后，以折线图展示欧非值、装备数量和碎片总量变化。", parent)
+        controls = QHBoxLayout()
+        self.start_date = QDateEdit()
+        self.end_date = QDateEdit()
+        self.metric_combo = QComboBox()
+        self.metric_combo.addItems(["欧非值", "装备数量", "碎片总量", "等值分"])
+        self.phase_combo = QComboBox()
+        self.phase_combo.addItems(["全部科研期"] + UserDataPage._phase_labels())
+        controls.addWidget(QLabel("开始"))
+        controls.addWidget(self.start_date)
+        controls.addWidget(QLabel("结束"))
+        controls.addWidget(self.end_date)
+        controls.addWidget(QLabel("科研期"))
+        controls.addWidget(self.phase_combo)
+        controls.addWidget(QLabel("指标"))
+        controls.addWidget(self.metric_combo)
+        controls.addStretch(1)
+        self.root.addLayout(controls)
+
+        chart = QFrame()
+        chart.setObjectName("chart_panel")
+        chart_layout = QVBoxLayout(chart)
+        chart_layout.setContentsMargins(18, 18, 18, 18)
+        title = QLabel("折线图展示区")
+        title.setObjectName("section_title")
+        body = QLabel("当前阶段已预留欧非值、装备数量、碎片总量和等值分的选择控件；装备数量趋势尚未接入真实历史数据绘制。QtCharts 接入后，可在同一张图里叠加多条趋势线。")
+        body.setObjectName("panel_body")
+        body.setWordWrap(True)
+        chart_layout.addWidget(title)
+        chart_layout.addWidget(body)
+        chart_layout.addWidget(BasePage.build_card("装备数量趋势", "还没正式实现。后续会读取用户历史记录，按日期统计装备数量变化并绘制折线。"))
+        chart_layout.addStretch(1)
+        self.root.addWidget(chart, stretch=1)
+
+
+class AutomationLabPage(BasePage):
+    """
+    自动化实验室页面。
     输入：
         registry: 未来功能注册表。
-
     输出：
-        QWidget，展示自动化、OCR、模拟出货和欧非预测等预留接口。
+        QWidget，展示模拟器连接、截图、OCR 和基础测试入口。
+    使用示例：
+        page = AutomationLabPage(registry)
+    """
 
+    featureRequested = Signal(str)
+
+    def __init__(self, registry: FeatureHookRegistry, parent: Optional[QWidget] = None) -> None:
+        """创建自动化实验室页面。"""
+        super().__init__("自动化实验室", "检查模拟器连接、截图采集、OCR 识别和关键环境，帮助判断程序是否能正常运行。", parent)
+        self.registry = registry
+        grid = QGridLayout()
+        grid.setSpacing(12)
+        self.root.addLayout(grid, stretch=1)
+        for index, (title, body) in enumerate([
+            ("模拟器连接", "后续用于检测 ADB、设备在线状态和游戏窗口。"),
+            ("登录截图", "后续用于采集当前画面，确认截图链路可用。"),
+            ("OCR 识别测试", "后续用于识别玩家资源、装备数量和碎片数量。"),
+            ("基础环境测试", "后续用于检查依赖、配置和导出目录。"),
+        ]):
+            grid.addWidget(BasePage.build_card(title, body), index // 2, index % 2)
+
+        feature_panel = QFrame()
+        feature_panel.setObjectName("content_panel")
+        feature_layout = QVBoxLayout(feature_panel)
+        feature_layout.setContentsMargins(16, 14, 16, 14)
+        feature_layout.addWidget(QLabel("预留实验入口"))
+        for feature in registry.get_all():
+            if feature.key in {"automation_capture", "ocr_recognition"}:
+                button = QPushButton(feature.title)
+                button.clicked.connect(lambda _checked=False, key=feature.key: self.featureRequested.emit(key))
+                feature_layout.addWidget(button)
+        self.root.addWidget(feature_panel)
+
+
+class FutureDockPage(BasePage):
+    """
+    等待开发页面。
+    输入：
+        registry: 未来功能注册表。
+    输出：
+        QWidget，展示用户可理解的未来开发方向，不暴露内部字段。
     使用示例：
         page = FutureDockPage(get_feature_hook_registry())
     """
@@ -244,33 +685,15 @@ class FutureDockPage(QWidget):
     featureRequested = Signal(str)
 
     def __init__(self, registry: FeatureHookRegistry, parent: Optional[QWidget] = None) -> None:
-        """创建未来功能列表，并把按钮点击转换为 featureRequested 信号。"""
-        super().__init__(parent)
-        self.setObjectName("page_shell")
+        """创建等待开发页面。"""
+        super().__init__("等待开发", "这里展示后续可能加入的功能方向，当前只作为入口预留。", parent)
         self.registry = registry
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(28, 24, 28, 24)
-        root.setSpacing(16)
-
-        marker = QLabel("ALRT / future-dock")
-        marker.setObjectName("page_marker")
-        title = QLabel(self.tr("自动化实验室"))
-        title.setObjectName("page_title")
-        summary = QLabel(self.tr("这里预留 ADB、OCR、科研出货模拟和欧非预测等功能入口。"))
-        summary.setObjectName("page_summary")
-        summary.setWordWrap(True)
-
-        root.addWidget(marker)
-        root.addWidget(title)
-        root.addWidget(summary)
-
         for feature in registry.get_all():
-            root.addWidget(self._build_feature_row(feature))
-        root.addStretch(1)
+            self.root.addWidget(self._build_feature_row(feature))
+        self.root.addStretch(1)
 
     def _build_feature_row(self, feature: FutureFeatureSpec) -> QFrame:
-        """构建一个未来功能行。"""
+        """构建一个用户可见的未来功能行。"""
         row = QFrame()
         row.setObjectName("future_feature_row")
         layout = QHBoxLayout(row)
@@ -283,14 +706,13 @@ class FutureDockPage(QWidget):
         summary = QLabel(feature.summary)
         summary.setObjectName("panel_body")
         summary.setWordWrap(True)
-        status = QLabel(f"{feature.status} · {feature.entry_point}")
+        status = QLabel("已预留入口")
         status.setObjectName("future_status")
         text_box.addWidget(title)
         text_box.addWidget(summary)
         text_box.addWidget(status)
 
-        button = QPushButton(self.tr("预留接口"))
-        button.setProperty("feature_key", feature.key)
+        button = QPushButton("查看入口")
         button.clicked.connect(lambda _checked=False, key=feature.key: self.featureRequested.emit(key))
 
         layout.addLayout(text_box, stretch=1)
@@ -298,17 +720,71 @@ class FutureDockPage(QWidget):
         return row
 
 
+class MiniGamePage(BasePage):
+    """
+    小游戏页面。
+    输入：
+        无。
+    输出：
+        QWidget，暂时展示占位符，后续接入等待小游戏。
+    使用示例：
+        page = MiniGamePage()
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        """创建小游戏占位页面。"""
+        super().__init__("小游戏", "长时间装备更新或截图拼接时可打开这里，当前阶段先预留入口。", parent)
+        self.root.addWidget(BasePage.build_card("开发中", "后续会接入轻量小游戏，不影响识别与统计任务运行。"), stretch=1)
+
+
+class SettingsPage(BasePage):
+    """
+    设置页面。
+    输入：
+        无。
+    输出：
+        QWidget，预留普通用户设置入口。
+    使用示例：
+        page = SettingsPage()
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        """创建设置页面。"""
+        super().__init__("设置", "管理主题、资源刷新、导出和后续自动化相关设置。", parent)
+        grid = QGridLayout()
+        grid.setSpacing(12)
+        self.root.addLayout(grid, stretch=1)
+        grid.addWidget(BasePage.build_card("界面主题", "后续支持港区深色、明亮主题和节日样式。"), 0, 0)
+        grid.addWidget(BasePage.build_card("刷新频率", "玩家资源未来由 OCR 运行期更新，默认约 5 分钟一次。"), 0, 1)
+        grid.addWidget(BasePage.build_card("导出设置", "后续可选择 CSV、Excel 和图片报告导出偏好。"), 1, 0)
+        grid.addWidget(BasePage.build_card("打包启动", "未来发布为双击即可打开的 exe/快捷方式，并包含运行依赖。"), 1, 1)
+
+
+class AboutPage(BasePage):
+    """
+    关于页面。
+    输入：
+        无。
+    输出：
+        QWidget，展示项目版本和说明。
+    使用示例：
+        page = AboutPage()
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        """创建关于页面。"""
+        super().__init__("关于", "碧蓝航线科研装备统计器用于统计科研装备、碎片进度与欧非值。", parent)
+        self.root.addWidget(BasePage.build_card("当前阶段", "v0.5.0 GUI 界面开发：页面骨架、运行状态、日志抽屉和未来功能接口。"), stretch=1)
+
+
 class MainWindow(QMainWindow):
     """
     v0.5.0 GUI 主窗口。
-
     输入：
         theme_tokens: 可选主题令牌。
         registry: 可选未来功能注册表。
-
     输出：
         QMainWindow，可由 QApplication 展示。
-
     使用示例：
         window = MainWindow()
         window.show()
@@ -320,13 +796,15 @@ class MainWindow(QMainWindow):
         registry: Optional[FeatureHookRegistry] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
-        """初始化主窗口、导航栏、页面栈、菜单和状态栏。"""
+        """初始化主窗口、导航栏、页面栈、日志抽屉、菜单和状态栏。"""
         super().__init__(parent)
         self.logger = get_logger()
         self.theme_tokens = theme_tokens or ThemeTokens()
         self.registry = registry or get_feature_hook_registry()
+        self.runtime_manager = get_runtime_state_manager()
         self.navigation_items = self._build_navigation_items()
         self.pages: Dict[str, QWidget] = {}
+        self.nav_collapsed = False
 
         current_app = QApplication.instance()
         if current_app is not None:
@@ -334,13 +812,14 @@ class MainWindow(QMainWindow):
 
         self.setObjectName("main_window")
         self.setWindowTitle(self._build_window_title())
-        self.resize(1280, 800)
-        self.setMinimumSize(1040, 680)
+        self.resize(1280, 820)
+        self.setMinimumSize(1040, 700)
 
         self._build_shell()
         self._build_menu_bar()
         self._build_status_bar()
         self.setStyleSheet(build_stylesheet(self.theme_tokens))
+        self.runtime_manager.set_task_state(TaskStateKind.IDLE, 0)
         self.logger.info("GUI 主窗口骨架初始化完成")
 
     def _build_window_title(self) -> str:
@@ -348,18 +827,20 @@ class MainWindow(QMainWindow):
         config = get_config_loader().get_main_config()
         app_config = config.get("app", {})
         name = app_config.get("name", "碧蓝航线科研装备统计器")
-        version = app_config.get("version", "0.5.0")
-        return f"{name} v{version}"
+        return f"{name} v{GUI_VERSION}"
 
     def _build_shell(self) -> None:
-        """构建左侧导航和右侧页面栈。"""
+        """构建左侧导航、右侧页面栈和底部日志抽屉。"""
         central = QWidget()
         central.setObjectName("central_shell")
-        root = QHBoxLayout(central)
+        root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        nav_panel = self._build_navigation_panel()
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        self.navigation_panel = self._build_navigation_panel()
         self.page_stack = QStackedWidget()
         self.page_stack.setObjectName("page_stack")
 
@@ -368,8 +849,14 @@ class MainWindow(QMainWindow):
             self.pages[item.key] = page
             self.page_stack.addWidget(page)
 
-        root.addWidget(nav_panel)
-        root.addWidget(self.page_stack, stretch=1)
+        body.addWidget(self.navigation_panel)
+        body.addWidget(self.page_stack, stretch=1)
+        root.addLayout(body, stretch=1)
+
+        self.log_drawer = LogDrawer()
+        self.log_drawer.install_logging_handler()
+        root.addWidget(self.log_drawer)
+
         self.setCentralWidget(central)
         self.navigation_list.setCurrentRow(0)
 
@@ -383,10 +870,14 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(14, 18, 14, 18)
         layout.setSpacing(12)
 
-        title = QLabel(self.tr("港区研究室"))
-        title.setObjectName("app_title")
-        subtitle = QLabel(self.tr("科研装备统计器"))
-        subtitle.setObjectName("app_subtitle")
+        self.nav_toggle_button = QPushButton("<<")
+        self.nav_toggle_button.setObjectName("nav_toggle_button")
+        self.nav_toggle_button.clicked.connect(self.toggle_navigation)
+
+        self.app_title = QLabel("港区控制台")
+        self.app_title.setObjectName("app_title")
+        self.app_subtitle = QLabel("科研装备统计器")
+        self.app_subtitle.setObjectName("app_subtitle")
 
         self.navigation_list = QListWidget()
         self.navigation_list.setObjectName("navigation_list")
@@ -399,151 +890,155 @@ class MainWindow(QMainWindow):
             list_item.setToolTip(item.summary)
             self.navigation_list.addItem(list_item)
 
-        layout.addWidget(title)
-        layout.addWidget(subtitle)
+        layout.addWidget(self.nav_toggle_button)
+        layout.addWidget(self.app_title)
+        layout.addWidget(self.app_subtitle)
         layout.addSpacing(8)
         layout.addWidget(self.navigation_list, stretch=1)
         return panel
 
     def _build_page(self, item: NavigationItem) -> QWidget:
         """按导航项创建页面。"""
+        if item.key == "dashboard":
+            page = DashboardPage()
+            page.quickActionRequested.connect(self.switch_to_page)
+            return page
+        if item.key == "user_data":
+            return UserDataPage()
+        if item.key == "research_progress":
+            return ResearchProgressPage()
+        if item.key == "trend":
+            return TrendPage()
         if item.key == "automation_lab":
+            page = AutomationLabPage(self.registry)
+            page.featureRequested.connect(self.on_future_feature_requested)
+            return page
+        if item.key == "future":
             page = FutureDockPage(self.registry)
             page.featureRequested.connect(self.on_future_feature_requested)
             return page
-
-        panels = self._page_panels().get(item.key, [item.summary])
-        return PlaceholderPage(item, panels)
+        if item.key == "mini_game":
+            return MiniGamePage()
+        if item.key == "settings":
+            return SettingsPage()
+        if item.key == "about":
+            return AboutPage()
+        return BasePage(item.title, item.summary)
 
     def _build_menu_bar(self) -> None:
         """创建菜单栏和快捷键。"""
-        file_menu = self.menuBar().addMenu(self.tr("文件"))
-        export_action = QAction(self.tr("导出数据"), self)
+        file_menu = self.menuBar().addMenu("文件")
+        export_action = QAction("导出数据", self)
         export_action.setShortcut("Ctrl+E")
         export_action.triggered.connect(self.on_export_action_triggered)
-        quit_action = QAction(self.tr("退出"), self)
+        quit_action = QAction("退出", self)
         quit_action.setShortcut("Ctrl+Q")
         quit_action.triggered.connect(self.close)
         file_menu.addAction(export_action)
         file_menu.addSeparator()
         file_menu.addAction(quit_action)
 
-        help_menu: QMenu = self.menuBar().addMenu(self.tr("帮助"))
-        about_action = QAction(self.tr("关于"), self)
-        about_action.triggered.connect(self.on_about_action_triggered)
+        view_menu = self.menuBar().addMenu("视图")
+        toggle_nav_action = QAction("折叠/展开导航", self)
+        toggle_nav_action.setShortcut("Ctrl+B")
+        toggle_nav_action.triggered.connect(self.toggle_navigation)
+        toggle_log_action = QAction("打开运行日志", self)
+        toggle_log_action.setShortcut("Ctrl+L")
+        toggle_log_action.triggered.connect(self.log_drawer.toggle)
+        view_menu.addAction(toggle_nav_action)
+        view_menu.addAction(toggle_log_action)
+
+        help_menu: QMenu = self.menuBar().addMenu("帮助")
+        about_action = QAction("关于", self)
+        about_action.triggered.connect(lambda: self.switch_to_page("about"))
         help_menu.addAction(about_action)
 
     def _build_status_bar(self) -> None:
         """创建状态栏。"""
         status = QStatusBar()
-        status.showMessage(self.tr("港区系统待命 · P1 GUI 骨架已加载"))
+        status.showMessage("港区系统待命，P1 GUI 页面骨架已加载")
         self.setStatusBar(status)
 
     @staticmethod
     def _build_navigation_items() -> List[NavigationItem]:
         """构建固定导航顺序。"""
         return [
-            NavigationItem("dashboard", "港区总览", "查看装备库、科研进度和今日录入的整体状态。"),
-            NavigationItem("equipment_library", "装备库", "浏览装备、稀有度、类型和图片映射。"),
-            NavigationItem("research_manager", "科研管理", "按 PR 期数查看关联装备，为后续 PR7+ 扩展留位。"),
-            NavigationItem("data_entry", "数据录入", "手动记录装备数量和碎片数量，后续可接入 OCR 自动填充。"),
-            NavigationItem("fragment_progress", "碎片进度", "查看等值分、进度条和按期汇总。"),
-            NavigationItem("luck_display", "欧非值", "展示彩虹/金色分和欧非等级。"),
-            NavigationItem("trend_display", "历史趋势", "按日期查看欧非值变化。"),
-            NavigationItem("automation_lab", "自动化实验室", "预留 ADB、OCR、模拟出货与预测接口。"),
-            NavigationItem("settings", "设置", "管理主题、公式、备份和关于信息。"),
+            NavigationItem("dashboard", "港区实况", "港", "查看玩家资源、运行状态和快捷入口。"),
+            NavigationItem("user_data", "用户数据", "数", "查看玩家装备与碎片记录。"),
+            NavigationItem("research_progress", "科研进度", "研", "按科研期查看装备进度和欧非值。"),
+            NavigationItem("trend", "历史趋势", "趋", "查看欧非值、装备数和碎片数变化。"),
+            NavigationItem("automation_lab", "自动化实验室", "自", "检测模拟器、截图、OCR 与基础环境。"),
+            NavigationItem("future", "等待开发", "待", "展示后续可能加入的功能。"),
+            NavigationItem("mini_game", "小游戏", "游", "预留等待时可用的小游戏入口。"),
+            NavigationItem("settings", "设置", "设", "管理主题、刷新和导出设置。"),
+            NavigationItem("about", "关于", "关", "查看项目说明和当前阶段。"),
         ]
 
-    @staticmethod
-    def _page_panels() -> Dict[str, List[str]]:
-        """提供 P1 占位页能力说明。"""
-        return {
-            "dashboard": [
-                "今日状态摘要：装备总数、科研期数、今日录入数量。",
-                "港区提示语：后续按数据状态切换轻量二次元反馈文案。",
-                "动效槽位：加载秘书舰待机 GIF 或保存成功动画。",
-                "快捷入口：跳转到数据录入、欧非值和导出功能。",
-            ],
-            "equipment_library": [
-                "表格模型预留：ID、名称、稀有度、类型、图片路径。",
-                "筛选接口预留：稀有度、类型、科研期数和关键词。",
-                "图片预览预留：未来展示装备立绘或装备图标。",
-                "颜色映射预留：按稀有度显示金色、彩色等视觉标记。",
-            ],
-            "research_manager": [
-                "期数列表预留：PR1 到 PR6，后续支持 PR7+。",
-                "装备关联预留：点击期数后显示该期装备。",
-                "统计预留：每期彩虹/金色/紫色装备数量。",
-                "扩展预留：未来新增科研期可从这里维护。",
-            ],
-            "data_entry": [
-                "表单预留：日期、装备、拥有数量、碎片数量。",
-                "保存反馈预留：保存成功时触发轻量动效和状态栏提示。",
-                "OCR 接入预留：自动识别结果可填入同一套表单。",
-                "批量录入预留：CSV 或识别结果批量提交。",
-            ],
-            "fragment_progress": [
-                "等值分表格预留：装备数、碎片数、等值分。",
-                "进度条预留：按装备合成目标显示收集进度。",
-                "按期筛选预留：全部 / PR1 / PR2 / ...。",
-                "公式追踪预留：显示等值公式来源。",
-            ],
-            "luck_display": [
-                "综合卡片预留：整体欧非值和等级。",
-                "分期卡片预留：每期彩虹分、金色分、欧非值。",
-                "图表预留：柱状图和折线图将使用 QtCharts。",
-                "预测接口预留：接入未来欧非走势预测结果。",
-            ],
-            "trend_display": [
-                "日期范围预留：按历史记录筛选趋势。",
-                "折线图预留：展示单期或全期欧非值变化。",
-                "悬浮提示预留：日期、欧非值、等级和分数组成。",
-                "导出预留：将趋势数据导出为 CSV/Excel。",
-            ],
-            "settings": [
-                "主题设置预留：港区深色、亮色、节日主题。",
-                "公式设置预留：碎片等值和欧非阈值可编辑。",
-                "动画资源预留：配置秘书舰待机 GIF 和反馈动效。",
-                "自动化设置预留：模拟器、ADB 路径和识别参数。",
-            ],
-        }
+    def toggle_navigation(self) -> None:
+        """
+        折叠或展开左侧导航栏。
+        输入：
+            无。
+        输出：
+            None。
+        使用示例：
+            window.toggle_navigation()
+        """
+        self.nav_collapsed = not self.nav_collapsed
+        width = self.theme_tokens.nav_collapsed_width if self.nav_collapsed else self.theme_tokens.nav_width
+        self.navigation_panel.setFixedWidth(width)
+        self.app_title.setVisible(not self.nav_collapsed)
+        self.app_subtitle.setVisible(not self.nav_collapsed)
+        self.nav_toggle_button.setText(">>" if self.nav_collapsed else "<<")
+        for index, item in enumerate(self.navigation_items):
+            list_item = self.navigation_list.item(index)
+            list_item.setText(item.icon if self.nav_collapsed else item.title)
+
+    def switch_to_page(self, key: str) -> None:
+        """
+        按页面 key 切换导航。
+        输入：
+            key: NavigationItem.key。
+        输出：
+            None。
+        使用示例：
+            window.switch_to_page("trend")
+        """
+        for index, item in enumerate(self.navigation_items):
+            if item.key == key:
+                self.navigation_list.setCurrentRow(index)
+                return
+        self.statusBar().showMessage("未找到对应页面")
 
     def on_navigation_changed(self, row: int) -> None:
         """
         响应导航切换。
-
         输入：
             row: QListWidget 当前行。
-
         输出：
             None。
-
         使用示例：
             navigation_list.setCurrentRow(1)
         """
         if row < 0:
             return
         self.page_stack.setCurrentIndex(row)
-        item = self.navigation_list.item(row)
-        if item:
-            self.statusBar().showMessage(f"已切换到 {item.text()}")
+        item = self.navigation_items[row]
+        self.statusBar().showMessage(f"已切换到 {item.title}")
 
     def on_future_feature_requested(self, key: str) -> None:
         """
         响应未来功能入口点击。
-
         输入：
             key: FutureFeatureSpec.key。
-
         输出：
             None。
-
         使用示例：
             page.featureRequested.emit("luck_prediction")
         """
         feature = self.registry.get(key)
         if feature is None:
-            self.statusBar().showMessage(self.tr("未找到功能入口"))
+            self.statusBar().showMessage("未找到功能入口")
             return
         emitted = self.registry.emit(key)
         if emitted:
@@ -553,31 +1048,29 @@ class MainWindow(QMainWindow):
 
     def on_export_action_triggered(self) -> None:
         """响应导出菜单动作，P1 阶段先保留入口。"""
-        self.statusBar().showMessage(self.tr("导出入口已预留，后续接入 ExportManager 对话框"))
+        self.runtime_manager.set_task_state(TaskStateKind.EXPORTING, 0, "导出入口已预留，后续接入数据报告。")
+        self.statusBar().showMessage("导出入口已预留，后续接入数据报告")
 
     def on_about_action_triggered(self) -> None:
         """显示关于窗口。"""
         QMessageBox.about(
             self,
-            self.tr("关于"),
-            self.tr("碧蓝航线科研装备统计器\nv0.5.0 GUI 骨架\n港区控制台主题已就绪。"),
+            "关于",
+            f"碧蓝航线科研装备统计器\nv{GUI_VERSION} GUI 界面开发\n港区控制台主题已就绪。",
         )
 
 
 # ============================================================
-# 🌐 第三部分：全局运行函数
+# 🌐 第四部分：全局运行函数
 # ============================================================
 
 def run_gui(argv: Optional[Sequence[str]] = None) -> int:
     """
     启动 PySide6 GUI。
-
     输入：
         argv: 可选命令行参数；不传则使用 sys.argv。
-
     输出：
         int: QApplication 退出码。
-
     使用示例：
         python -m ui.main_window
     """
