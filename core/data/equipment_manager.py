@@ -120,7 +120,7 @@ class EquipmentManager:
         """🔍 解析科研装备 ID → (期数, 序号)
         输入: "S1-001" → 输出: (1, 1)
         输入: "123"   → 输出: None（通用装备）"""
-        m = cls.RESEARCH_ID_PATTERN.match(equipment_id)
+        equipment_id = equipment_id.strip();m = cls.RESEARCH_ID_PATTERN.match(equipment_id)
         return (int(m.group(1)), int(m.group(2))) if m else None
 
     @classmethod

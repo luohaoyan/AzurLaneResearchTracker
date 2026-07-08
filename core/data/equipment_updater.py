@@ -48,9 +48,9 @@ def add_research_phase_equipment(
 
     返回:
         {"success": True/False,
-         "equipment_added": 成功数,
-         "equipment_ids": ["S7-001","S7-002",...],
-         "failed_ids": [],
+         "added": 成功数,
+         "ids": ["S7-001","S7-002",...],
+         "failed": [],
          "phase_added": True/False}
 
     使用示例:
@@ -102,5 +102,5 @@ def add_research_phase_equipment(
     })
 
     logger.info(f"科研{phase_name}批量添加: 装备{len(new_ids)}(失败{failed}), 期数{phase_added}")
-    return {"success": len(failed) == 0 and phase_added, "equipment_added": len(new_ids),
-            "equipment_ids": new_ids, "failed_ids": failed, "phase_added": phase_added}
+    return {"success": len(failed) == 0 and phase_added, "added": len(new_ids),
+            "ids": new_ids, "failed": failed, "phase_added": phase_added}
