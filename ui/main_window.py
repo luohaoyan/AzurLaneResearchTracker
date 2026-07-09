@@ -50,15 +50,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.calculation.trend_analyzer import get_trend_analyzer
+from core.calculation.research_progress_analyzer import get_research_progress_analyzer
 from core.data.equipment_manager import get_equipment_manager
 from core.data.research_manager import get_research_manager
-from core.calculation.trend_analyzer import get_trend_analyzer
 from core.state.runtime_state import TaskStateKind, get_runtime_state_manager
 from core.utils.config_loader import get_config_loader
 from core.utils.logger import get_logger
 from core.utils.path_manager import PathManager
 from ui.future_hooks import FeatureHookRegistry, FutureFeatureSpec, get_feature_hook_registry
 from ui.theme import ThemeTokens, build_stylesheet, install_application_fonts
+from ui.ui_config import get_ui_config_manager
 from ui.widgets.log_drawer import LogDrawer
 
 
@@ -196,17 +198,32 @@ class BasePage(QWidget):
         self.root.setContentsMargins(28, 24, 28, 24)
         self.root.setSpacing(16)
 
-        marker = QLabel("ALRT")
-        marker.setObjectName("page_marker")
-        title_label = QLabel(title)
-        title_label.setObjectName("page_title")
-        summary_label = QLabel(summary)
-        summary_label.setObjectName("page_summary")
-        summary_label.setWordWrap(True)
+        self.page_marker_label = QLabel("ALRT")
+        self.page_marker_label.setObjectName("page_marker")
+        self.page_title_label = QLabel(title)
+        self.page_title_label.setObjectName("page_title")
+        self.page_summary_label = QLabel(summary)
+        self.page_summary_label.setObjectName("page_summary")
+        self.page_summary_label.setWordWrap(True)
 
-        self.root.addWidget(marker)
-        self.root.addWidget(title_label)
-        self.root.addWidget(summary_label)
+        self.root.addWidget(self.page_marker_label)
+        self.root.addWidget(self.page_title_label)
+        self.root.addWidget(self.page_summary_label)
+
+    def set_header_compact(self) -> None:
+        """
+        压缩页面头部留白。
+        输入：
+            无。
+        输出：
+            None。
+        使用示例：
+            page.set_header_compact()
+        """
+        self.root.setContentsMargins(28, 16, 28, 18)
+        self.root.setSpacing(8)
+        self.page_title_label.setStyleSheet("font-size: 24px;")
+        self.page_summary_label.setStyleSheet("margin-bottom: 2px;")
 
     @staticmethod
     def build_card(title: str, body: str, caption: str = "") -> QFrame:
@@ -574,29 +591,621 @@ class ResearchProgressPage(BasePage):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """创建科研进度页面。"""
         super().__init__("科研进度", "默认展示最新科研期，也可以切换历史期数；非最新期会明确标注。", parent)
+        self.set_header_compact()
+        self.progress_analyzer = get_research_progress_analyzer()
+        self.ui_config_manager = get_ui_config_manager()
+        self.ui_config = self.ui_config_manager.get_research_progress_config()
+        self._syncing_start_date = False
         phases = get_research_manager().get_all()
-        latest_phase = max((int(phase.get("phase_number", 0)) for phase in phases), default=1)
+        latest_phase = self.progress_analyzer.get_latest_phase_number()
 
         top = QHBoxLayout()
+        top.setSpacing(10)
         self.phase_combo = QComboBox()
+        self.phase_combo.setFixedWidth(180)
         for phase in phases:
             phase_number = int(phase.get("phase_number", 0))
             suffix = "（最新）" if phase_number == latest_phase else "（历史期）"
             self.phase_combo.addItem(f"科研 {phase_number} 期 {suffix}", phase_number)
         if self.phase_combo.count() == 0:
             self.phase_combo.addItem("科研数据待加载", 0)
+        latest_index = self.phase_combo.findData(latest_phase)
+        if latest_index >= 0:
+            self.phase_combo.setCurrentIndex(latest_index)
+        self.phase_combo.currentIndexChanged.connect(lambda _index=0: self._on_phase_changed())
+        self.notice_label = QLabel("")
+        self.notice_label.setObjectName("research_notice")
+        self.notice_label.setWordWrap(True)
         top.addWidget(QLabel("科研期数"))
         top.addWidget(self.phase_combo)
+        top.addWidget(self.notice_label, stretch=1)
         top.addStretch(1)
         self.root.addLayout(top)
 
-        grid = QGridLayout()
-        grid.setSpacing(12)
-        self.root.addLayout(grid, stretch=1)
-        grid.addWidget(BasePage.build_card("装备数量进度", "后续接入 OCR 后展示每件装备拥有数量、碎片数量和合成进度。"), 0, 0)
-        grid.addWidget(BasePage.build_card("欧非值评价", "当前暂无识别数据。未来会用图片和文字展示极欧、较欧、正常、较非、极非。"), 0, 1)
-        grid.addWidget(BasePage.build_card("非最新期标注", "当选择历史科研期时，页面会提示这不是最新科研进度，避免误读。"), 1, 0)
-        grid.addWidget(AnimatedMascotPanel(), 1, 1)
+        summary_grid = QGridLayout()
+        summary_grid.setSpacing(12)
+        self.root.addLayout(summary_grid)
+
+        self.target_combo = QComboBox()
+        self.target_combo.setObjectName("target_combo")
+        self.target_combo.setFixedWidth(108)
+        for target_count in range(1, 21):
+            self.target_combo.addItem(f"{target_count} 件", target_count)
+        self.target_combo.setCurrentIndex(1)
+        self.target_combo.currentIndexChanged.connect(lambda _index=0: self._on_target_changed())
+        self.completed_value_label = QLabel("完成装备 0 / 0")
+        self.completed_value_label.setObjectName("card_caption")
+        self.completed_value_label.setFixedWidth(112)
+        self.secretary_avatar_label = QLabel(str(self._secretary_config().get("placeholder_text", "秘书舰")))
+        self.secretary_avatar_label.setObjectName("secretary_avatar")
+        self.secretary_avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.secretary_avatar_label.setFixedSize(64, 64)
+        self._load_secretary_avatar()
+        self.secretary_dialog_frame = QFrame()
+        self.secretary_dialog_frame.setObjectName("secretary_dialog")
+        self.secretary_dialog_frame.setFixedHeight(64)
+        self.secretary_dialog_frame.setFixedWidth(220)
+        self.secretary_dialog_frame.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        dialog_layout = QVBoxLayout(self.secretary_dialog_frame)
+        dialog_layout.setContentsMargins(14, 10, 14, 10)
+        self.target_comment_label = QLabel("")
+        self.target_comment_label.setObjectName("secretary_dialog_text")
+        self.target_comment_label.setWordWrap(True)
+        dialog_layout.addWidget(self.target_comment_label)
+        self._reset_secretary_dialog()
+
+        self.start_date_edit = QDateEdit()
+        self.start_date_edit.setObjectName("research_start_date")
+        self.start_date_edit.setCalendarPopup(True)
+        self.start_date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.start_date_edit.setMaximumDate(QDate.currentDate())
+        self.start_date_edit.setFixedWidth(132)
+        self.start_date_edit.dateChanged.connect(lambda _date=QDate(): self._on_start_date_changed())
+        self.reset_start_date_button = QPushButton("复位")
+        self.reset_start_date_button.setObjectName("reset_start_date_button")
+        self.reset_start_date_button.setFixedWidth(56)
+        self.reset_start_date_button.clicked.connect(self._reset_start_date_to_official)
+        self.research_day_value_label = QLabel("第 1 天")
+        self.research_day_value_label.setObjectName("research_day_value")
+        self.research_day_caption_label = QLabel("")
+        self.research_day_caption_label.setObjectName("card_caption")
+        self.research_day_caption_label.setWordWrap(True)
+        self.duration_message_label = QLabel("")
+        self.duration_message_label.setObjectName("card_caption")
+        self.duration_message_label.setWordWrap(True)
+
+        self.overall_progress_bar = QProgressBar()
+        self.overall_progress_bar.setOrientation(Qt.Orientation.Vertical)
+        self.overall_progress_bar.setRange(0, 10000)
+        self.overall_progress_bar.setFormat("0.00%")
+        self.overall_progress_bar.setTextVisible(False)
+        self.overall_progress_bar.setFixedWidth(46)
+        self.overall_progress_bar.setMinimumHeight(220)
+        self.overall_percent_label = QLabel("0.00%")
+        self.overall_percent_label.setObjectName("research_day_value")
+        self.overall_percent_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.progress_detail_label = QLabel("彩装碎片 0 / 0")
+        self.progress_detail_label.setObjectName("card_caption")
+
+        self.score_value_label = QLabel("暂无")
+        self.ratio_detail_label = QLabel("金 0 / 彩 0")
+        self.ratio_detail_label.setObjectName("card_caption")
+        self.luck_value_label = QLabel("暂无")
+        self.luck_value_label.setObjectName("luck_badge")
+        self.luck_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.summary_cards = {
+            "target": self._build_target_card(),
+            "duration": self._build_duration_card(),
+            "progress": self._build_progress_card(),
+            "ratio_luck": self._build_ratio_luck_card(),
+        }
+        summary_grid.addWidget(self.summary_cards["duration"], 0, 0)
+        summary_grid.addWidget(self.summary_cards["target"], 0, 1)
+        summary_grid.setColumnStretch(0, 2)
+        summary_grid.setColumnStretch(1, 3)
+
+        self.progress_table = QTableWidget(0, 4)
+        self.progress_table.setHorizontalHeaderLabels(["装备", "需求图纸", "当前图纸", "整装"])
+        self.progress_table.verticalHeader().setVisible(False)
+        self.progress_table.setAlternatingRowColors(True)
+        self.progress_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for column in range(1, 4):
+            self.progress_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+            self.progress_table.setColumnWidth(column, 92)
+        self.progress_table.verticalHeader().setDefaultSectionSize(38)
+        self.root.addWidget(self._build_research_detail_area(), stretch=1)
+        self._sync_start_date_from_config()
+        self.refresh_progress()
+
+    @staticmethod
+    def _build_summary_card(title: str, value_widget: QWidget, caption: str) -> QFrame:
+        """构建科研进度汇总卡片。"""
+        card = QFrame()
+        card.setObjectName("content_panel")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
+        title_label = QLabel(title)
+        title_label.setObjectName("panel_title")
+        caption_label = QLabel(caption)
+        caption_label.setObjectName("card_caption")
+        caption_label.setWordWrap(True)
+        layout.addWidget(title_label)
+        layout.addWidget(value_widget)
+        layout.addWidget(caption_label)
+        return card
+
+    def refresh_progress(self) -> None:
+        """
+        刷新当前科研期进度展示。
+        输入：
+            无。
+        输出：
+            None。
+        使用示例：
+            page.refresh_progress()
+        """
+        phase_number = self.phase_combo.currentData()
+        progress = self.progress_analyzer.get_phase_progress(
+            int(phase_number or 0),
+            rainbow_target_count=int(self.target_combo.currentData() or 2),
+        )
+        self._update_notice(progress)
+        self._update_summary(progress)
+        self._update_research_day()
+        self._update_table(progress.get("equipment_rows", []))
+
+    def _on_phase_changed(self) -> None:
+        """科研期切换时同步开始日期并刷新展示。"""
+        self._sync_start_date_from_config()
+        self.refresh_progress()
+
+    def _on_target_changed(self) -> None:
+        """目标彩装切换时刷新进度并弹出秘书舰对话。"""
+        self.refresh_progress()
+        self._show_secretary_dialog(self.target_comment_label.text())
+
+    def _on_start_date_changed(self) -> None:
+        """用户修改科研开始日期时保存到 UI 配置并刷新天数。"""
+        if self._syncing_start_date:
+            return
+        phase_number = self._selected_phase_number()
+        if phase_number <= 0:
+            return
+        selected_date = self.start_date_edit.date()
+        today = QDate.currentDate()
+        if selected_date > today:
+            self._syncing_start_date = True
+            self.start_date_edit.setDate(today)
+            self._syncing_start_date = False
+            self.notice_label.setText("时间选择有误：科研开始时间不能晚于今天，已自动切回今天。")
+            selected_date = today
+        self.ui_config_manager.save_phase_start_date(
+            phase_number,
+            selected_date.toString("yyyy-MM-dd"),
+        )
+        self.ui_config = self.ui_config_manager.get_research_progress_config()
+        self._update_research_day()
+
+    def _selected_phase_number(self) -> int:
+        """返回当前科研期数，异常时返回 0。"""
+        return int(self.phase_combo.currentData() or 0)
+
+    def _sync_start_date_from_config(self) -> None:
+        """按当前科研期从 JSON 配置同步开始日期。"""
+        phase_number = self._selected_phase_number()
+        phase_dates = self.ui_config.get("phase_start_dates", {})
+        official_dates = self.ui_config.get("official_start_dates", {})
+        date_text = str(
+            phase_dates.get(str(phase_number))
+            or official_dates.get(str(phase_number))
+            or self.ui_config.get("official_fallback_start_date")
+            or self.ui_config.get("fallback_start_date")
+            or QDate.currentDate().toString("yyyy-MM-dd")
+        )
+        date = QDate.fromString(date_text, "yyyy-MM-dd")
+        today = QDate.currentDate()
+        self.start_date_edit.setMaximumDate(today)
+        if not date.isValid() or date > today:
+            date = today
+        self._syncing_start_date = True
+        self.start_date_edit.setDate(date)
+        self._syncing_start_date = False
+        self._update_reset_button_tooltip()
+        self._update_research_day()
+
+    def _official_start_date(self, phase_number: int) -> QDate:
+        """从 UI 配置读取某一期科研官方开始时间。"""
+        official_dates = self.ui_config.get("official_start_dates", {})
+        date_text = str(
+            official_dates.get(str(phase_number))
+            or self.ui_config.get("official_fallback_start_date")
+            or self.ui_config.get("fallback_start_date")
+            or QDate.currentDate().toString("yyyy-MM-dd")
+        )
+        date = QDate.fromString(date_text, "yyyy-MM-dd")
+        today = QDate.currentDate()
+        if not date.isValid() or date > today:
+            return today
+        return date
+
+    def _reset_start_date_to_official(self) -> None:
+        """把当前科研开始日期复位到配置中的官方开始时间。"""
+        phase_number = self._selected_phase_number()
+        if phase_number <= 0:
+            return
+        date = self._official_start_date(phase_number)
+        self._syncing_start_date = True
+        self.start_date_edit.setDate(date)
+        self._syncing_start_date = False
+        self.ui_config_manager.save_phase_start_date(phase_number, date.toString("yyyy-MM-dd"))
+        self.ui_config = self.ui_config_manager.get_research_progress_config()
+        self.notice_label.setText(f"已复位到 {phase_number} 期科研官方开始时间。")
+        self._update_research_day()
+
+    def _update_reset_button_tooltip(self) -> None:
+        """刷新官方开始时间复位按钮悬停说明。"""
+        phase_number = self._selected_phase_number()
+        official_date = self._official_start_date(phase_number).toString("yyyy-MM-dd")
+        self.reset_start_date_button.setToolTip(
+            f"把时间复位到第 {phase_number} 期科研官方开始时间：{official_date}"
+        )
+
+    def _update_research_day(self) -> None:
+        """刷新科研已进行天数和阶段标语。"""
+        phase_number = self._selected_phase_number()
+        day_count = self._calculate_research_day(self.start_date_edit.date(), QDate.currentDate())
+        self.research_day_value_label.setText(f"第 {day_count} 天")
+        self.research_day_caption_label.setText(f"现在是 {phase_number} 期科研的第 {day_count} 天")
+        self.duration_message_label.setText(self._duration_message(day_count))
+
+    @staticmethod
+    def _calculate_research_day(start_date: QDate, today: QDate) -> int:
+        """按开始当天为第 1 天计算科研进行天数。"""
+        if not start_date.isValid() or not today.isValid():
+            return 1
+        return max(1, start_date.daysTo(today) + 1)
+
+    def _duration_message(self, day_count: int) -> str:
+        """根据 JSON 配置返回科研天数阶段标语。"""
+        for item in self.ui_config.get("duration_messages", []):
+            min_day = int(item.get("min_day", 1))
+            max_day = item.get("max_day")
+            if day_count < min_day:
+                continue
+            if max_day is not None and day_count > int(max_day):
+                continue
+            return str(item.get("text", "科研进度记录中。"))
+        return "科研进度记录中。"
+
+    def _update_notice(self, progress: Dict[str, object]) -> None:
+        """根据当前期数状态刷新提示语。"""
+        message = str(progress.get("message") or "")
+        if message:
+            self.notice_label.setText(message)
+            self.notice_label.setVisible(True)
+            return
+        if progress.get("is_latest"):
+            self.notice_label.setText("当前展示最新科研期进度。")
+        else:
+            self.notice_label.setText("当前展示历史科研期，并非最新科研进度。")
+        self.notice_label.setVisible(True)
+
+    def _update_summary(self, progress: Dict[str, object]) -> None:
+        """刷新汇总卡片内容。"""
+        overall = float(progress.get("overall_progress", 0.0))
+        self.overall_progress_bar.setValue(int(round(overall * 100)))
+        self.overall_progress_bar.setFormat(f"{overall:.2f}%")
+        self.overall_percent_label.setText(f"{overall:.2f}%")
+        self._apply_progress_bar_style(overall)
+        self.progress_detail_label.setText(
+            f"彩装碎片 {progress.get('rainbow_total', 0)} / {progress.get('rainbow_target_fragments', 0)}"
+        )
+        self.completed_value_label.setText(
+            f"完成装备 {progress.get('completed_count', 0)} / {progress.get('equipment_total', 0)}"
+        )
+        target_count = int(progress.get("rainbow_target_count", self.target_combo.currentData() or 2))
+        is_latest = bool(progress.get("is_latest"))
+        self.target_comment_label.setText(self._target_comment(target_count, overall, is_latest))
+        ratio = progress.get("gold_rainbow_ratio")
+        ratio_text = "暂无" if ratio is None else f"{float(ratio):.3f}"
+        self.score_value_label.setText(ratio_text)
+        self.ratio_detail_label.setText(
+            f"金 {progress.get('gold_total', 0)} / 彩 {progress.get('rainbow_total', 0)}"
+        )
+        luck_value = progress.get("luck_value")
+        luck_text = "暂无" if luck_value is None else f"{float(luck_value):.3f}"
+        luck_level = str(progress.get("luck_level", "未知"))
+        self.luck_value_label.setText(f"{luck_level} · {luck_text}")
+        self._apply_luck_badge_style(luck_level)
+
+    def _update_table(self, rows: List[Dict[str, object]]) -> None:
+        """刷新当期科研装备数量表。"""
+        self.progress_table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            values = [
+                row.get("equipment_name", ""),
+                row.get("equivalent", "暂无") if row.get("equivalent") is not None else "暂无",
+                row.get("fragment_count", 0),
+                row.get("equipment_count", 0),
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                if column in {1, 2, 3}:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.progress_table.setItem(row_index, column, item)
+
+    @staticmethod
+    def _target_dialog_key(target_count: int, progress: float, is_latest: bool = True) -> str:
+        """根据目标数量和期数状态选择对话配置键。"""
+        if not is_latest:
+            return "history_completed" if progress >= 100 else "history"
+        if progress >= 100:
+            return "completed"
+        if target_count <= 1:
+            return "target_1"
+        if 2 <= target_count <= 4:
+            return "target_2_4"
+        if 5 <= target_count <= 7:
+            return "target_5_7"
+        return "target_8_plus"
+
+    def _target_comment(self, target_count: int, progress: float, is_latest: bool = True) -> str:
+        """根据用户选择的目标彩装数量生成二次元风格提示。"""
+        dialogs = self.ui_config.get("target_dialogs", {})
+        key = self._target_dialog_key(target_count, progress, is_latest)
+        fallback = self._fallback_target_dialog(key)
+        return str(dialogs.get(key) or fallback)
+
+    @staticmethod
+    def _fallback_target_dialog(key: str) -> str:
+        """当 JSON 文案缺失时返回稳定兜底文案。"""
+        fallbacks = {
+            "history": "补旧期属于港区档案整理任务，过期科研可不代表欧非程度哦，按自己的节奏推进就好。",
+            "history_completed": "旧期目标已经补完啦，档案室盖章通过；不过过期科研可不代表欧非程度哦。",
+            "completed": "目标已经突破啦，科研室建议立刻换个更闪亮的新目标。",
+            "target_1": "秘书舰歪头：只锁定一件吗？稳是很稳，但港区烟花还没点燃呢。",
+            "target_2_4": "标准指挥官路线，后勤妖精点头通过，肝度刚刚好。",
+            "target_5_7": "勇者级科研计划启动，今晚科研室的灯大概要常亮了。",
+            "target_8_plus": "指挥官，理智值还在线吗？这么多彩装连科研终端都开始冒蓝光了。",
+        }
+        return fallbacks.get(key, "科研目标已更新。")
+
+    def _secretary_config(self) -> Dict[str, object]:
+        """返回秘书舰占位配置。"""
+        config = self.ui_config.get("secretary", {})
+        return config if isinstance(config, dict) else {}
+
+    def _load_secretary_avatar(self) -> None:
+        """加载秘书舰图片占位；未配置图片时显示固定占位格。"""
+        image_path = str(self._secretary_config().get("image_path", "")).strip()
+        if image_path:
+            path = Path(image_path)
+            if not path.is_absolute():
+                path = PathManager.get_project_root() / path
+            pixmap = QPixmap(str(path))
+            if not pixmap.isNull():
+                self.secretary_avatar_label.setPixmap(
+                    pixmap.scaled(
+                        64,
+                        64,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+                self.secretary_avatar_label.setText("")
+                return
+        self.secretary_avatar_label.setText(str(self._secretary_config().get("placeholder_text", "秘书舰")))
+
+    def _show_secretary_dialog(self, text: str) -> None:
+        """显示秘书舰目标对话，并在配置的时间后恢复占位文案。"""
+        if not text:
+            return
+        self.target_comment_label.setText(text)
+        duration = int(self._secretary_config().get("dialog_duration_ms", 3600) or 3600)
+        QTimer.singleShot(max(800, duration), self._reset_secretary_dialog)
+
+    def _reset_secretary_dialog(self) -> None:
+        """恢复秘书舰对话占位，保持头像和气泡位置不跳动。"""
+        self.target_comment_label.setText("选择目标后，秘书舰会在这里给出科研建议。")
+
+    def _apply_progress_bar_style(self, progress: float) -> None:
+        """根据目标进度给进度条换色。"""
+        if progress >= 100:
+            color = "#7EE0A7"
+        elif progress >= 70:
+            color = "#58D7FF"
+        elif progress >= 40:
+            color = "#FFD36A"
+        else:
+            color = "#FF7A8A"
+        self.overall_progress_bar.setStyleSheet(f"""
+            QProgressBar {{
+                background: {self.theme_surface()};
+                color: #EAF7FF;
+                border: 1px solid #2C607D;
+                border-radius: 8px;
+                text-align: center;
+                min-width: 34px;
+                min-height: 220px;
+            }}
+            QProgressBar::chunk {{
+                background: {color};
+                border-radius: 7px;
+            }}
+        """)
+
+    def _apply_luck_badge_style(self, luck_level: str) -> None:
+        """按欧非评价设置标签颜色。"""
+        styles = {
+            "极非": ("#6F7C89", "#F3F7FA", "#8C9AA8"),
+            "较非": ("#8FA4B8", "#07131F", "#B7C7D8"),
+            "正常": ("#F2F7FA", "#07131F", "#FFFFFF"),
+            "较欧": ("#FFD36A", "#07131F", "#FFE49B"),
+            "极欧": ("#FF8EC7", "#07131F", "#58D7FF"),
+            "未知": ("#214E72", "#A5BDCB", "#2C607D"),
+        }
+        background, text, border = styles.get(luck_level, styles["未知"])
+        self.luck_value_label.setStyleSheet(f"""
+            QLabel#luck_badge {{
+                background: {background};
+                color: {text};
+                border: 1px solid {border};
+                border-radius: 8px;
+                padding: 8px 12px;
+                font-weight: 700;
+            }}
+        """)
+
+    @staticmethod
+    def theme_surface() -> str:
+        """返回科研进度页局部进度条背景色。"""
+        return "#102337"
+
+    def _build_progress_card(self) -> QFrame:
+        """构建用户目标导向的总体进度卡片。"""
+        card = QFrame()
+        card.setObjectName("content_panel")
+        card.setFixedWidth(172)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+
+        title_label = QLabel("总体进度")
+        title_label.setObjectName("panel_title")
+        caption_label = QLabel("按彩装碎片 / 目标计算")
+        caption_label.setObjectName("card_caption")
+        caption_label.setWordWrap(True)
+
+        bar_row = QHBoxLayout()
+        bar_row.setContentsMargins(0, 0, 0, 0)
+        bar_row.addStretch(1)
+        bar_row.addWidget(self.overall_progress_bar)
+        bar_row.addStretch(1)
+
+        layout.addWidget(title_label)
+        layout.addWidget(self.overall_percent_label)
+        layout.addLayout(bar_row, stretch=1)
+        layout.addWidget(self.progress_detail_label)
+        layout.addWidget(caption_label)
+        return card
+
+    def _build_research_detail_area(self) -> QWidget:
+        """构建科研进度页下方的竖向进度 + 金彩比 + 当期装备数量区域。"""
+        area = QWidget()
+        area.setObjectName("research_detail_area")
+        layout = QHBoxLayout(area)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(12)
+        right_layout.addWidget(self.summary_cards["ratio_luck"])
+        right_layout.addWidget(self.progress_table, stretch=1)
+
+        layout.addWidget(self.summary_cards["progress"])
+        layout.addWidget(right_panel, stretch=1)
+        return area
+
+    def _build_target_card(self) -> QFrame:
+        """构建彩色科研装备目标选择卡片。"""
+        card = QFrame()
+        card.setObjectName("content_panel")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(6)
+        title_label = QLabel("目标彩装")
+        title_label.setObjectName("panel_title")
+        title_label.setFixedWidth(78)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(12)
+        top_row.setContentsMargins(0, 0, 0, 0)
+        secretary_row = QHBoxLayout()
+        secretary_row.setSpacing(12)
+        secretary_row.setContentsMargins(0, 0, 0, 0)
+        secretary_row.addWidget(self.secretary_avatar_label)
+        secretary_row.addWidget(self.secretary_dialog_frame)
+
+        top_row.addWidget(title_label)
+        top_row.addWidget(self.target_combo)
+        top_row.addStretch(1)
+        top_row.addLayout(secretary_row)
+
+        layout.addLayout(top_row)
+        layout.addWidget(self.completed_value_label)
+        layout.addStretch(1)
+        layout.setAlignment(secretary_row, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        return card
+
+    def _build_duration_card(self) -> QFrame:
+        """构建科研已进行天数卡片。"""
+        card = QFrame()
+        card.setObjectName("content_panel")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
+
+        header = QHBoxLayout()
+        header.setSpacing(8)
+        title_label = QLabel("科研天数")
+        title_label.setObjectName("panel_title")
+        date_label = QLabel("开始")
+        date_label.setObjectName("card_caption")
+        header.addWidget(title_label)
+        header.addStretch(1)
+        header.addWidget(date_label)
+        header.addWidget(self.start_date_edit)
+        header.addWidget(self.reset_start_date_button)
+
+        layout.addLayout(header)
+        layout.addWidget(self.research_day_value_label)
+        layout.addWidget(self.research_day_caption_label)
+        layout.addWidget(self.duration_message_label)
+        layout.addStretch(1)
+        return card
+
+    def _build_ratio_luck_card(self) -> QFrame:
+        """构建金彩比与欧非评价平分展示卡片。"""
+        card = QFrame()
+        card.setObjectName("content_panel")
+        card.setMaximumHeight(148)
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(18)
+
+        ratio_title = QLabel("金彩装备比")
+        ratio_title.setObjectName("panel_title")
+        ratio_caption = QLabel("当期科研中：金色等效碎片总量 / 彩色等效碎片总量。")
+        ratio_caption.setObjectName("card_caption")
+        ratio_caption.setWordWrap(True)
+        self.score_value_label.setObjectName("panel_title")
+
+        luck_title = QLabel("欧非评价")
+        luck_title.setObjectName("panel_title")
+        luck_caption = QLabel("标签颜色按评价等级变化，方便一眼判断当前运势。")
+        luck_caption.setObjectName("card_caption")
+        luck_caption.setWordWrap(True)
+
+        ratio_column = QVBoxLayout()
+        ratio_column.setSpacing(6)
+        ratio_column.addWidget(ratio_title)
+        ratio_column.addWidget(self.score_value_label)
+        ratio_column.addWidget(self.ratio_detail_label)
+        ratio_column.addWidget(ratio_caption)
+
+        luck_column = QVBoxLayout()
+        luck_column.setSpacing(6)
+        luck_column.addWidget(luck_title)
+        luck_column.addWidget(self.luck_value_label)
+        luck_column.addWidget(luck_caption)
+        luck_column.addStretch(1)
+
+        layout.addLayout(ratio_column, stretch=1)
+        layout.addLayout(luck_column, stretch=1)
+        return card
 
 
 class TrendPage(BasePage):
@@ -1119,8 +1728,9 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(14, 18, 14, 18)
         layout.setSpacing(12)
 
-        self.nav_toggle_button = QPushButton("<<")
+        self.nav_toggle_button = QPushButton("<")
         self.nav_toggle_button.setObjectName("nav_toggle_button")
+        self.nav_toggle_button.setFixedSize(32, 32)
         self.nav_toggle_button.clicked.connect(self.toggle_navigation)
 
         self.app_title = QLabel("港区控制台")
@@ -1139,7 +1749,7 @@ class MainWindow(QMainWindow):
             list_item.setToolTip(item.summary)
             self.navigation_list.addItem(list_item)
 
-        layout.addWidget(self.nav_toggle_button)
+        layout.addWidget(self.nav_toggle_button, alignment=Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self.app_title)
         layout.addWidget(self.app_subtitle)
         layout.addSpacing(8)
@@ -1235,11 +1845,11 @@ class MainWindow(QMainWindow):
         """
         self.nav_collapsed = not self.nav_collapsed
         target_width = self.theme_tokens.nav_collapsed_width if self.nav_collapsed else self.theme_tokens.nav_width
-        self.nav_toggle_button.setText(">>" if self.nav_collapsed else "<<")
-        self._set_navigation_content_visible(True)
-        for index, item in enumerate(self.navigation_items):
-            list_item = self.navigation_list.item(index)
-            list_item.setText(item.title)
+        self.nav_toggle_button.setText(">" if self.nav_collapsed else "<")
+        if self.nav_collapsed:
+            self._set_navigation_content_visible(False)
+            for index in range(len(self.navigation_items)):
+                self.navigation_list.item(index).setText("")
         self._animate_navigation_width(target_width)
 
     def _animate_navigation_width(self, target_width: int) -> None:

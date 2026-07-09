@@ -55,7 +55,7 @@ class ThemeTokens:
     success: str = "#7EE0A7"
     danger: str = "#FF7A8A"
     nav_width: int = 236
-    nav_collapsed_width: int = 76
+    nav_collapsed_width: int = 60
     radius: int = 8
     font_family: str = '"Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Segoe UI"'
     utility_font_family: str = '"Consolas", "Cascadia Mono", "Microsoft YaHei UI"'
@@ -144,6 +144,32 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
         font-weight: 700;
     }}
 
+    QLabel#research_day_value {{
+        color: {t.text};
+        font-size: 30px;
+        font-weight: 800;
+    }}
+
+    QLabel#secretary_avatar {{
+        background: {t.surface_soft};
+        color: {t.text_muted};
+        border: 1px solid {t.line};
+        border-radius: {t.radius}px;
+        font-weight: 700;
+    }}
+
+    QFrame#secretary_dialog {{
+        background: #F5F8FC;
+        border: 1px solid rgba(88, 215, 255, 0.45);
+        border-radius: {t.radius}px;
+    }}
+
+    QLabel#secretary_dialog_text {{
+        color: #102337;
+        font-size: 13px;
+        font-weight: 700;
+    }}
+
     QListWidget#navigation_list {{
         background: transparent;
         border: none;
@@ -155,6 +181,8 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
         min-height: 42px;
         padding: 8px 10px;
         margin: 3px 4px;
+        background: rgba(25, 58, 86, 0.38);
+        border: 1px solid rgba(44, 96, 125, 0.46);
         border-radius: {t.radius}px;
     }}
 
@@ -206,6 +234,19 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
     QPushButton#nav_toggle_button {{
         min-height: 32px;
         padding: 4px 8px;
+    }}
+
+    QPushButton#reset_start_date_button {{
+        padding: 6px 8px;
+    }}
+
+    QComboBox#target_combo {{
+        min-width: 108px;
+        max-width: 108px;
+    }}
+
+    QDateEdit#research_start_date {{
+        min-width: 0px;
     }}
 
     QComboBox,
