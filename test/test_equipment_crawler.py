@@ -69,6 +69,20 @@ def read_csv_rows(path: Path) -> List[Dict[str, str]]:
         return list(DictReader(handle))
 
 
+class FakeEquipmentManager:
+    """给装备爬虫测试用的最小装备库。"""
+
+    def get_all(self) -> List[Dict[str, str]]:
+        return [
+            {"equipment_id": "G0001", "name": "BR.810"},
+            {"equipment_id": "G0002", "name": "B-13"},
+        ]
+
+    def _generate_id(self, is_research: bool, phase: int = 0) -> str:
+        """只给测试用的最小实现。"""
+        return "G0003"
+
+
 # ============================================================
 # 🔍 第二部分：解析与抽样测试
 # ============================================================
@@ -112,8 +126,9 @@ def test_select_sample_cards_respects_per_rarity_limit() -> None:
     assert selected[2].rarity_folder == "super_rare"
 
 
-def test_assign_crawl_ids_uses_ascii_prefix() -> None:
+def test_assign_crawl_ids_uses_ascii_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
     """临时 ID 应该稳定、纯 ASCII，便于后续导入和路径处理。"""
+    monkeypatch.setattr("core.data.equipment_crawler.get_equipment_manager", lambda: FakeEquipmentManager())
     settings = CrawlerSettings.from_mapping(build_default_crawler_config())
     cards = extract_equipment_cards(build_sample_html(), settings)[:2]
     assigned = assign_crawl_ids(cards)
@@ -132,6 +147,7 @@ def test_crawl_sample_writes_isolated_stage_outputs(tmp_path: Path, monkeypatch:
     crawler = EquipmentCrawler(config_data=build_default_crawler_config(), workspace_root=tmp_path)
 
     monkeypatch.setattr(crawler, "fetch_page_html", lambda: build_sample_html())
+    monkeypatch.setattr("core.data.equipment_crawler.get_equipment_manager", lambda: FakeEquipmentManager())
 
     def fake_download_image(image_url: str, destination: Path) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)

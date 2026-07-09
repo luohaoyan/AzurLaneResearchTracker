@@ -1,0 +1,19 @@
+{
+  "source": {
+    "equipment_archive_dir": null,
+    "research_run_dir": null
+  },
+  "output": {
+    "output_base_dir": "workdir/crawler/integration",
+    "output_dir_name": "merged",
+    "equipment_library_name": "equipment_library_stage.csv",
+    "equipment_images_name": "equipment_images_stage.csv",
+    "research_phases_name": "research_phases_stage.csv",
+    "research_equipment_name": "research_equipment_stage.csv",
+    "output_library_name": "equipment_library.csv",
+    "output_images_name": "equipment_images.csv",
+    "output_phases_name": "research_phases.csv",
+    "output_overrides_name": "equipment_id_overrides.csv",
+    "output_manifest_name": "crawler_integration_manifest.json"
+  }
+}

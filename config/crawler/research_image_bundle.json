@@ -1,0 +1,16 @@
+{
+  "source": {
+    "research_run_dir": null,
+    "source_library_csv": null,
+    "source_images_csv": null
+  },
+  "output": {
+    "output_folder_name": "s",
+    "phase_stage_name": "research_phases_stage.csv",
+    "equipment_stage_name": "research_equipment_stage.csv",
+    "manifest_name": "research_image_bundle_manifest.json"
+  },
+  "workspace": {
+    "manifests_dir_name": "manifests"
+  }
+}

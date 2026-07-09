@@ -1,0 +1,13 @@
+{
+  "source": {
+    "equipment_run_dir": null,
+    "research_run_dir": null
+  },
+  "output": {
+    "backup_dir_name": "backups",
+    "output_dir_name": "latest",
+    "workdir_base_dir": "workdir/crawler/sync",
+    "data_images_dir_name": "images",
+    "crawler_images_dir_name": "images"
+  }
+}

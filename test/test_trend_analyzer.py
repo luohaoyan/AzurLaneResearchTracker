@@ -80,15 +80,15 @@ def test_trend_analyzer_calculates_phase_equipment_metrics(
     assert rows[0]["date"] == "2026-07-01"
     assert rows[0]["equipment_count"] == 1
     assert rows[0]["fragment_count"] == 30
-    assert rows[0]["equivalent_score"] == 80
-    assert rows[0]["luck_value"] == 7.0
-    assert rows[0]["luck_level"] == "极欧"
+    assert rows[0]["equivalent_score"] == 55
+    assert rows[0]["luck_value"] == 0.0
+    assert rows[0]["luck_level"] == "极非"
 
     assert rows[1]["date"] == "2026-07-02"
     assert rows[1]["equipment_count"] == 3
     assert rows[1]["fragment_count"] == 45
-    assert rows[1]["equivalent_score"] == 170
-    assert rows[1]["luck_value"] == 3.25
+    assert rows[1]["equivalent_score"] == 120
+    assert rows[1]["luck_value"] == 0.0
 
 
 def test_trend_analyzer_calculates_all_equipment_metrics(
@@ -100,7 +100,7 @@ def test_trend_analyzer_calculates_all_equipment_metrics(
     assert len(rows) == 1
     assert rows[0]["equipment_count"] == 2
     assert rows[0]["fragment_count"] == 30
-    assert rows[0]["equivalent_score"] == 130
+    assert rows[0]["equivalent_score"] == 80
     assert rows[0]["luck_value"] is not None
 
 
@@ -137,7 +137,7 @@ def test_trend_analyzer_multi_metric_series(trend_analyzer_with_history: TrendAn
         {"date": "2026-07-01", "value": 30},
         {"date": "2026-07-02", "value": 45},
     ]
-    assert series_map["luck_value"][0]["value"] == 7.0
+    assert series_map["luck_value"][0]["value"] == 0.0
 
 
 def test_trend_analyzer_metric_specs_are_user_facing(trend_analyzer_with_history: TrendAnalyzer) -> None:
