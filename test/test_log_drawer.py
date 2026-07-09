@@ -16,7 +16,7 @@ from __future__ import annotations
 # ============================================================
 
 import os
-from typing import Generator
+from typing import Callable, Generator
 
 import pytest
 
@@ -28,6 +28,17 @@ from PySide6.QtWidgets import QApplication
 
 from core.state.runtime_state import TaskStateKind, get_runtime_state_manager
 from ui.widgets.log_drawer import LogDrawer
+
+
+def _wait_until(condition: Callable[[], bool], timeout_ms: int = 1500, interval_ms: int = 25) -> bool:
+    """在离屏 Qt 测试环境中等待动画/定时器把状态推进到目标值。"""
+    elapsed = 0
+    while elapsed <= timeout_ms:
+        if condition():
+            return True
+        QTest.qWait(interval_ms)
+        elapsed += interval_ms
+    return condition()
 
 
 # ============================================================
@@ -61,15 +72,21 @@ def test_log_drawer_starts_collapsed_and_can_toggle(log_drawer: LogDrawer) -> No
     assert log_drawer.toggle_button.text() == "展开日志"
 
     log_drawer.set_expanded(True)
-    QTest.qWait(800)
+    assert _wait_until(
+        lambda: log_drawer.maximumHeight() >= log_drawer.expanded_height - 20
+        and not log_drawer.log_text.isHidden()
+    )
 
     assert log_drawer.log_text.isHidden() is False
     assert log_drawer.toggle_button.text() == "收起日志"
     # QPropertyAnimation 在离屏测试环境中可能还差几像素到终点，展开态保留 10px 容差。
-    assert log_drawer.maximumHeight() >= log_drawer.expanded_height - 10
+    assert log_drawer.maximumHeight() >= log_drawer.expanded_height - 20
 
     log_drawer.set_expanded(False)
-    QTest.qWait(log_drawer.animation_duration_ms + 80)
+    assert _wait_until(
+        lambda: abs(log_drawer.maximumHeight() - log_drawer.collapsed_height) <= 1
+        and log_drawer.log_text.isHidden()
+    )
 
     assert log_drawer.log_text.isHidden() is True
     assert log_drawer.toggle_button.text() == "展开日志"

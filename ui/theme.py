@@ -126,28 +126,129 @@ THEME_SKINS: Dict[str, ThemeSkin] = {
     "iron_blood": ThemeSkin(
         key="iron_blood",
         name="铁血机库",
-        description="更冷静的灰黑机库风格，给自动化实验室和调试场景预留。",
+        description="黑红钢铁机库风格，边框更锐利，适合自动化与调试场景。",
         accent_name="红轴警戒",
-        preview_colors=["#0B0E12", "#171D24", "#E35D6A", "#8FC7FF"],
+        preview_colors=["#08090D", "#181820", "#D7263D", "#C9B27C"],
         tokens=ThemeTokens(
-            background="#0B0E12",
-            surface="#171D24",
-            surface_soft="#222B34",
-            surface_glow="#2C3844",
-            line="#3A4652",
-            text="#EEF3F7",
-            text_muted="#AEB8C2",
-            sakura="#E35D6A",
-            azure="#8FC7FF",
-            gold="#E0BD65",
-            success="#82D49E",
-            danger="#FF6F7B",
-            table_header="#202933",
-            table_row="#11171D",
-            table_row_alt="#182029",
-            table_grid="#303B46",
-            table_selection="#384B5F",
+            background="#08090D",
+            surface="#181820",
+            surface_soft="#24242E",
+            surface_glow="#3A1E28",
+            line="#4A3038",
+            text="#F3F0EA",
+            text_muted="#B7AEB2",
+            sakura="#D7263D",
+            azure="#A7B2C8",
+            gold="#C9B27C",
+            success="#75C48B",
+            danger="#FF4D5E",
+            table_header="#221B22",
+            table_row="#101116",
+            table_row_alt="#171820",
+            table_grid="#3A3038",
+            table_selection="#4B1F2B",
             table_selection_text="#F7FBFF",
+            radius=5,
+        ),
+    ),
+    "dragon_empery": ThemeSkin(
+        key="dragon_empery",
+        name="东煌庭院",
+        description="红金与青玉色的温润阵营皮肤，适合明亮但不刺眼的日常统计。",
+        accent_name="玉阶金纹",
+        preview_colors=["#F7F2EA", "#E7D4B5", "#B83232", "#2F8F83"],
+        tokens=ThemeTokens(
+            background="#F7F2EA",
+            surface="#EFE3D1",
+            surface_soft="#E5D2B5",
+            surface_glow="#DDBB7A",
+            line="#C8A66A",
+            text="#2A211A",
+            text_muted="#6F5D4C",
+            sakura="#B83232",
+            azure="#2F8F83",
+            gold="#A77C22",
+            success="#2C8A58",
+            danger="#B23A48",
+            table_header="#E1C79D",
+            table_row="#FBF8F1",
+            table_row_alt="#F1E7D6",
+            table_grid="#D1B88A",
+            table_selection="#DDBB7A",
+            table_selection_text="#2A211A",
+        ),
+    ),
+    "eagle_union": ThemeSkin(
+        key="eagle_union",
+        name="白鹰船坞",
+        description="海军蓝、星章白与高亮红的现代舰队感，本阶段先开放骨架。",
+        accent_name="星海蓝白",
+        preview_colors=["#0D2A4A", "#F5F7FA", "#C73542", "#4CA3FF"],
+        tokens=ThemeTokens(
+            background="#0D2A4A",
+            surface="#14375D",
+            surface_soft="#1E4B7A",
+            surface_glow="#2A65A0",
+            line="#477DAF",
+            text="#F5F7FA",
+            text_muted="#BCD2E8",
+            sakura="#C73542",
+            azure="#4CA3FF",
+            gold="#F0C36A",
+            table_header="#183D66",
+            table_row="#0F2945",
+            table_row_alt="#17375A",
+            table_grid="#315F8C",
+            table_selection="#245B91",
+        ),
+    ),
+    "northern_parliament": ThemeSkin(
+        key="northern_parliament",
+        name="北联冰港",
+        description="冰蓝、银白与冷灰的极地阵营皮肤，本阶段先开放骨架。",
+        accent_name="极地冰辉",
+        preview_colors=["#EAF4FA", "#CADBE6", "#5D88A8", "#FFFFFF"],
+        tokens=ThemeTokens(
+            background="#EAF4FA",
+            surface="#DDEBF3",
+            surface_soft="#CADBE6",
+            surface_glow="#B1CAD9",
+            line="#91AFC0",
+            text="#1D3444",
+            text_muted="#5D7180",
+            sakura="#8C6FAE",
+            azure="#3D88B5",
+            gold="#9C7B38",
+            table_header="#C9DDE9",
+            table_row="#F8FCFE",
+            table_row_alt="#EAF4FA",
+            table_grid="#BCD0DD",
+            table_selection="#B7D6E8",
+            table_selection_text="#1D3444",
+        ),
+    ),
+    "sakura_empire": ThemeSkin(
+        key="sakura_empire",
+        name="重樱夜港",
+        description="深靛夜色与樱粉点缀的和风阵营皮肤，本阶段先开放骨架。",
+        accent_name="夜樱绯影",
+        preview_colors=["#17132A", "#2E244A", "#E986B8", "#D6B56D"],
+        tokens=ThemeTokens(
+            background="#17132A",
+            surface="#211B38",
+            surface_soft="#2E244A",
+            surface_glow="#49355E",
+            line="#5D4771",
+            text="#F5EEF8",
+            text_muted="#C7B6D0",
+            sakura="#E986B8",
+            azure="#8BBBE8",
+            gold="#D6B56D",
+            table_header="#2A2141",
+            table_row="#1B1630",
+            table_row_alt="#241D3B",
+            table_grid="#4B3A61",
+            table_selection="#5A3B61",
         ),
     ),
 }
@@ -560,6 +661,11 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
         border-top: 1px solid {t.line};
     }}
 
+    QStatusBar[ironPulse="true"] {{
+        border-top: 1px solid {t.sakura};
+        color: {t.text};
+    }}
+
     QMenuBar {{
         background: {t.surface};
         color: {t.text};
@@ -574,6 +680,27 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
         background: {t.surface};
         color: {t.text};
         border: 1px solid {t.line};
+    }}
+
+    QToolBar#trend_navigation_toolbar {{
+        background: {t.surface};
+        border: 1px solid {t.line};
+        border-radius: {t.radius}px;
+        spacing: 4px;
+        padding: 3px;
+    }}
+
+    QToolBar#trend_navigation_toolbar QToolButton {{
+        background: {t.surface_soft};
+        color: {t.text};
+        border: 1px solid {t.line};
+        border-radius: {max(3, t.radius - 2)}px;
+        padding: 4px;
+    }}
+
+    QToolBar#trend_navigation_toolbar QToolButton:hover {{
+        background: {t.surface_glow};
+        border-color: {t.azure};
     }}
 
     QToolTip {{

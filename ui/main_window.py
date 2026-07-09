@@ -18,11 +18,14 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
-from PySide6.QtCore import QEasingCurve, QMargins, QParallelAnimationGroup, QDate, QPropertyAnimation, Qt, QTimer, Signal
-from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-from PySide6.QtGui import QAction, QBrush, QColor, QFont, QMovie, QPainter, QPen, QPixmap, QWheelEvent
+from matplotlib import rcParams
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
+from matplotlib.figure import Figure
+from PySide6.QtCore import QEasingCurve, QParallelAnimationGroup, QDate, QPropertyAnimation, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QColor, QMovie, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -54,16 +57,23 @@ from PySide6.QtWidgets import (
 
 from core.calculation.trend_analyzer import get_trend_analyzer
 from core.calculation.research_progress_analyzer import get_research_progress_analyzer
+from core.calculation.luck_calculator import get_luck_calculator
+from core.calculation.user_data_manager import get_user_data_manager
 from core.data.equipment_manager import get_equipment_manager
 from core.data.research_manager import get_research_manager
 from core.state.runtime_state import TaskStateKind, get_runtime_state_manager
 from core.utils.config_loader import get_config_loader
 from core.utils.logger import get_logger
 from core.utils.path_manager import PathManager
+from ui.automation_bridge import get_automation_bridge
 from ui.future_hooks import FeatureHookRegistry, FutureFeatureSpec, get_feature_hook_registry
+from ui.secretary_pack import validate_secretary_pack
 from ui.theme import ThemeTokens, build_stylesheet, get_theme_skin, install_application_fonts, list_theme_skins
 from ui.ui_config import get_ui_config_manager
 from ui.widgets.log_drawer import LogDrawer
+
+rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial Unicode MS", "DejaVu Sans"]
+rcParams["axes.unicode_minus"] = False
 
 
 # ============================================================
@@ -304,6 +314,199 @@ class ElasticScrollArea(QScrollArea):
         """动画结束后释放当前动画引用，避免重复滚动时状态残留。"""
         if self._edge_animation is animation:
             self._edge_animation = None
+
+
+class MatplotlibTrendPanel(QFrame):
+    """
+    matplotlib 趋势图面板。
+    输入：
+        title: 图表标题。
+        subtitle: 图表说明。
+    输出：
+        带工具栏、折线图和悬停提示的 QWidget。
+    使用示例：
+        panel = MatplotlibTrendPanel("金彩比趋势", "按日期展示")
+    """
+
+    def __init__(self, title: str, subtitle: str, parent: Optional[QWidget] = None) -> None:
+        """创建趋势图面板。"""
+        super().__init__(parent)
+        self.setObjectName("chart_panel")
+        self.theme_tokens = ThemeTokens()
+        self._line_metadata: Dict[Any, List[Dict[str, object]]] = {}
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        self.title_label = QLabel(title)
+        self.title_label.setObjectName("section_title")
+        self.status_label = QLabel(subtitle)
+        self.status_label.setObjectName("panel_body")
+        self.status_label.setWordWrap(True)
+        header.addWidget(self.title_label)
+        header.addStretch(1)
+
+        self.figure = Figure(figsize=(7.2, 3.0), dpi=100, tight_layout=True)
+        self.canvas = FigureCanvas(self.figure)
+        self.canvas.setObjectName("matplotlib_trend_canvas")
+        self.axes = self.figure.add_subplot(111)
+        self.toolbar = NavigationToolbar2QT(self.canvas, self)
+        self.toolbar.setObjectName("trend_navigation_toolbar")
+        self.annotation = self.axes.annotate(
+            "",
+            xy=(0, 0),
+            xytext=(14, 18),
+            textcoords="offset points",
+            bbox={"boxstyle": "round,pad=0.35", "fc": "#102337", "ec": "#58D7FF", "alpha": 0.94},
+            arrowprops={"arrowstyle": "->", "color": "#58D7FF"},
+        )
+        self.annotation.set_visible(False)
+        self.canvas.mpl_connect("motion_notify_event", self._on_motion)
+
+        layout.addLayout(header)
+        layout.addWidget(self.status_label)
+        layout.addWidget(self.toolbar)
+        layout.addWidget(self.canvas, stretch=1)
+        self.setMinimumHeight(300)
+        self.apply_theme_tokens(self.theme_tokens)
+
+    def apply_theme_tokens(self, tokens: ThemeTokens) -> None:
+        """
+        按 GUI 皮肤刷新 matplotlib 图表颜色。
+        输入：
+            tokens: 当前皮肤令牌。
+        输出：
+            None。
+        使用示例：
+            panel.apply_theme_tokens(tokens)
+        """
+        self.theme_tokens = tokens
+        self.figure.patch.set_facecolor(tokens.surface)
+        self.axes.set_facecolor(tokens.table_row)
+        self.axes.tick_params(colors=tokens.text_muted)
+        self.axes.xaxis.label.set_color(tokens.text_muted)
+        self.axes.yaxis.label.set_color(tokens.text_muted)
+        self.axes.title.set_color(tokens.text)
+        for spine in self.axes.spines.values():
+            spine.set_color(tokens.line)
+        self.annotation.get_bbox_patch().set_facecolor(tokens.surface_soft)
+        self.annotation.get_bbox_patch().set_edgecolor(tokens.azure)
+        self.annotation.arrow_patch.set_color(tokens.azure)
+        self.annotation.set_color(tokens.text)
+        self.canvas.setStyleSheet(f"background: {tokens.surface};")
+        self.canvas.draw_idle()
+
+    def plot_series(
+        self,
+        series_map: Dict[str, List[Dict[str, object]]],
+        y_label: str,
+        empty_message: str,
+        colors: Optional[Dict[str, str]] = None,
+    ) -> None:
+        """
+        绘制多条时间序列。
+        输入：
+            series_map: {"折线名": [{"date": "...", "value": 1.0, "detail": "..."}]}。
+            y_label: Y 轴标题。
+            empty_message: 无数据时展示的文案。
+            colors: 可选折线颜色。
+        输出：
+            None。
+        使用示例：
+            panel.plot_series({"PR6": points}, "金彩比", "暂无数据")
+        """
+        self.axes.clear()
+        self._line_metadata.clear()
+        visible_count = 0
+        color_map = colors or {}
+        for index, (name, points) in enumerate(series_map.items()):
+            visible_points = [point for point in points if point.get("value") is not None]
+            if not visible_points:
+                continue
+            x_values = list(range(1, len(visible_points) + 1))
+            y_values = [float(point.get("value", 0.0)) for point in visible_points]
+            line_color = color_map.get(name) or self._fallback_line_color(index)
+            line, = self.axes.plot(
+                x_values,
+                y_values,
+                marker="o",
+                linewidth=2.2,
+                markersize=5.5,
+                label=name,
+                color=line_color,
+            )
+            self._line_metadata[line] = visible_points
+            self.axes.set_xticks(x_values)
+            self.axes.set_xticklabels([str(point.get("date", ""))[5:] for point in visible_points], rotation=0)
+            visible_count += 1
+
+        if visible_count == 0:
+            self.axes.text(
+                0.5,
+                0.5,
+                empty_message,
+                ha="center",
+                va="center",
+                transform=self.axes.transAxes,
+                color=self.theme_tokens.text_muted,
+            )
+            self.status_label.setText(empty_message)
+        else:
+            self.axes.legend(loc="upper left", frameon=False)
+            for text in self.axes.get_legend().get_texts():
+                text.set_color(self.theme_tokens.text)
+            self.status_label.setText(f"已绘制 {visible_count} 条折线；可悬停点位查看日期和数值。")
+
+        self.axes.set_ylabel(y_label)
+        self.axes.grid(True, color=self.theme_tokens.table_grid, linewidth=0.8, alpha=0.72)
+        self.apply_theme_tokens(self.theme_tokens)
+
+    def _fallback_line_color(self, index: int) -> str:
+        """返回稳定的默认折线颜色。"""
+        palette = [
+            self.theme_tokens.azure,
+            self.theme_tokens.sakura,
+            self.theme_tokens.gold,
+            self.theme_tokens.success,
+            self.theme_tokens.danger,
+            "#B8F09A",
+            "#9AA7FF",
+        ]
+        return palette[index % len(palette)]
+
+    def _on_motion(self, event: object) -> None:
+        """鼠标悬停点位时显示日期和数值。"""
+        if getattr(event, "inaxes", None) != self.axes:
+            if self.annotation.get_visible():
+                self.annotation.set_visible(False)
+                self.canvas.draw_idle()
+            return
+        for line, points in self._line_metadata.items():
+            contains, info = line.contains(event)
+            if not contains:
+                continue
+            point_index = int(info.get("ind", [0])[0])
+            if point_index >= len(points):
+                continue
+            point = points[point_index]
+            value = point.get("value")
+            detail = str(point.get("detail") or "")
+            text = f"{line.get_label()}\n{point.get('date', '')}: {float(value):.3f}"
+            if detail:
+                text = f"{text}\n{detail}"
+            x_data = line.get_xdata()[point_index]
+            y_data = line.get_ydata()[point_index]
+            self.annotation.xy = (x_data, y_data)
+            self.annotation.set_text(text)
+            self.annotation.set_visible(True)
+            self.canvas.draw_idle()
+            return
+        if self.annotation.get_visible():
+            self.annotation.set_visible(False)
+            self.canvas.draw_idle()
 
 
 class BasePage(QWidget):
@@ -560,8 +763,10 @@ class UserDataPage(BasePage):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """创建用户装备数据表格与筛选栏。"""
-        super().__init__("用户数据", "面向玩家展示装备与碎片记录。内部装备编号不会显示，也不会修改基础装备表。", parent)
+        super().__init__("用户数据", "展示当前本地装备库支持范围；内部装备编号不会显示，也不会修改基础装备表。", parent)
         self.icon_size = 36
+        self.equipment_manager = get_equipment_manager()
+        self.all_equipment_rows: List[Dict[str, object]] = self.equipment_manager.get_equipment_with_image()
         self._build_filters()
         self._build_table()
 
@@ -576,37 +781,81 @@ class UserDataPage(BasePage):
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("按装备名称搜索")
         self.rarity_combo = QComboBox()
-        self.rarity_combo.addItems(["全部稀有度", "普通", "稀有", "精锐", "超稀有", "海上传奇"])
-        self.type_combo = QComboBox()
-        self.type_combo.addItems(["全部类型", "主炮", "鱼雷", "舰载机", "防空炮", "设备", "其他"])
+        self.rarity_combo.addItem("全部稀有度", None)
+        for rarity in self.equipment_manager.rarity_manager.get_all():
+            self.rarity_combo.addItem(str(rarity.get("name", "未知")), int(rarity.get("rarity_id", 0)))
         self.phase_combo = QComboBox()
-        self.phase_combo.addItems(["全部科研期"] + self._phase_labels())
+        self.phase_combo.addItem("全部科研期", None)
+        for phase in get_research_manager().get_all():
+            phase_number = int(phase.get("phase_number", 0))
+            self.phase_combo.addItem(f"科研 {phase_number} 期", phase_number)
+        self.phase_combo.addItem("通用", 0)
+        self.search_input.textChanged.connect(lambda _text="": self.refresh_equipment_table())
+        self.rarity_combo.currentIndexChanged.connect(lambda _index=0: self.refresh_equipment_table())
+        self.phase_combo.currentIndexChanged.connect(lambda _index=0: self.refresh_equipment_table())
 
         row.addWidget(self.search_input, stretch=2)
         row.addWidget(self.rarity_combo)
-        row.addWidget(self.type_combo)
         row.addWidget(self.phase_combo)
         self.root.addWidget(panel)
 
     def _build_table(self) -> None:
         """构建用户可见装备表格。"""
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["装备名称", "稀有度", "类型", "科研期", "拥有数量", "碎片数量"])
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["装备名称", "稀有度", "科研期"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         polish_data_table(self.table, 52)
         self.root.addWidget(self.table, stretch=1)
-        self._load_preview_rows()
+        self.refresh_equipment_table()
 
-    def _load_preview_rows(self) -> None:
-        """加载基础装备表作为只读预览，不显示 equipment_id。"""
-        equipments = get_equipment_manager().get_equipment_with_image()[:20]
+    def refresh_equipment_table(self) -> None:
+        """
+        按当前筛选条件刷新装备库展示。
+        输入：
+            无。
+        输出：
+            None。
+        使用示例：
+            page.refresh_equipment_table()
+        """
+        equipments = self._filtered_equipment_rows()
         self.table.setRowCount(len(equipments))
         for row, equipment in enumerate(equipments):
             phase = self._phase_from_public_data(str(equipment.get("equipment_id", "")))
             self.table.setCellWidget(row, 0, self._build_name_icon_cell(equipment))
-            values = [equipment.get("rarity_name", "未知"), equipment.get("type", ""), phase, "待识别", "待识别"]
+            values = [equipment.get("rarity_name", "未知"), phase]
             for column, value in enumerate(values):
                 self.table.setItem(row, column + 1, QTableWidgetItem(str(value)))
+
+    def _filtered_equipment_rows(self) -> List[Dict[str, object]]:
+        """
+        返回符合名称、稀有度和科研期筛选的装备行。
+        输入：
+            无。
+        输出：
+            List[dict]: 不包含内部字段展示逻辑的装备数据。
+        使用示例：
+            rows = page._filtered_equipment_rows()
+        """
+        keyword = self.search_input.text().strip().lower()
+        rarity_id = self.rarity_combo.currentData()
+        phase_filter = self.phase_combo.currentData()
+        rows: List[Dict[str, object]] = []
+        for equipment in self.all_equipment_rows:
+            name = str(equipment.get("name", ""))
+            equipment_id = str(equipment.get("equipment_id", ""))
+            parsed_phase = self._phase_number_from_id(equipment_id)
+            if keyword and keyword not in name.lower():
+                continue
+            if rarity_id is not None and int(equipment.get("rarity_id", 0)) != int(rarity_id):
+                continue
+            if phase_filter is not None:
+                if int(phase_filter) == 0 and parsed_phase is not None:
+                    continue
+                if int(phase_filter) > 0 and parsed_phase != int(phase_filter):
+                    continue
+            rows.append(equipment)
+        return rows
 
     def _build_name_icon_cell(self, equipment: Dict[str, object]) -> QWidget:
         """
@@ -692,15 +941,18 @@ class UserDataPage(BasePage):
     @staticmethod
     def _phase_from_public_data(equipment_id: str) -> str:
         """从内部 ID 推断科研期，只展示给用户可理解的期数名称。"""
-        if equipment_id.startswith("S") and "-" in equipment_id:
-            return f"科研 {equipment_id.split('-', 1)[0][1:]} 期"
-        return "通用"
+        phase_number = UserDataPage._phase_number_from_id(equipment_id)
+        return f"科研 {phase_number} 期" if phase_number is not None else "通用"
 
     @staticmethod
-    def _phase_labels() -> List[str]:
-        """读取科研期列表并转换成用户可见标签。"""
-        phases = get_research_manager().get_all()
-        return [f"科研 {phase.get('phase_number')} 期" for phase in phases]
+    def _phase_number_from_id(equipment_id: str) -> Optional[int]:
+        """从装备 ID 解析科研期数；通用装备返回 None。"""
+        if equipment_id.startswith("S") and "-" in equipment_id:
+            try:
+                return int(equipment_id.split("-", 1)[0][1:])
+            except ValueError:
+                return None
+        return None
 
 
 class ResearchProgressPage(BasePage):
@@ -726,6 +978,7 @@ class ResearchProgressPage(BasePage):
         self._last_target_comment = ""
         self._last_target_context = "target_changed"
         self._syncing_start_date = False
+        self._syncing_target = False
         phases = get_research_manager().get_all()
         latest_phase = self.progress_analyzer.get_latest_phase_number()
 
@@ -843,6 +1096,7 @@ class ResearchProgressPage(BasePage):
             self.progress_table.setColumnWidth(column, 92)
         polish_data_table(self.progress_table, 38)
         self.root.addWidget(self._build_research_detail_area(), stretch=1)
+        self._sync_target_from_config()
         self._sync_start_date_from_config()
         self.refresh_progress()
 
@@ -899,12 +1153,22 @@ class ResearchProgressPage(BasePage):
         self._update_table(progress.get("equipment_rows", []))
 
     def _on_phase_changed(self) -> None:
-        """科研期切换时同步开始日期并刷新展示。"""
+        """科研期切换时同步目标数量、开始日期并刷新展示。"""
+        self._sync_target_from_config()
         self._sync_start_date_from_config()
         self.refresh_progress()
 
     def _on_target_changed(self) -> None:
         """目标彩装切换时刷新进度并弹出秘书舰对话。"""
+        if self._syncing_target:
+            return
+        phase_number = self._selected_phase_number()
+        if phase_number > 0:
+            self.ui_config_manager.save_phase_target_count(
+                phase_number,
+                int(self.target_combo.currentData() or 2),
+            )
+            self.ui_config = self.ui_config_manager.get_research_progress_config()
         self.refresh_progress()
         self._show_secretary_dialog(self._secretary_dialog_text(self._last_target_context))
 
@@ -934,13 +1198,29 @@ class ResearchProgressPage(BasePage):
         """返回当前科研期数，异常时返回 0。"""
         return int(self.phase_combo.currentData() or 0)
 
+    def _sync_target_from_config(self) -> None:
+        """按当前科研期从 JSON 配置同步目标彩装数量。"""
+        phase_number = self._selected_phase_number()
+        if phase_number <= 0:
+            return
+        setting = self.ui_config_manager.get_phase_setting(phase_number)
+        target_count = max(1, min(20, int(setting.get("target", 2))))
+        index = self.target_combo.findData(target_count)
+        if index < 0:
+            return
+        self._syncing_target = True
+        self.target_combo.setCurrentIndex(index)
+        self._syncing_target = False
+
     def _sync_start_date_from_config(self) -> None:
         """按当前科研期从 JSON 配置同步开始日期。"""
         phase_number = self._selected_phase_number()
+        phase_setting = self.ui_config_manager.get_phase_setting(phase_number) if phase_number > 0 else {}
         phase_dates = self.ui_config.get("phase_start_dates", {})
         official_dates = self.ui_config.get("official_start_dates", {})
         date_text = str(
-            phase_dates.get(str(phase_number))
+            phase_setting.get("start_date")
+            or phase_dates.get(str(phase_number))
             or official_dates.get(str(phase_number))
             or self.ui_config.get("official_fallback_start_date")
             or self.ui_config.get("fallback_start_date")
@@ -1466,16 +1746,22 @@ class TrendPage(BasePage):
     输入：
         无。
     输出：
-        QWidget，预留多指标折线图展示区域。
+        QWidget，展示科研期金彩比趋势与指定装备碎片趋势。
     使用示例：
         page = TrendPage()
     """
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """创建历史趋势页面。"""
-        super().__init__("历史趋势", "选择时间区间和指标后，以折线图展示欧非值、装备数量和碎片总量变化。", parent)
+        super().__init__("历史趋势", "观察各科研期金彩比变化，并查询指定装备的碎片数量趋势。", parent)
         self.theme_tokens = ThemeTokens()
         self.trend_analyzer = get_trend_analyzer()
+        self.user_data_manager = get_user_data_manager()
+        self.luck_calculator = get_luck_calculator()
+        self.equipment_manager = get_equipment_manager()
+        self.research_manager = get_research_manager()
+        self._equipment_search_results: List[Dict[str, object]] = []
+
         controls = QHBoxLayout()
         self.start_date = QDateEdit()
         self.end_date = QDateEdit()
@@ -1484,95 +1770,74 @@ class TrendPage(BasePage):
         self.start_date.setDisplayFormat("yyyy-MM-dd")
         self.end_date.setDisplayFormat("yyyy-MM-dd")
         self._apply_available_date_range()
-        self.metric_specs = self.trend_analyzer.get_metric_specs()
-        self.metric_combo = QComboBox()
-        for spec in self.metric_specs:
-            self.metric_combo.addItem(spec.title, spec.key)
-        self.metric_combo.currentIndexChanged.connect(lambda _index=0: self.refresh_trend_preview())
         self.chart_palette_combo = QComboBox()
         self.chart_palette_combo.setObjectName("chart_palette_combo")
         self.chart_palette_combo.addItem("默认线色", "default")
         self.chart_palette_combo.addItem("柔和线色", "soft")
         self.chart_palette_combo.addItem("高对比线色", "contrast")
         self.chart_palette_combo.currentIndexChanged.connect(lambda _index=0: self.refresh_trend_preview())
-        self.metric_checks: Dict[str, QCheckBox] = {}
-        self.phase_combo = QComboBox()
-        self.phase_combo.addItem("全部科研期", None)
-        for phase in get_research_manager().get_all():
-            phase_number = int(phase.get("phase_number", 0))
-            self.phase_combo.addItem(f"科研 {phase_number} 期", phase_number)
         refresh_button = QPushButton("刷新趋势")
         refresh_button.clicked.connect(self.refresh_trend_preview)
         controls.addWidget(QLabel("开始"))
         controls.addWidget(self.start_date)
         controls.addWidget(QLabel("结束"))
         controls.addWidget(self.end_date)
-        controls.addWidget(QLabel("科研期"))
-        controls.addWidget(self.phase_combo)
-        controls.addWidget(QLabel("指标"))
-        controls.addWidget(self.metric_combo)
         controls.addWidget(QLabel("线色"))
         controls.addWidget(self.chart_palette_combo)
         controls.addWidget(refresh_button)
         controls.addStretch(1)
         self.root.addLayout(controls)
 
-        metric_bar = QHBoxLayout()
-        metric_bar.setSpacing(10)
-        metric_bar.addWidget(QLabel("叠加曲线"))
-        for spec in self.metric_specs:
-            checkbox = QCheckBox(spec.title)
-            checkbox.setChecked(spec.key in {"equipment_count", "fragment_count", "luck_value"})
+        phase_bar = QHBoxLayout()
+        phase_bar.setSpacing(10)
+        phase_bar.addWidget(QLabel("科研期"))
+        self.phase_checks: Dict[int, QCheckBox] = {}
+        for phase in self.research_manager.get_all():
+            phase_number = int(phase.get("phase_number", 0))
+            checkbox = QCheckBox(f"PR{phase_number}")
+            checkbox.setChecked(True)
             checkbox.stateChanged.connect(lambda _state=0: self.refresh_trend_preview())
-            self.metric_checks[spec.key] = checkbox
-            metric_bar.addWidget(checkbox)
-        metric_bar.addStretch(1)
-        self.root.addLayout(metric_bar)
+            self.phase_checks[phase_number] = checkbox
+            phase_bar.addWidget(checkbox)
+        phase_bar.addStretch(1)
+        self.root.addLayout(phase_bar)
 
-        chart = QFrame()
-        chart.setObjectName("chart_panel")
-        chart_layout = QVBoxLayout(chart)
-        chart_layout.setContentsMargins(14, 12, 14, 10)
-        chart_layout.setSpacing(6)
-        self.chart_title = QLabel("趋势折线图")
-        self.chart_title.setObjectName("section_title")
-        self.chart_axis_label = QLabel("Y：数值 / X：记录序号")
-        self.chart_axis_label.setObjectName("chart_axis_badge")
-        self.chart_status = QLabel("等待历史记录数据。")
-        self.chart_status.setObjectName("panel_body")
-        self.chart_status.setWordWrap(True)
-        self.chart = QChart()
-        self.chart.setBackgroundVisible(False)
-        self.chart.setMargins(QMargins(4, 8, 8, 4))
-        self.chart.setPlotAreaBackgroundVisible(True)
-        self.chart.legend().setVisible(True)
-        self.chart.legend().setAlignment(Qt.AlignmentFlag.AlignBottom)
-        self.chart_view = QChartView(self.chart)
-        self.chart_view.setObjectName("trend_chart_view")
-        self.chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self.chart_view.setMinimumHeight(360)
-        self.chart_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        chart_header = QHBoxLayout()
-        chart_header.setContentsMargins(0, 0, 0, 0)
-        chart_header.addWidget(self.chart_title)
-        chart_header.addStretch(1)
-        chart_header.addWidget(self.chart_axis_label)
-        chart_layout.addLayout(chart_header)
-        chart_layout.addWidget(self.chart_status)
-        chart_layout.addWidget(self.chart_view, stretch=1)
-        self.root.addWidget(chart, stretch=1)
+        equipment_bar = QHBoxLayout()
+        equipment_bar.setSpacing(10)
+        self.equipment_search_input = QLineEdit()
+        self.equipment_search_input.setObjectName("trend_equipment_search")
+        self.equipment_search_input.setPlaceholderText("输入装备名称，支持模糊或精确查询")
+        self.equipment_search_button = QPushButton("查询装备")
+        self.equipment_search_button.clicked.connect(self.search_equipment_options)
+        self.equipment_select_combo = QComboBox()
+        self.equipment_select_combo.setObjectName("trend_equipment_select")
+        self.equipment_select_combo.currentIndexChanged.connect(lambda _index=0: self.refresh_equipment_fragment_chart())
+        equipment_bar.addWidget(QLabel("装备碎片"))
+        equipment_bar.addWidget(self.equipment_search_input, stretch=2)
+        equipment_bar.addWidget(self.equipment_search_button)
+        equipment_bar.addWidget(self.equipment_select_combo, stretch=2)
+        self.root.addLayout(equipment_bar)
 
-        self.trend_table = QTableWidget(0, 6)
-        self.trend_table.setHorizontalHeaderLabels(["日期", "装备数量", "碎片总量", "等值分", "欧非值", "评价"])
-        self.trend_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        polish_data_table(self.trend_table, 42)
-        self.root.addWidget(self.trend_table, stretch=1)
+        self.phase_ratio_panel = MatplotlibTrendPanel(
+            "科研期金彩比趋势",
+            "按日期展示各科研期：金色等效碎片总量 / 彩色等效碎片总量。",
+        )
+        self.phase_ratio_panel.setObjectName("phase_ratio_trend_panel")
+        self.equipment_fragment_panel = MatplotlibTrendPanel(
+            "装备碎片数量趋势",
+            "先搜索并选择装备，再展示该装备碎片数量随时间变化。",
+        )
+        self.equipment_fragment_panel.setObjectName("equipment_fragment_trend_panel")
+        self.root.addWidget(self.phase_ratio_panel, stretch=1)
+        self.root.addWidget(self.equipment_fragment_panel, stretch=1)
+
+        self.search_equipment_options()
         self.apply_theme_tokens(self.theme_tokens)
         self.refresh_trend_preview()
 
     def apply_theme_tokens(self, tokens: ThemeTokens) -> None:
         """
-        接收主窗口皮肤令牌并刷新 QChart 的非 QSS 样式。
+        接收主窗口皮肤令牌并刷新 matplotlib 图表样式。
         输入：
             tokens: 当前主窗口皮肤令牌。
         输出：
@@ -1581,16 +1846,12 @@ class TrendPage(BasePage):
             page.apply_theme_tokens(window.theme_tokens)
         """
         self.theme_tokens = tokens
-        self.chart.setBackgroundBrush(QBrush(QColor(tokens.surface)))
-        self.chart.setPlotAreaBackgroundBrush(QBrush(QColor(tokens.table_row)))
-        self.chart.legend().setLabelColor(QColor(tokens.text_muted))
-        self.chart_view.setStyleSheet(f"background: {tokens.surface}; border: 0px;")
-        for axis in self.chart.axes():
-            self._style_chart_axis(axis)
+        self.phase_ratio_panel.apply_theme_tokens(tokens)
+        self.equipment_fragment_panel.apply_theme_tokens(tokens)
 
     def refresh_trend_preview(self) -> None:
         """
-        刷新历史趋势预览表和折线图。
+        刷新两张历史趋势折线图。
         输入：
             无。
         输出：
@@ -1598,215 +1859,157 @@ class TrendPage(BasePage):
         使用示例：
             page.refresh_trend_preview()
         """
-        phase_number = self.phase_combo.currentData()
-        rows = self.trend_analyzer.get_trend(
-            self.start_date.date().toString("yyyy-MM-dd"),
-            self.end_date.date().toString("yyyy-MM-dd"),
-            int(phase_number) if phase_number is not None else None,
-        )
-        selected_metrics = self._get_selected_metric_keys()
-        self._refresh_chart(rows, selected_metrics)
-        self.trend_table.setRowCount(len(rows))
-        for row_index, row in enumerate(rows):
-            values = [
-                row.get("date", ""),
-                row.get("equipment_count", 0),
-                row.get("fragment_count", 0),
-                row.get("equivalent_score", 0),
-                self._format_luck_value(row.get("luck_value")),
-                row.get("luck_level", "未知"),
-            ]
-            for column, value in enumerate(values):
-                self.trend_table.setItem(row_index, column, QTableWidgetItem(str(value)))
+        self.refresh_phase_ratio_chart()
+        self.refresh_equipment_fragment_chart()
 
-    def _get_selected_metric_keys(self) -> List[str]:
+    def refresh_phase_ratio_chart(self) -> None:
+        """刷新各科研期金彩比折线图。"""
+        series_map = self._build_phase_ratio_series_map()
+        self.phase_ratio_panel.plot_series(
+            series_map,
+            "金彩比",
+            "当前时间区间暂无可绘制的科研金彩比记录。",
+            self._phase_color_map(series_map.keys()),
+        )
+
+    def refresh_equipment_fragment_chart(self) -> None:
+        """刷新指定装备碎片数量折线图。"""
+        equipment_id = self.equipment_select_combo.currentData()
+        if not equipment_id:
+            self.equipment_fragment_panel.plot_series(
+                {},
+                "碎片数量",
+                "请先输入装备名称并从查询结果中选择装备。",
+            )
+            return
+        equipment_name = self.equipment_select_combo.currentText()
+        series = self._build_equipment_fragment_series(str(equipment_id), equipment_name)
+        self.equipment_fragment_panel.plot_series(
+            {equipment_name: series},
+            "碎片数量",
+            "当前时间区间内没有该装备的碎片历史记录。",
+            {equipment_name: self.theme_tokens.gold},
+        )
+
+    def search_equipment_options(self) -> None:
         """
-        获取当前勾选的趋势指标。
+        按输入名称搜索装备，并把结果放入选择框。
         输入：
             无。
         输出：
-            List[str]: 至少包含一个指标键。
-        使用示例：
-            keys = page._get_selected_metric_keys()
-        """
-        selected = [key for key, checkbox in self.metric_checks.items() if checkbox.isChecked()]
-        if selected:
-            return selected
-        current_key = self.metric_combo.currentData()
-        return [str(current_key or "equipment_count")]
-
-    def _refresh_chart(self, rows: List[Dict[str, object]], metric_keys: List[str]) -> None:
-        """
-        根据历史趋势数据刷新折线图。
-        输入：
-            rows: TrendAnalyzer 返回的按日期排列数据。
-            metric_keys: 需要绘制的指标键。
-        输出：
             None。
         使用示例：
-            page._refresh_chart(rows, ["equipment_count", "luck_value"])
+            page.search_equipment_options()
         """
-        self.chart.removeAllSeries()
+        keyword = self.equipment_search_input.text().strip()
+        rows = self._search_equipment_rows(keyword)
+        self._equipment_search_results = rows
+        self.equipment_select_combo.blockSignals(True)
+        self.equipment_select_combo.clear()
         if not rows:
-            self.chart_status.setText("当前时间区间暂无历史记录；完成一次识别或录入后这里会自动出现趋势。")
-            self._reset_chart_axes(1, 1, 0.0, 1.0, "记录序号", "数值")
-            return
+            self.equipment_select_combo.addItem("未找到装备", None)
+        else:
+            for equipment in rows[:30]:
+                self.equipment_select_combo.addItem(str(equipment.get("name", "")), str(equipment.get("equipment_id", "")))
+        self.equipment_select_combo.blockSignals(False)
+        self.refresh_equipment_fragment_chart()
 
-        specs = {spec.key: spec for spec in self.metric_specs}
-        use_normalized_value = len(metric_keys) > 1
-        y_values: List[float] = []
-        for metric_key in metric_keys:
-            spec = specs.get(metric_key)
-            if spec is None:
+    def _search_equipment_rows(self, keyword: str) -> List[Dict[str, object]]:
+        """
+        搜索装备名称，精确匹配优先，模糊匹配补充。
+        输入：
+            keyword: 用户输入的装备名称片段。
+        输出：
+            List[dict]: 最多用于选择框展示的装备行。
+        使用示例：
+            rows = page._search_equipment_rows("406")
+        """
+        equipments = self.equipment_manager.get_equipment_with_image()
+        if not keyword:
+            return equipments[:10]
+        normalized = keyword.lower()
+        exact = [equipment for equipment in equipments if str(equipment.get("name", "")).lower() == normalized]
+        fuzzy = [
+            equipment for equipment in equipments
+            if normalized in str(equipment.get("name", "")).lower()
+            and equipment not in exact
+        ]
+        return exact + fuzzy
+
+    def _selected_phase_numbers(self) -> List[int]:
+        """返回当前勾选的科研期；未勾选时回退为全部期数。"""
+        selected = [phase for phase, checkbox in self.phase_checks.items() if checkbox.isChecked()]
+        return selected or list(self.phase_checks)
+
+    def _build_phase_ratio_series_map(self) -> Dict[str, List[Dict[str, object]]]:
+        """
+        构建各科研期金彩比序列。
+        输入：
+            无。
+        输出：
+            Dict[str, List[dict]]: {"PR6": [{"date": "...", "value": ...}]}。
+        使用示例：
+            series = page._build_phase_ratio_series_map()
+        """
+        start = self.start_date.date().toString("yyyy-MM-dd")
+        end = self.end_date.date().toString("yyyy-MM-dd")
+        series_map: Dict[str, List[Dict[str, object]]] = {}
+        for phase_number in self._selected_phase_numbers():
+            points: List[Dict[str, object]] = []
+            for date_str in self._available_dates_in_range(start, end):
+                day_data = self.user_data_manager.get_data_by_date(date_str)
+                result = self.luck_calculator.calculate_phase_luck(phase_number, day_data)
+                rainbow_total = int(result.get("rainbow_total", 0) or 0)
+                gold_total = int(result.get("gold_total", 0) or 0)
+                ratio = None if rainbow_total <= 0 else round(gold_total / rainbow_total, 3)
+                points.append({
+                    "date": date_str,
+                    "value": ratio,
+                    "detail": f"金 {gold_total} / 彩 {rainbow_total}",
+                })
+            series_map[f"PR{phase_number}"] = points
+        return series_map
+
+    def _build_equipment_fragment_series(self, equipment_id: str, equipment_name: str) -> List[Dict[str, object]]:
+        """构建单件装备碎片数量历史序列。"""
+        start = self.start_date.date().toString("yyyy-MM-dd")
+        end = self.end_date.date().toString("yyyy-MM-dd")
+        points: List[Dict[str, object]] = []
+        for row in self.user_data_manager.get_history(equipment_id):
+            date_str = str(row.get("date", ""))
+            if date_str < start or date_str > end:
                 continue
-            raw_values = [self._coerce_chart_value(row.get(metric_key)) for row in rows]
-            visible_values = [value for value in raw_values if value is not None]
-            if not visible_values:
-                continue
-            series = QLineSeries()
-            series.setName(spec.title)
-            series.setPen(QPen(QColor(self._metric_color(spec.color, metric_key)), 3))
-            min_value = min(visible_values)
-            max_value = max(visible_values)
-            for index, value in enumerate(raw_values, start=1):
-                if value is None:
-                    continue
-                chart_value = self._normalize_chart_value(value, min_value, max_value) if use_normalized_value else value
-                series.append(float(index), float(chart_value))
-                y_values.append(float(chart_value))
-            self.chart.addSeries(series)
+            points.append({
+                "date": date_str,
+                "value": int(row.get("fragment_count", 0)),
+                "detail": f"{equipment_name} 成品 {int(row.get('equipment_count', 0))}",
+            })
+        return points
 
-        if not self.chart.series():
-            self.chart_status.setText("当前指标暂时没有可绘制的数据，可以换一个指标或时间区间。")
-            self._reset_chart_axes(1, max(1, len(rows)), 0.0, 1.0, "记录序号", "数值")
-            return
-
-        x_max = max(1, len(rows))
-        y_min = min(y_values)
-        y_max = max(y_values)
-        if y_min == y_max:
-            y_min -= 1.0
-            y_max += 1.0
-        y_padding = max((y_max - y_min) * 0.12, 1.0)
-        self._reset_chart_axes(
-            1,
-            x_max,
-            y_min - y_padding,
-            y_max + y_padding,
-            "记录序号",
-            "归一化值" if use_normalized_value else "数值",
-        )
-        first_day = rows[0].get("date", "")
-        last_day = rows[-1].get("date", "")
-        mode = "多指标已按 0-100 归一化显示" if use_normalized_value else "单指标按原始数值显示"
-        self.chart_status.setText(f"{first_day} 至 {last_day}，共 {len(rows)} 条记录；{mode}。")
-
-    def _reset_chart_axes(
-        self,
-        x_min: int,
-        x_max: int,
-        y_min: float,
-        y_max: float,
-        x_title: str,
-        y_title: str,
-    ) -> None:
-        """
-        重建图表坐标轴，避免刷新后旧坐标轴残留。
-        输入：
-            x_min/x_max: 横轴范围。
-            y_min/y_max: 纵轴范围。
-            x_title/y_title: 坐标轴标题。
-        输出：
-            None。
-        使用示例：
-            page._reset_chart_axes(1, 3, 0.0, 100.0, "记录序号", "归一化值")
-        """
-        for axis in list(self.chart.axes()):
-            self.chart.removeAxis(axis)
-
-        axis_x = QValueAxis()
-        axis_x.setTitleText("")
-        axis_x.setLabelFormat("%d")
-        axis_x.setRange(float(x_min), float(max(x_min, x_max)))
-        axis_x.setTickCount(max(2, min(8, x_max)))
-
-        axis_y = QValueAxis()
-        axis_y.setTitleText("")
-        axis_y.setLabelFormat("%.2f")
-        axis_y.setRange(float(y_min), float(y_max))
-        axis_y.setTickCount(5)
-        self.chart_axis_label.setText(f"Y：{y_title} / X：{x_title}")
-        self._style_chart_axis(axis_x)
-        self._style_chart_axis(axis_y)
-
-        self.chart.addAxis(axis_x, Qt.AlignmentFlag.AlignBottom)
-        self.chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
-        for series in self.chart.series():
-            series.attachAxis(axis_x)
-            series.attachAxis(axis_y)
-
-    def _style_chart_axis(self, axis: QValueAxis) -> None:
-        """
-        按当前皮肤刷新坐标轴文字、网格和轴线。
-        输入：
-            axis: 需要设置的数值坐标轴。
-        输出：
-            None。
-        使用示例：
-            self._style_chart_axis(axis_y)
-        """
-        tokens = getattr(self, "theme_tokens", ThemeTokens())
-        axis.setTitleBrush(QBrush(QColor(tokens.text_muted)))
-        axis.setLabelsBrush(QBrush(QColor(tokens.text)))
-        axis.setTitleFont(QFont("Microsoft YaHei UI", 9, QFont.Weight.Bold))
-        axis.setLabelsFont(QFont("Microsoft YaHei UI", 9))
-        axis.setGridLinePen(QPen(QColor(tokens.table_grid), 1))
-        axis.setLinePen(QPen(QColor(tokens.azure), 2))
-
-    def _metric_color(self, default_color: str, metric_key: str) -> str:
-        """
-        根据趋势图线色方案返回曲线颜色。
-        输入：
-            default_color: 指标默认颜色。
-            metric_key: 趋势指标 key。
-        输出：
-            str: 十六进制颜色。
-        使用示例：
-            color = self._metric_color("#58D7FF", "luck_value")
-        """
+    def _phase_color_map(self, names: Any) -> Dict[str, str]:
+        """按当前线色方案生成科研期折线颜色。"""
         palette = str(self.chart_palette_combo.currentData() or "default")
         palettes = {
-            "soft": {
-                "equipment_count": "#7FAFD2",
-                "fragment_count": "#D9B872",
-                "equivalent_score": "#91C9A4",
-                "luck_value": "#D69BC8",
-            },
-            "contrast": {
-                "equipment_count": "#1E88E5",
-                "fragment_count": "#F9A825",
-                "equivalent_score": "#00A86B",
-                "luck_value": "#D81B60",
-            },
+            "soft": ["#7FAFD2", "#D9B872", "#91C9A4", "#D69BC8", "#AFC4FF", "#E6AFAF"],
+            "contrast": ["#1E88E5", "#F9A825", "#00A86B", "#D81B60", "#6A4CFF", "#E53935"],
+            "default": [
+                self.theme_tokens.azure,
+                self.theme_tokens.sakura,
+                self.theme_tokens.gold,
+                self.theme_tokens.success,
+                self.theme_tokens.danger,
+                "#B8F09A",
+            ],
         }
-        return palettes.get(palette, {}).get(metric_key, default_color)
+        selected_palette = palettes.get(palette, palettes["default"])
+        return {name: selected_palette[index % len(selected_palette)] for index, name in enumerate(names)}
 
-    @staticmethod
-    def _normalize_chart_value(value: float, min_value: float, max_value: float) -> float:
-        """把多指标数值压缩到 0-100，保证不同量纲可以叠加观察。"""
-        if min_value == max_value:
-            return 50.0
-        return (value - min_value) / (max_value - min_value) * 100.0
-
-    @staticmethod
-    def _coerce_chart_value(value: object) -> Optional[float]:
-        """把趋势值转换成图表可消费的浮点数；空值返回 None。"""
-        if value is None:
-            return None
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
+    def _available_dates_in_range(self, start: str, end: str) -> List[str]:
+        """返回当前日期范围内的历史记录日期。"""
+        return [
+            date_str for date_str in self.user_data_manager.list_available_dates()
+            if start <= date_str <= end
+        ]
 
     def _apply_available_date_range(self) -> None:
         """按已有历史记录设置日期选择器默认值；没有记录时使用当天。"""
@@ -1816,13 +2019,6 @@ class TrendPage(BasePage):
         end = QDate.fromString(str(date_range.get("end") or today.toString("yyyy-MM-dd")), "yyyy-MM-dd")
         self.start_date.setDate(start if start.isValid() else today)
         self.end_date.setDate(end if end.isValid() else today)
-
-    @staticmethod
-    def _format_luck_value(value: object) -> str:
-        """把欧非值转换为用户可读文本。"""
-        if value is None:
-            return "暂无"
-        return f"{float(value):.3f}"
 
 
 class AutomationLabPage(BasePage):
@@ -1842,6 +2038,7 @@ class AutomationLabPage(BasePage):
         """创建自动化实验室页面。"""
         super().__init__("自动化实验室", "检查模拟器连接、截图采集、OCR 识别和关键环境，帮助判断程序是否能正常运行。", parent)
         self.registry = registry
+        self.automation_bridge = get_automation_bridge()
         grid = QGridLayout()
         grid.setSpacing(12)
         self.root.addLayout(grid, stretch=1)
@@ -1857,6 +2054,10 @@ class AutomationLabPage(BasePage):
         self.crawler_status_label.setObjectName("panel_body")
         self.crawler_status_label.setWordWrap(True)
         self.root.addWidget(self._build_crawler_update_panel())
+        self.secretary_pack_status_label = QLabel("模板已预留：用户可按 README 制作秘书舰资源包。")
+        self.secretary_pack_status_label.setObjectName("panel_body")
+        self.secretary_pack_status_label.setWordWrap(True)
+        self.root.addWidget(self._build_secretary_pack_panel())
 
         feature_panel = QFrame()
         feature_panel.setObjectName("content_panel")
@@ -1906,9 +2107,54 @@ class AutomationLabPage(BasePage):
         return panel
 
     def _on_crawler_update_clicked(self) -> None:
-        """触发资料爬取预留入口，并给出当前阶段说明。"""
-        self.crawler_status_label.setText("已发送资料更新请求：当前 GUI 先保留接口，待 crawler 分支合并后接入真实执行。")
+        """触发资料爬取安全桥接入口，并给出友好状态。"""
+        result = self.automation_bridge.run_crawler_update()
+        self.crawler_status_label.setText(result.message)
         self.featureRequested.emit("crawler_update")
+
+    def _build_secretary_pack_panel(self) -> QFrame:
+        """
+        构建秘书舰资源包导入占位入口。
+        输入：
+            无。
+        输出：
+            QFrame: 自动化实验室中的秘书舰资源包面板。
+        使用示例：
+            panel = self._build_secretary_pack_panel()
+        """
+        panel = QFrame()
+        panel.setObjectName("content_panel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title = QLabel("秘书舰资源包")
+        title.setObjectName("panel_title")
+        self.secretary_pack_button = QPushButton("检查模板格式")
+        self.secretary_pack_button.setToolTip("校验 resources/secretaries/template 是否符合秘书舰资源包要求。")
+        self.secretary_pack_button.clicked.connect(self._on_secretary_pack_clicked)
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        title_row.addWidget(self.secretary_pack_button)
+
+        notice = QLabel("P2 阶段先提供模板和校验占位；后续会支持选择用户打包的秘书舰资源包并导入。")
+        notice.setObjectName("card_caption")
+        notice.setWordWrap(True)
+
+        layout.addLayout(title_row)
+        layout.addWidget(self.secretary_pack_status_label)
+        layout.addWidget(notice)
+        return panel
+
+    def _on_secretary_pack_clicked(self) -> None:
+        """校验秘书舰模板资源包，并把结果展示到 UI。"""
+        template_dir = PathManager.get_project_root() / "resources" / "secretaries" / "template"
+        result = validate_secretary_pack(template_dir)
+        if result.valid:
+            self.secretary_pack_status_label.setText("秘书舰模板格式正确，可以作为用户自制资源包参考。")
+            return
+        self.secretary_pack_status_label.setText(f"{result.message} {'；'.join(result.errors)}")
 
 
 class FutureDockPage(BasePage):
@@ -2024,8 +2270,10 @@ class SettingsPage(BasePage):
         self.root.addLayout(grid, stretch=1)
         grid.addWidget(BasePage.build_card("显示细节", "表格、日志和导航栏会跟随皮肤使用更柔和的低眩光样式。"), 0, 0)
         grid.addWidget(BasePage.build_card("刷新频率", "玩家资源未来由 OCR 运行期更新，默认约 5 分钟一次。"), 0, 1)
-        grid.addWidget(BasePage.build_card("导出设置", "后续可选择 CSV、Excel 和图片报告导出偏好。"), 1, 0)
-        grid.addWidget(BasePage.build_card("打包启动", "未来发布为双击即可打开的 exe/快捷方式，并包含运行依赖。"), 1, 1)
+        grid.addWidget(BasePage.build_card("自定义背景", "已预留背景图片路径、透明度和模糊配置，后续接入文件选择。"), 1, 0)
+        grid.addWidget(BasePage.build_card("秘书舰资源包", "用户可按模板准备图片和台词，后续从自动化实验室导入。"), 1, 1)
+        grid.addWidget(BasePage.build_card("导出设置", "后续可选择 CSV、Excel 和图片报告导出偏好。"), 2, 0)
+        grid.addWidget(BasePage.build_card("打包启动", "未来发布为双击即可打开的 exe/快捷方式，并包含运行依赖。"), 2, 1)
 
     def _build_skin_panel(self) -> QFrame:
         """
@@ -2193,6 +2441,10 @@ class MainWindow(QMainWindow):
         self.nav_collapsed = False
         self._nav_animation: Optional[QParallelAnimationGroup] = None
         self.nav_animation_duration_ms = 180
+        self._iron_pulse_on = False
+        self._iron_blood_timer = QTimer(self)
+        self._iron_blood_timer.setInterval(1200)
+        self._iron_blood_timer.timeout.connect(self._toggle_iron_blood_pulse)
 
         current_app = QApplication.instance()
         if current_app is not None:
@@ -2208,6 +2460,7 @@ class MainWindow(QMainWindow):
         self._build_status_bar()
         self.setStyleSheet(build_stylesheet(self.theme_tokens))
         self._apply_page_theme_tokens()
+        self._configure_skin_motion()
         self.runtime_manager.set_task_state(TaskStateKind.IDLE, 0)
         self.logger.info("GUI 主窗口骨架初始化完成")
 
@@ -2332,10 +2585,43 @@ class MainWindow(QMainWindow):
         self.theme_tokens = skin.tokens
         self.setStyleSheet(build_stylesheet(self.theme_tokens))
         self._apply_page_theme_tokens()
+        self._configure_skin_motion()
         self.ui_config_manager.save_active_skin(skin.key)
         width = self.theme_tokens.nav_collapsed_width if self.nav_collapsed else self.theme_tokens.nav_width
         self.navigation_panel.setFixedWidth(width)
         self.statusBar().showMessage(f"已切换界面皮肤：{skin.name}")
+
+    def _configure_skin_motion(self) -> None:
+        """
+        按当前皮肤启停轻量动效。
+        输入：
+            无。
+        输出：
+            None。
+        使用示例：
+            self._configure_skin_motion()
+        """
+        if self.active_skin == "iron_blood":
+            if not self._iron_blood_timer.isActive():
+                self._iron_blood_timer.start()
+        else:
+            self._iron_blood_timer.stop()
+            self._set_iron_blood_pulse(False)
+
+    def _toggle_iron_blood_pulse(self) -> None:
+        """铁血皮肤状态栏呼吸线动画。"""
+        self._set_iron_blood_pulse(not self._iron_pulse_on)
+
+    def _set_iron_blood_pulse(self, enabled: bool) -> None:
+        """设置铁血呼吸线动态属性并刷新状态栏样式。"""
+        self._iron_pulse_on = enabled
+        status_bar = self.statusBar()
+        if status_bar is None:
+            return
+        status_bar.setProperty("ironPulse", enabled)
+        status_bar.style().unpolish(status_bar)
+        status_bar.style().polish(status_bar)
+        status_bar.update()
 
     def _apply_page_theme_tokens(self) -> None:
         """

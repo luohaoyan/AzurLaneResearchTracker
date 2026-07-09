@@ -1,7 +1,21 @@
 {
+    "phase_settings": {
+        "PR6": {
+            "target": 5,
+            "start_date": "2026-03-10"
+        },
+        "PR1": {
+            "target": 12,
+            "start_date": "2026-01-01"
+        }
+    },
     "phase_start_dates": {
         "6": "2026-03-10",
         "1": "2026-01-01"
+    },
+    "phase_targets": {
+        "6": 5,
+        "1": 12
     },
     "official_start_dates": {
         "6": "2026-03-10"

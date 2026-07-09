@@ -27,7 +27,11 @@ from core.utils.logger import get_logger
 # ============================================================
 
 DEFAULT_RESEARCH_PROGRESS_UI_CONFIG: Dict[str, Any] = {
+    "phase_settings": {
+        "PR6": {"target": 2, "start_date": "2026-03-10"},
+    },
     "phase_start_dates": {"6": "2026-03-10"},
+    "phase_targets": {"6": 2},
     "official_start_dates": {"6": "2026-03-10"},
     "fallback_start_date": "2026-03-10",
     "official_fallback_start_date": "2026-03-10",
@@ -58,10 +62,20 @@ DEFAULT_RESEARCH_PROGRESS_UI_CONFIG: Dict[str, Any] = {
 DEFAULT_APPEARANCE_UI_CONFIG: Dict[str, Any] = {
     "active_skin": "harbor_night",
     "table_density": "comfortable",
+    "custom_background": {
+        "enabled": False,
+        "path": "",
+        "opacity": 0.18,
+        "blur": 0,
+    },
     "skin_notes": {
         "harbor_night": "默认低眩光深色皮肤，适合长时间统计。",
         "sakura_mist": "明亮皮肤预留，后续适合接入秘书舰和节日素材。",
         "iron_blood": "调试向深色皮肤预留，适合自动化实验室。",
+        "eagle_union": "白鹰阵营皮肤预留，海军蓝与星章白的现代舰队感。",
+        "dragon_empery": "东煌阵营皮肤，红金与青玉色构成温润中式界面。",
+        "northern_parliament": "北联阵营皮肤预留，冰蓝银白的极地风格。",
+        "sakura_empire": "重樱阵营皮肤预留，深靛与夜樱粉的和风氛围。",
     },
 }
 
@@ -153,6 +167,67 @@ class UiConfigManager:
         phase_dates = dict(config.get("phase_start_dates", {}))
         phase_dates[str(int(phase_number))] = start_date
         config["phase_start_dates"] = phase_dates
+        phase_settings = dict(config.get("phase_settings", {}))
+        key = self._phase_key(phase_number)
+        setting = dict(phase_settings.get(key, {}))
+        setting["start_date"] = start_date
+        setting.setdefault("target", int(config.get("phase_targets", {}).get(str(int(phase_number)), 2)))
+        phase_settings[key] = setting
+        config["phase_settings"] = phase_settings
+        self.config_loader.save_config("ui", "research_progress", config)
+
+    def get_phase_setting(self, phase_number: int) -> Dict[str, Any]:
+        """
+        获取某一期科研的用户配置。
+        输入：
+            phase_number: 科研期数。
+        输出：
+            dict: {"target": int, "start_date": "YYYY-MM-DD"}。
+        使用示例：
+            setting = manager.get_phase_setting(8)
+        """
+        config = self.get_research_progress_config()
+        key = self._phase_key(phase_number)
+        setting = dict(config.get("phase_settings", {}).get(key, {}))
+        legacy_targets = config.get("phase_targets", {})
+        legacy_dates = config.get("phase_start_dates", {})
+        if "target" not in setting:
+            setting["target"] = int(legacy_targets.get(str(int(phase_number)), 2))
+        if "start_date" not in setting:
+            setting["start_date"] = str(
+                legacy_dates.get(str(int(phase_number)))
+                or config.get("official_start_dates", {}).get(str(int(phase_number)))
+                or config.get("official_fallback_start_date")
+                or config.get("fallback_start_date")
+            )
+        return setting
+
+    def save_phase_target_count(self, phase_number: int, target_count: int) -> None:
+        """
+        保存某一期科研的目标彩装数量。
+        输入：
+            phase_number: 科研期数。
+            target_count: 目标彩装数量。
+        输出：
+            None。
+        使用示例：
+            manager.save_phase_target_count(8, 4)
+        """
+        config = self.get_research_progress_config()
+        safe_target = max(1, min(20, int(target_count)))
+        phase_targets = dict(config.get("phase_targets", {}))
+        phase_targets[str(int(phase_number))] = safe_target
+        config["phase_targets"] = phase_targets
+        phase_settings = dict(config.get("phase_settings", {}))
+        key = self._phase_key(phase_number)
+        setting = dict(phase_settings.get(key, {}))
+        setting["target"] = safe_target
+        setting.setdefault(
+            "start_date",
+            self.get_phase_setting(phase_number).get("start_date", config.get("fallback_start_date", "")),
+        )
+        phase_settings[key] = setting
+        config["phase_settings"] = phase_settings
         self.config_loader.save_config("ui", "research_progress", config)
 
     def get_appearance_config(self) -> Dict[str, Any]:
@@ -194,6 +269,11 @@ class UiConfigManager:
         config = self.get_appearance_config()
         config["active_skin"] = str(skin_key or "harbor_night")
         self.config_loader.save_config("ui", "appearance", config)
+
+    @staticmethod
+    def _phase_key(phase_number: int) -> str:
+        """把科研期数转换为配置键。"""
+        return f"PR{int(phase_number)}"
 
     @classmethod
     def _merge_dicts(cls, defaults: Dict[str, Any], loaded: Dict[str, Any]) -> Dict[str, Any]:

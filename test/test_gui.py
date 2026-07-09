@@ -23,9 +23,9 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QDate, Qt
-from PySide6.QtCharts import QChartView
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QAbstractItemView, QFrame, QLabel, QScrollArea, QSizePolicy
+from matplotlib.colors import to_hex
 
 from core.state.runtime_state import TaskStateKind, get_runtime_state_manager
 from ui.future_hooks import FeatureHookRegistry, FutureFeatureSpec, get_feature_hook_registry
@@ -174,7 +174,8 @@ def test_research_progress_page_shows_real_progress_widgets(qapp: QApplication) 
     page.refresh_progress()
 
     assert "历史科研期" in page.notice_label.text()
-    assert page.target_comment_label.text() in page._secretary_lines("history")
+    assert page._last_target_context in {"history", "history_completed"}
+    assert page._last_target_comment != ""
 
     window.close()
 
@@ -294,6 +295,34 @@ def test_research_progress_rejects_future_start_date_and_resets_official(qapp: Q
         window.close()
 
 
+def test_research_progress_persists_target_per_phase(qapp: QApplication) -> None:
+    """科研进度页应按 PR 期数分别保存目标彩装数量，不同期数互不覆盖。"""
+    manager = get_ui_config_manager()
+    original_config = manager.get_research_progress_config()
+    window = MainWindow()
+    page = window.pages["research_progress"]
+
+    try:
+        phase_one_index = page.phase_combo.findData(1)
+        phase_six_index = page.phase_combo.findData(6)
+        page.phase_combo.setCurrentIndex(phase_one_index)
+        page.target_combo.setCurrentIndex(page.target_combo.findData(3))
+        page.phase_combo.setCurrentIndex(phase_six_index)
+        page.target_combo.setCurrentIndex(page.target_combo.findData(5))
+
+        config = manager.get_research_progress_config()
+
+        assert config["phase_settings"]["PR1"]["target"] == 3
+        assert config["phase_settings"]["PR6"]["target"] == 5
+
+        page.phase_combo.setCurrentIndex(phase_one_index)
+
+        assert page.target_combo.currentData() == 3
+    finally:
+        manager.config_loader.save_config("ui", "research_progress", original_config)
+        window.close()
+
+
 def test_research_progress_target_comment_uses_current_and_history_context() -> None:
     """目标评价应区分最新科研期与历史科研期，避免把补旧期误读成欧非。"""
     window = MainWindow()
@@ -321,9 +350,35 @@ def test_user_data_table_hides_internal_equipment_id(qapp: QApplication) -> None
 
     assert "equipment_id" not in headers
     assert "装备编号" not in headers
-    assert headers == ["装备名称", "稀有度", "类型", "科研期", "拥有数量", "碎片数量"]
+    assert "类型" not in headers
+    assert "拥有数量" not in headers
+    assert "碎片数量" not in headers
+    assert headers == ["装备名称", "稀有度", "科研期"]
     assert page.table.cellWidget(0, 0) is not None
     assert page.table.cellWidget(0, 0).findChild(QLabel, "equipment_icon_label") is not None
+
+    window.close()
+
+
+def test_user_data_filters_by_name_rarity_and_phase(qapp: QApplication) -> None:
+    """用户数据页应支持名称、稀有度和科研期三种基础筛选。"""
+    window = MainWindow()
+    page = window.pages["user_data"]
+
+    page.search_input.setText("406")
+    assert page.table.rowCount() >= 1
+    assert all("406" in page.table.cellWidget(row, 0).findChild(QLabel, "equipment_name_label").text() for row in range(page.table.rowCount()))
+
+    page.search_input.setText("")
+    rarity_index = page.rarity_combo.findData(5)
+    page.rarity_combo.setCurrentIndex(rarity_index)
+    assert page.table.rowCount() >= 1
+    assert all(page.table.item(row, 1).text() == "海上传奇" for row in range(page.table.rowCount()))
+
+    phase_index = page.phase_combo.findData(1)
+    page.phase_combo.setCurrentIndex(phase_index)
+    assert page.table.rowCount() >= 1
+    assert all(page.table.item(row, 2).text() == "科研 1 期" for row in range(page.table.rowCount()))
 
     window.close()
 
@@ -342,99 +397,98 @@ def test_user_data_missing_equipment_icon_uses_blank_pixmap(qapp: QApplication) 
     window.close()
 
 
-def test_trend_page_builds_chart_and_metric_controls(qapp: QApplication) -> None:
-    """历史趋势页应创建真实折线图、指标勾选和明细表。"""
+def test_trend_page_builds_matplotlib_dual_panels(qapp: QApplication) -> None:
+    """历史趋势页应重构为两个 matplotlib 折线图区域，不再展示表格。"""
     window = MainWindow()
     trend_page = window.pages["trend"]
-    headers = [
-        trend_page.trend_table.horizontalHeaderItem(index).text()
-        for index in range(trend_page.trend_table.columnCount())
-    ]
 
-    assert trend_page.findChild(QChartView) is not None
-    assert set(trend_page.metric_checks) == {
-        "equipment_count",
-        "fragment_count",
-        "equivalent_score",
-        "luck_value",
-    }
-    assert headers == ["日期", "装备数量", "碎片总量", "等值分", "欧非值", "评价"]
+    assert hasattr(trend_page, "phase_ratio_panel")
+    assert hasattr(trend_page, "equipment_fragment_panel")
+    assert not hasattr(trend_page, "trend_table")
+    assert trend_page.phase_ratio_panel.canvas.objectName() == "matplotlib_trend_canvas"
+    assert trend_page.equipment_fragment_panel.toolbar.objectName() == "trend_navigation_toolbar"
+    assert trend_page.equipment_select_combo.objectName() == "trend_equipment_select"
+    assert trend_page.phase_checks
 
     window.close()
 
 
-def test_trend_page_refreshes_chart_series_from_rows(qapp: QApplication) -> None:
-    """历史趋势页应能把趋势行刷新成多条折线。"""
+def test_trend_page_builds_phase_ratio_and_equipment_fragment_series(qapp: QApplication) -> None:
+    """趋势页应能构建金彩比多线和指定装备碎片折线数据。"""
     window = MainWindow()
     trend_page = window.pages["trend"]
 
-    rows = [
-        {
-            "date": "2026-07-01",
-            "equipment_count": 1,
-            "fragment_count": 30,
-            "equivalent_score": 80,
-            "luck_value": 7.0,
-            "luck_level": "极欧",
-        },
-        {
-            "date": "2026-07-02",
-            "equipment_count": 3,
-            "fragment_count": 45,
-            "equivalent_score": 170,
-            "luck_value": 3.25,
-            "luck_level": "较欧",
-        },
-    ]
+    class FakeUserDataManager:
+        def list_available_dates(self) -> list[str]:
+            return ["2026-07-01", "2026-07-02"]
 
-    trend_page._refresh_chart(rows, ["equipment_count", "fragment_count"])
+        def get_data_by_date(self, _date: str) -> dict[str, dict[str, int]]:
+            return {}
 
-    assert len(trend_page.chart.series()) == 2
-    assert "多指标" in trend_page.chart_status.text()
-    assert trend_page._normalize_chart_value(15.0, 10.0, 20.0) == 50.0
+        def get_history(self, _equipment_id: str) -> list[dict[str, int | str]]:
+            return [
+                {"date": "2026-07-01", "equipment_count": 0, "fragment_count": 12},
+                {"date": "2026-07-02", "equipment_count": 1, "fragment_count": 35},
+            ]
+
+    class FakeLuckCalculator:
+        def calculate_phase_luck(self, phase_number: int, _day_data: dict[str, dict[str, int]]) -> dict[str, int]:
+            return {"rainbow_total": 50 * phase_number, "gold_total": 25 * phase_number}
+
+    trend_page.user_data_manager = FakeUserDataManager()
+    trend_page.luck_calculator = FakeLuckCalculator()
+    trend_page.start_date.setDate(QDate(2026, 7, 1))
+    trend_page.end_date.setDate(QDate(2026, 7, 2))
+    for phase, checkbox in trend_page.phase_checks.items():
+        checkbox.setChecked(phase in {1, 2})
+
+    ratio_series = trend_page._build_phase_ratio_series_map()
+    fragment_series = trend_page._build_equipment_fragment_series("S1-001", "测试装备")
+
+    assert set(ratio_series) == {"PR1", "PR2"}
+    assert ratio_series["PR1"][0]["value"] == 0.5
+    assert fragment_series[-1]["value"] == 35
 
     window.close()
 
 
-def test_trend_page_strengthens_axes_and_supports_palette_choice(qapp: QApplication) -> None:
-    """历史趋势折线图应减少留白、使用横向轴标签，并预留曲线颜色方案选择。"""
+def test_trend_page_searches_equipment_and_draws_lines(qapp: QApplication) -> None:
+    """趋势页装备碎片图应只能从查询结果中选择装备，并能绘制折线。"""
     window = MainWindow()
     trend_page = window.pages["trend"]
-    rows = [
-        {"date": "2026-07-01", "equipment_count": 1, "fragment_count": 30},
-        {"date": "2026-07-02", "equipment_count": 3, "fragment_count": 45},
-    ]
 
-    trend_page.chart_palette_combo.setCurrentIndex(trend_page.chart_palette_combo.findData("contrast"))
-    trend_page._refresh_chart(rows, ["equipment_count"])
+    trend_page.equipment_search_input.setText("406")
+    trend_page.search_equipment_options()
 
-    axes = trend_page.chart.axes()
-    assert trend_page.chart_palette_combo.count() == 3
-    assert trend_page.chart_view.minimumHeight() >= 360
-    assert trend_page.chart.margins().left() <= 8
-    assert trend_page.chart_axis_label.text() == "Y：数值 / X：记录序号"
-    assert all(axis.titleText() == "" for axis in axes)
-    assert axes[0].labelsFont().pointSize() >= 9
-    assert axes[0].linePen().width() >= 2
-    assert trend_page.chart.series()[0].pen().color().name().upper() == "#1E88E5"
+    assert trend_page.equipment_select_combo.count() >= 1
+    assert "406" in trend_page.equipment_select_combo.itemText(0)
+
+    trend_page.equipment_fragment_panel.plot_series(
+        {"测试装备": [{"date": "2026-07-01", "value": 12, "detail": "测试"}]},
+        "碎片数量",
+        "暂无数据",
+    )
+    assert len(trend_page.equipment_fragment_panel.axes.lines) == 1
 
     window.close()
 
 
 def test_trend_page_chart_colors_follow_selected_skin(qapp: QApplication) -> None:
-    """趋势图坐标轴、图例和绘图区应跟随当前皮肤，避免深底黑字等割裂问题。"""
+    """matplotlib 趋势图背景和坐标轴应跟随当前皮肤。"""
+    manager = get_ui_config_manager()
+    original_config = manager.get_appearance_config()
     window = MainWindow()
     trend_page = window.pages["trend"]
 
-    window.apply_theme_skin("sakura_mist")
-    trend_page._reset_chart_axes(1, 2, 0.0, 10.0, "记录序号", "数值")
-    axes = trend_page.chart.axes()
+    try:
+        window.apply_theme_skin("dragon_empery")
 
-    assert trend_page.chart.plotAreaBackgroundBrush().color().name().upper() == get_theme_skin("sakura_mist").tokens.table_row.upper()
-    assert axes[0].labelsBrush().color().name().upper() == get_theme_skin("sakura_mist").tokens.text.upper()
-    assert axes[0].linePen().color().name().upper() == get_theme_skin("sakura_mist").tokens.azure.upper()
-
-    window.close()
+        skin = get_theme_skin("dragon_empery")
+        assert to_hex(trend_page.phase_ratio_panel.figure.get_facecolor()).upper() == skin.tokens.surface.upper()
+        assert to_hex(trend_page.phase_ratio_panel.axes.get_facecolor()).upper() == skin.tokens.table_row.upper()
+    finally:
+        manager.config_loader.save_config("ui", "appearance", original_config)
+        window.close()
 
 
 def test_dashboard_reflects_runtime_task_state(qapp: QApplication) -> None:
@@ -500,9 +554,18 @@ def test_theme_skin_registry_has_multiple_named_skins() -> None:
     skins = list_theme_skins()
     keys = {skin.key for skin in skins}
 
-    assert {"harbor_night", "sakura_mist", "iron_blood"}.issubset(keys)
+    assert {
+        "harbor_night",
+        "sakura_mist",
+        "iron_blood",
+        "dragon_empery",
+        "eagle_union",
+        "northern_parliament",
+        "sakura_empire",
+    }.issubset(keys)
     assert get_theme_skin("missing").key == "harbor_night"
     assert get_theme_skin("sakura_mist").tokens.table_row != get_theme_skin("harbor_night").tokens.table_row
+    assert get_theme_skin("iron_blood").tokens.radius <= 5
 
 
 def test_settings_page_exposes_skin_selector_and_preview(qapp: QApplication) -> None:
@@ -510,10 +573,11 @@ def test_settings_page_exposes_skin_selector_and_preview(qapp: QApplication) -> 
     window = MainWindow()
     page = window.pages["settings"]
 
-    assert page.skin_combo.count() >= 3
+    assert page.skin_combo.count() >= 7
     assert page.skin_combo.objectName() == "skin_combo"
-    assert set(page.skin_preview_cards) >= {"harbor_night", "sakura_mist", "iron_blood"}
+    assert set(page.skin_preview_cards) >= {"harbor_night", "iron_blood", "dragon_empery"}
     assert page.skin_combo.findData("iron_blood") >= 0
+    assert page.skin_combo.findData("dragon_empery") >= 0
 
     window.close()
 
@@ -596,27 +660,34 @@ def test_main_window_applies_and_persists_skin(qapp: QApplication) -> None:
         assert window.theme_tokens.background == get_theme_skin("iron_blood").tokens.background
         assert "铁血机库" in window.statusBar().currentMessage()
         assert manager.get_appearance_config()["active_skin"] == "iron_blood"
+        assert window._iron_blood_timer.isActive() is True
+
+        window.apply_theme_skin("dragon_empery")
+
+        assert window.active_skin == "dragon_empery"
+        assert window._iron_blood_timer.isActive() is False
     finally:
         manager.config_loader.save_config("ui", "appearance", original_config)
         window.close()
 
 
 def test_data_tables_use_readable_row_selection_behavior(qapp: QApplication) -> None:
-    """用户数据和历史趋势表格应使用整行选择与只读模式，降低误操作和视觉噪音。"""
+    """用户数据表格应使用整行选择与只读模式，趋势页不再展示明细表格。"""
     window = MainWindow()
     user_page = window.pages["user_data"]
     trend_page = window.pages["trend"]
 
     assert user_page.table.selectionBehavior() == QAbstractItemView.SelectionBehavior.SelectRows
-    assert trend_page.trend_table.selectionBehavior() == QAbstractItemView.SelectionBehavior.SelectRows
     assert user_page.table.showGrid() is False
-    assert trend_page.trend_table.showGrid() is False
+    assert not hasattr(trend_page, "trend_table")
 
     window.close()
 
 
 def test_automation_lab_has_crawler_update_entry(qapp: QApplication) -> None:
     """自动化实验室应提供资料爬取与更新入口，并用 crawler_update 作为后续执行接口。"""
+    manager = get_runtime_state_manager()
+    manager.reset()
     window = MainWindow()
     page = window.pages["automation_lab"]
     emitted_keys: list[str] = []
@@ -625,7 +696,21 @@ def test_automation_lab_has_crawler_update_entry(qapp: QApplication) -> None:
     page.crawler_update_button.click()
 
     assert emitted_keys[-1] == "crawler_update"
-    assert "资料更新请求" in page.crawler_status_label.text()
+    assert "尚未接入" in page.crawler_status_label.text()
     assert "GitHub" in page.crawler_notice_label.text()
+    assert manager.get_full_state()["task"]["kind"] == "error"
+
+    window.close()
+    manager.reset()
+
+
+def test_automation_lab_secretary_pack_template_check(qapp: QApplication) -> None:
+    """自动化实验室应预留秘书舰资源包模板校验入口。"""
+    window = MainWindow()
+    page = window.pages["automation_lab"]
+
+    page.secretary_pack_button.click()
+
+    assert "模板格式正确" in page.secretary_pack_status_label.text()
 
     window.close()

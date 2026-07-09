@@ -32,7 +32,9 @@ def test_ui_config_manager_loads_research_progress_json() -> None:
     """UI 配置管理器应能读取科研页配置，并保留秘书舰和目标对话字段。"""
     config = get_ui_config_manager().get_research_progress_config()
 
+    assert "phase_settings" in config
     assert "phase_start_dates" in config
+    assert "phase_targets" in config
     assert "official_start_dates" in config
     assert "duration_messages" in config
     assert "secretary" in config
@@ -67,8 +69,10 @@ def test_ui_config_manager_loads_appearance_json() -> None:
 
     assert config["active_skin"]
     assert "table_density" in config
+    assert "custom_background" in config
     assert "skin_notes" in config
     assert "harbor_night" in config["skin_notes"]
+    assert "dragon_empery" in config["skin_notes"]
 
 
 def test_ui_config_manager_saves_active_skin_and_can_restore() -> None:
@@ -100,6 +104,26 @@ def test_ui_config_manager_appearance_defaults_merge_nested_notes() -> None:
     assert merged["active_skin"] == "sakura_mist"
     assert merged["skin_notes"]["sakura_mist"] == "测试明亮皮肤"
     assert "harbor_night" in merged["skin_notes"]
+    assert "custom_background" in merged
+
+
+def test_ui_config_manager_saves_phase_target_and_setting() -> None:
+    """科研目标数量应按 PR 期数独立保存到 phase_settings。"""
+    manager = get_ui_config_manager()
+    original_config = manager.get_research_progress_config()
+
+    try:
+        manager.save_phase_target_count(8, 4)
+        manager.save_phase_start_date(8, "2026-06-01")
+        setting = manager.get_phase_setting(8)
+        config = manager.get_research_progress_config()
+
+        assert setting["target"] == 4
+        assert setting["start_date"] == "2026-06-01"
+        assert config["phase_settings"]["PR8"]["target"] == 4
+        assert config["phase_settings"]["PR8"]["start_date"] == "2026-06-01"
+    finally:
+        manager.config_loader.save_config("ui", "research_progress", original_config)
 
 
 def test_ui_config_manager_loads_secretary_lines_json() -> None:

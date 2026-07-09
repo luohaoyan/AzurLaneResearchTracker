@@ -1,9 +1,19 @@
 {
     "active_skin": "sakura_mist",
     "table_density": "comfortable",
+    "custom_background": {
+        "enabled": false,
+        "path": "",
+        "opacity": 0.18,
+        "blur": 0
+    },
     "skin_notes": {
         "harbor_night": "默认低眩光深色皮肤，适合长时间统计。",
         "sakura_mist": "明亮皮肤预留，后续适合接入秘书舰和节日素材。",
-        "iron_blood": "调试向深色皮肤预留，适合自动化实验室。"
+        "iron_blood": "黑红钢铁机库风格，带克制状态栏呼吸线。",
+        "eagle_union": "白鹰阵营皮肤预留，海军蓝与星章白的现代舰队感。",
+        "dragon_empery": "东煌阵营皮肤，红金与青玉色构成温润中式界面。",
+        "northern_parliament": "北联阵营皮肤预留，冰蓝银白的极地风格。",
+        "sakura_empire": "重樱阵营皮肤预留，深靛与夜樱粉的和风氛围。"
     }
 }
