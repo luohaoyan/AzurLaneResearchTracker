@@ -133,6 +133,8 @@ class EquipmentManager:
         """🤖 自动生成下一个装备 ID
         - is_research=True  → 找该期最大序号+1
         - is_research=False → 找最大 G 前缀 ID+1"""
+        if is_research and phase <= 0:
+            raise ValueError(f"research equip ID needs valid phase, got phase={phase}")
         if is_research:
             max_seq = 0
             prefix = f"S{phase}-"
