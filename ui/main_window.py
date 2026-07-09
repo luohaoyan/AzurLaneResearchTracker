@@ -20,11 +20,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from PySide6.QtCore import QEasingCurve, QParallelAnimationGroup, QDate, QPropertyAnimation, Qt, QTimer, Signal
+from PySide6.QtCore import QEasingCurve, QMargins, QParallelAnimationGroup, QDate, QPropertyAnimation, Qt, QTimer, Signal
 from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-from PySide6.QtGui import QAction, QColor, QMovie, QPainter, QPen, QPixmap
+from PySide6.QtGui import QAction, QBrush, QColor, QFont, QMovie, QPainter, QPen, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDateEdit,
@@ -41,6 +42,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QStackedWidget,
     QStatusBar,
@@ -59,7 +61,7 @@ from core.utils.config_loader import get_config_loader
 from core.utils.logger import get_logger
 from core.utils.path_manager import PathManager
 from ui.future_hooks import FeatureHookRegistry, FutureFeatureSpec, get_feature_hook_registry
-from ui.theme import ThemeTokens, build_stylesheet, install_application_fonts
+from ui.theme import ThemeTokens, build_stylesheet, get_theme_skin, install_application_fonts, list_theme_skins
 from ui.ui_config import get_ui_config_manager
 from ui.widgets.log_drawer import LogDrawer
 
@@ -83,6 +85,30 @@ def get_gui_version() -> str:
     if not raw_version:
         raw_version = "0.5.0"
     return raw_version if raw_version.startswith("v") else f"v{raw_version}"
+
+
+def polish_data_table(table: QTableWidget, row_height: int = 44) -> None:
+    """
+    统一整理 GUI 数据表的可读性和交互行为。
+    输入：
+        table: 需要整理的 QTableWidget。
+        row_height: 默认行高。
+    输出：
+        None。
+    使用示例：
+        polish_data_table(self.table, 52)
+    """
+    table.setAlternatingRowColors(True)
+    table.setShowGrid(False)
+    table.setWordWrap(False)
+    table.setCornerButtonEnabled(False)
+    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    table.horizontalHeader().setHighlightSections(False)
+    table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    table.verticalHeader().setVisible(False)
+    table.verticalHeader().setDefaultSectionSize(row_height)
+    table.verticalHeader().setMinimumSectionSize(row_height)
 
 
 # ============================================================
@@ -176,6 +202,108 @@ class AnimatedMascotPanel(QFrame):
         self.motion_label.setMovie(movie)
         movie.start()
         return True
+
+
+class ElasticScrollArea(QScrollArea):
+    """
+    带边界回弹反馈的滚动容器。
+    输入：
+        parent: 可选父控件。
+    输出：
+        QScrollArea，内容超出视口时支持滚轮滚动，到顶/到底时给出轻量动画。
+    使用示例：
+        scroll_area = ElasticScrollArea()
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        """创建等待开发页使用的柔和滚动区域。"""
+        super().__init__(parent)
+        self.setObjectName("elastic_scroll_area")
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._edge_animation: Optional[QPropertyAnimation] = None
+
+    def content_overflows(self) -> bool:
+        """
+        判断内容是否超过当前视口。
+        输入：
+            无。
+        输出：
+            bool: 垂直滚动条存在有效滚动范围时返回 True。
+        使用示例：
+            if scroll_area.content_overflows(): ...
+        """
+        scroll_bar = self.verticalScrollBar()
+        return scroll_bar.maximum() > scroll_bar.minimum()
+
+    def play_edge_bounce(self, edge: str) -> bool:
+        """
+        播放顶部或底部的轻量回弹动画。
+        输入：
+            edge: top 或 bottom。
+        输出：
+            bool: 成功触发动画返回 True，内容不溢出时返回 False。
+        使用示例：
+            scroll_area.play_edge_bounce("top")
+        """
+        if not self.content_overflows():
+            return False
+
+        scroll_bar = self.verticalScrollBar()
+        minimum = scroll_bar.minimum()
+        maximum = scroll_bar.maximum()
+        distance = min(18, max(1, maximum - minimum))
+        if edge == "top":
+            start_value = minimum
+            middle_value = min(minimum + distance, maximum)
+            end_value = minimum
+        elif edge == "bottom":
+            start_value = maximum
+            middle_value = max(maximum - distance, minimum)
+            end_value = maximum
+        else:
+            return False
+
+        if self._edge_animation is not None:
+            self._edge_animation.stop()
+
+        scroll_bar.setValue(start_value)
+        animation = QPropertyAnimation(scroll_bar, b"value", self)
+        animation.setDuration(190)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.setStartValue(start_value)
+        animation.setKeyValueAt(0.45, middle_value)
+        animation.setEndValue(end_value)
+        animation.finished.connect(lambda: self._clear_edge_animation(animation))
+        self._edge_animation = animation
+        animation.start()
+        return True
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        """滚轮滚动内容，并在边界处给用户一个柔和反馈。"""
+        if not self.content_overflows():
+            event.ignore()
+            return
+
+        scroll_bar = self.verticalScrollBar()
+        delta_y = event.angleDelta().y()
+        if delta_y > 0 and scroll_bar.value() <= scroll_bar.minimum():
+            self.play_edge_bounce("top")
+            event.accept()
+            return
+        if delta_y < 0 and scroll_bar.value() >= scroll_bar.maximum():
+            self.play_edge_bounce("bottom")
+            event.accept()
+            return
+
+        super().wheelEvent(event)
+
+    def _clear_edge_animation(self, animation: QPropertyAnimation) -> None:
+        """动画结束后释放当前动画引用，避免重复滚动时状态残留。"""
+        if self._edge_animation is animation:
+            self._edge_animation = None
 
 
 class BasePage(QWidget):
@@ -464,10 +592,8 @@ class UserDataPage(BasePage):
         """构建用户可见装备表格。"""
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["装备名称", "稀有度", "类型", "科研期", "拥有数量", "碎片数量"])
-        self.table.verticalHeader().setVisible(False)
-        self.table.setAlternatingRowColors(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.verticalHeader().setDefaultSectionSize(52)
+        polish_data_table(self.table, 52)
         self.root.addWidget(self.table, stretch=1)
         self._load_preview_rows()
 
@@ -595,6 +721,10 @@ class ResearchProgressPage(BasePage):
         self.progress_analyzer = get_research_progress_analyzer()
         self.ui_config_manager = get_ui_config_manager()
         self.ui_config = self.ui_config_manager.get_research_progress_config()
+        self.secretary_lines_config = self.ui_config_manager.get_secretary_lines_config()
+        self._secretary_line_cursor = 0
+        self._last_target_comment = ""
+        self._last_target_context = "target_changed"
         self._syncing_start_date = False
         phases = get_research_manager().get_all()
         latest_phase = self.progress_analyzer.get_latest_phase_number()
@@ -628,7 +758,7 @@ class ResearchProgressPage(BasePage):
 
         self.target_combo = QComboBox()
         self.target_combo.setObjectName("target_combo")
-        self.target_combo.setFixedWidth(108)
+        self.target_combo.setFixedWidth(92)
         for target_count in range(1, 21):
             self.target_combo.addItem(f"{target_count} 件", target_count)
         self.target_combo.setCurrentIndex(1)
@@ -638,20 +768,21 @@ class ResearchProgressPage(BasePage):
         self.completed_value_label.setFixedWidth(112)
         self.secretary_avatar_label = QLabel(str(self._secretary_config().get("placeholder_text", "秘书舰")))
         self.secretary_avatar_label.setObjectName("secretary_avatar")
-        self.secretary_avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.secretary_avatar_label.setFixedSize(64, 64)
+        self.secretary_avatar_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
+        self.secretary_avatar_label.setFixedSize(76, 112)
         self._load_secretary_avatar()
         self.secretary_dialog_frame = QFrame()
         self.secretary_dialog_frame.setObjectName("secretary_dialog")
-        self.secretary_dialog_frame.setFixedHeight(64)
-        self.secretary_dialog_frame.setFixedWidth(220)
+        self.secretary_dialog_frame.setProperty("quiet", True)
+        self.secretary_dialog_frame.setMinimumHeight(112)
+        self.secretary_dialog_frame.setFixedWidth(300)
         self.secretary_dialog_frame.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         dialog_layout = QVBoxLayout(self.secretary_dialog_frame)
-        dialog_layout.setContentsMargins(14, 10, 14, 10)
+        dialog_layout.setContentsMargins(16, 12, 16, 12)
         self.target_comment_label = QLabel("")
         self.target_comment_label.setObjectName("secretary_dialog_text")
         self.target_comment_label.setWordWrap(True)
-        dialog_layout.addWidget(self.target_comment_label)
+        dialog_layout.addWidget(self.target_comment_label, stretch=1)
         self._reset_secretary_dialog()
 
         self.start_date_edit = QDateEdit()
@@ -706,16 +837,28 @@ class ResearchProgressPage(BasePage):
 
         self.progress_table = QTableWidget(0, 4)
         self.progress_table.setHorizontalHeaderLabels(["装备", "需求图纸", "当前图纸", "整装"])
-        self.progress_table.verticalHeader().setVisible(False)
-        self.progress_table.setAlternatingRowColors(True)
         self.progress_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         for column in range(1, 4):
             self.progress_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
             self.progress_table.setColumnWidth(column, 92)
-        self.progress_table.verticalHeader().setDefaultSectionSize(38)
+        polish_data_table(self.progress_table, 38)
         self.root.addWidget(self._build_research_detail_area(), stretch=1)
         self._sync_start_date_from_config()
         self.refresh_progress()
+
+    def apply_theme_tokens(self, tokens: ThemeTokens) -> None:
+        """
+        接收主窗口皮肤令牌并刷新局部手写样式。
+        输入：
+            tokens: 当前主窗口皮肤令牌。
+        输出：
+            None。
+        使用示例：
+            page.apply_theme_tokens(window.theme_tokens)
+        """
+        self.theme_tokens = tokens
+        self._apply_progress_bar_style(float(self.overall_progress_bar.value()) / 100.0)
+        self._apply_luck_badge_style(self.luck_value_label.text())
 
     @staticmethod
     def _build_summary_card(title: str, value_widget: QWidget, caption: str) -> QFrame:
@@ -763,7 +906,7 @@ class ResearchProgressPage(BasePage):
     def _on_target_changed(self) -> None:
         """目标彩装切换时刷新进度并弹出秘书舰对话。"""
         self.refresh_progress()
-        self._show_secretary_dialog(self.target_comment_label.text())
+        self._show_secretary_dialog(self._secretary_dialog_text(self._last_target_context))
 
     def _on_start_date_changed(self) -> None:
         """用户修改科研开始日期时保存到 UI 配置并刷新天数。"""
@@ -906,7 +1049,8 @@ class ResearchProgressPage(BasePage):
         )
         target_count = int(progress.get("rainbow_target_count", self.target_combo.currentData() or 2))
         is_latest = bool(progress.get("is_latest"))
-        self.target_comment_label.setText(self._target_comment(target_count, overall, is_latest))
+        self._last_target_context = self._target_dialog_key(target_count, overall, is_latest)
+        self._last_target_comment = self._target_comment(target_count, overall, is_latest)
         ratio = progress.get("gold_rainbow_ratio")
         ratio_text = "暂无" if ratio is None else f"{float(ratio):.3f}"
         self.score_value_label.setText(ratio_text)
@@ -973,8 +1117,75 @@ class ResearchProgressPage(BasePage):
 
     def _secretary_config(self) -> Dict[str, object]:
         """返回秘书舰占位配置。"""
-        config = self.ui_config.get("secretary", {})
-        return config if isinstance(config, dict) else {}
+        base_config = self.ui_config.get("secretary", {})
+        if not isinstance(base_config, dict):
+            base_config = {}
+        profile = self._secretary_profile()
+        merged = dict(base_config)
+        if profile:
+            merged.update({
+                "name": profile.get("name", merged.get("name", "默认秘书舰")),
+                "image_path": profile.get("avatar_path") or profile.get("image_path") or merged.get("image_path", ""),
+                "placeholder_text": profile.get("placeholder_text", merged.get("placeholder_text", "秘书舰")),
+            })
+        return merged
+
+    def _secretary_profile(self) -> Dict[str, object]:
+        """
+        返回当前选中的秘书舰台词配置。
+        输入：
+            无。
+        输出：
+            dict: 当前秘书舰配置，缺失时返回默认配置。
+        使用示例：
+            profile = self._secretary_profile()
+        """
+        secretaries = self.secretary_lines_config.get("secretaries", {})
+        if not isinstance(secretaries, dict):
+            return {}
+        active_key = str(self.secretary_lines_config.get("active_secretary", "default"))
+        profile = secretaries.get(active_key) or secretaries.get("default") or {}
+        return profile if isinstance(profile, dict) else {}
+
+    def _secretary_lines(self, context: str) -> List[str]:
+        """
+        按上下文读取秘书舰台词列表。
+        输入：
+            context: 台词场景，如 target_changed/history/completed。
+        输出：
+            List[str]: 可展示的台词列表。
+        使用示例：
+            lines = self._secretary_lines("target_changed")
+        """
+        profile = self._secretary_profile()
+        lines_map = profile.get("lines", {})
+        if not isinstance(lines_map, dict):
+            return []
+        candidates: List[str] = []
+        for key in [context, "target_changed", "idle"]:
+            raw_lines = lines_map.get(key, [])
+            if isinstance(raw_lines, list):
+                candidates = [str(line) for line in raw_lines if str(line).strip()]
+            if candidates:
+                return candidates
+        return []
+
+    def _secretary_dialog_text(self, context: str) -> str:
+        """
+        生成秘书舰本次弹出的台词。
+        输入：
+            context: 当前目标评价场景。
+        输出：
+            str: 优先来自台词 JSON，缺失时回退到目标评价。
+        使用示例：
+            text = self._secretary_dialog_text("target_2_4")
+        """
+        lines = self._secretary_lines(context)
+        if lines:
+            text = lines[self._secretary_line_cursor % len(lines)]
+            self._secretary_line_cursor += 1
+            return text
+        return self._last_target_comment
 
     def _load_secretary_avatar(self) -> None:
         """加载秘书舰图片占位；未配置图片时显示固定占位格。"""
@@ -987,8 +1198,8 @@ class ResearchProgressPage(BasePage):
             if not pixmap.isNull():
                 self.secretary_avatar_label.setPixmap(
                     pixmap.scaled(
-                        64,
-                        64,
+                        72,
+                        108,
                         Qt.AspectRatioMode.KeepAspectRatio,
                         Qt.TransformationMode.SmoothTransformation,
                     )
@@ -1000,30 +1211,67 @@ class ResearchProgressPage(BasePage):
     def _show_secretary_dialog(self, text: str) -> None:
         """显示秘书舰目标对话，并在配置的时间后恢复占位文案。"""
         if not text:
+            self._quiet_secretary_dialog()
             return
+        self._set_secretary_dialog_quiet(False)
         self.target_comment_label.setText(text)
-        duration = int(self._secretary_config().get("dialog_duration_ms", 3600) or 3600)
+        duration = int(
+            self.secretary_lines_config.get(
+                "dialog_duration_ms",
+                self._secretary_config().get("dialog_duration_ms", 2400),
+            )
+            or 2400
+        )
         QTimer.singleShot(max(800, duration), self._reset_secretary_dialog)
 
     def _reset_secretary_dialog(self) -> None:
-        """恢复秘书舰对话占位，保持头像和气泡位置不跳动。"""
-        self.target_comment_label.setText("选择目标后，秘书舰会在这里给出科研建议。")
+        """恢复秘书舰静默状态，保持头像和气泡位置不跳动。"""
+        self._quiet_secretary_dialog()
+
+    def _quiet_secretary_dialog(self) -> None:
+        """
+        让秘书舰气泡进入静默状态。
+        输入：
+            无。
+        输出：
+            None。
+        使用示例：
+            self._quiet_secretary_dialog()
+        """
+        self.target_comment_label.setText("")
+        self._set_secretary_dialog_quiet(True)
+
+    def _set_secretary_dialog_quiet(self, quiet: bool) -> None:
+        """
+        设置秘书舰对话框静默属性，并刷新 QSS。
+        输入：
+            quiet: True 表示透明静默。
+        输出：
+            None。
+        使用示例：
+            self._set_secretary_dialog_quiet(True)
+        """
+        self.secretary_dialog_frame.setProperty("quiet", quiet)
+        self.secretary_dialog_frame.style().unpolish(self.secretary_dialog_frame)
+        self.secretary_dialog_frame.style().polish(self.secretary_dialog_frame)
+        self.secretary_dialog_frame.update()
 
     def _apply_progress_bar_style(self, progress: float) -> None:
         """根据目标进度给进度条换色。"""
+        tokens = getattr(self, "theme_tokens", ThemeTokens())
         if progress >= 100:
-            color = "#7EE0A7"
+            color = tokens.success
         elif progress >= 70:
-            color = "#58D7FF"
+            color = tokens.azure
         elif progress >= 40:
-            color = "#FFD36A"
+            color = tokens.gold
         else:
-            color = "#FF7A8A"
+            color = tokens.danger
         self.overall_progress_bar.setStyleSheet(f"""
             QProgressBar {{
-                background: {self.theme_surface()};
-                color: #EAF7FF;
-                border: 1px solid #2C607D;
+                background: {tokens.surface};
+                color: {tokens.text};
+                border: 1px solid {tokens.line};
                 border-radius: 8px;
                 text-align: center;
                 min-width: 34px;
@@ -1113,31 +1361,35 @@ class ResearchProgressPage(BasePage):
         """构建彩色科研装备目标选择卡片。"""
         card = QFrame()
         card.setObjectName("content_panel")
-        layout = QVBoxLayout(card)
+        card.setMinimumHeight(144)
+        layout = QHBoxLayout(card)
         layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(6)
+        layout.setSpacing(12)
         title_label = QLabel("目标彩装")
         title_label.setObjectName("panel_title")
-        title_label.setFixedWidth(78)
+        title_label.setFixedWidth(72)
 
-        top_row = QHBoxLayout()
-        top_row.setSpacing(12)
-        top_row.setContentsMargins(0, 0, 0, 0)
+        left_column = QVBoxLayout()
+        left_column.setContentsMargins(0, 0, 0, 0)
+        left_column.setSpacing(8)
+        control_row = QHBoxLayout()
+        control_row.setContentsMargins(0, 0, 0, 0)
+        control_row.setSpacing(8)
+        control_row.addWidget(title_label)
+        control_row.addWidget(self.target_combo)
+        left_column.addLayout(control_row)
+        left_column.addWidget(self.completed_value_label)
+        left_column.addStretch(1)
+
         secretary_row = QHBoxLayout()
         secretary_row.setSpacing(12)
         secretary_row.setContentsMargins(0, 0, 0, 0)
-        secretary_row.addWidget(self.secretary_avatar_label)
-        secretary_row.addWidget(self.secretary_dialog_frame)
+        secretary_row.addWidget(self.secretary_avatar_label, alignment=Qt.AlignmentFlag.AlignBottom)
+        secretary_row.addWidget(self.secretary_dialog_frame, alignment=Qt.AlignmentFlag.AlignVCenter)
 
-        top_row.addWidget(title_label)
-        top_row.addWidget(self.target_combo)
-        top_row.addStretch(1)
-        top_row.addLayout(secretary_row)
-
-        layout.addLayout(top_row)
-        layout.addWidget(self.completed_value_label)
+        layout.addLayout(left_column)
         layout.addStretch(1)
-        layout.setAlignment(secretary_row, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        layout.addLayout(secretary_row)
         return card
 
     def _build_duration_card(self) -> QFrame:
@@ -1222,6 +1474,7 @@ class TrendPage(BasePage):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """创建历史趋势页面。"""
         super().__init__("历史趋势", "选择时间区间和指标后，以折线图展示欧非值、装备数量和碎片总量变化。", parent)
+        self.theme_tokens = ThemeTokens()
         self.trend_analyzer = get_trend_analyzer()
         controls = QHBoxLayout()
         self.start_date = QDateEdit()
@@ -1236,6 +1489,12 @@ class TrendPage(BasePage):
         for spec in self.metric_specs:
             self.metric_combo.addItem(spec.title, spec.key)
         self.metric_combo.currentIndexChanged.connect(lambda _index=0: self.refresh_trend_preview())
+        self.chart_palette_combo = QComboBox()
+        self.chart_palette_combo.setObjectName("chart_palette_combo")
+        self.chart_palette_combo.addItem("默认线色", "default")
+        self.chart_palette_combo.addItem("柔和线色", "soft")
+        self.chart_palette_combo.addItem("高对比线色", "contrast")
+        self.chart_palette_combo.currentIndexChanged.connect(lambda _index=0: self.refresh_trend_preview())
         self.metric_checks: Dict[str, QCheckBox] = {}
         self.phase_combo = QComboBox()
         self.phase_combo.addItem("全部科研期", None)
@@ -1252,6 +1511,8 @@ class TrendPage(BasePage):
         controls.addWidget(self.phase_combo)
         controls.addWidget(QLabel("指标"))
         controls.addWidget(self.metric_combo)
+        controls.addWidget(QLabel("线色"))
+        controls.addWidget(self.chart_palette_combo)
         controls.addWidget(refresh_button)
         controls.addStretch(1)
         self.root.addLayout(controls)
@@ -1271,31 +1532,61 @@ class TrendPage(BasePage):
         chart = QFrame()
         chart.setObjectName("chart_panel")
         chart_layout = QVBoxLayout(chart)
-        chart_layout.setContentsMargins(18, 18, 18, 18)
+        chart_layout.setContentsMargins(14, 12, 14, 10)
+        chart_layout.setSpacing(6)
         self.chart_title = QLabel("趋势折线图")
         self.chart_title.setObjectName("section_title")
+        self.chart_axis_label = QLabel("Y：数值 / X：记录序号")
+        self.chart_axis_label.setObjectName("chart_axis_badge")
         self.chart_status = QLabel("等待历史记录数据。")
         self.chart_status.setObjectName("panel_body")
         self.chart_status.setWordWrap(True)
         self.chart = QChart()
         self.chart.setBackgroundVisible(False)
+        self.chart.setMargins(QMargins(4, 8, 8, 4))
+        self.chart.setPlotAreaBackgroundVisible(True)
         self.chart.legend().setVisible(True)
         self.chart.legend().setAlignment(Qt.AlignmentFlag.AlignBottom)
         self.chart_view = QChartView(self.chart)
+        self.chart_view.setObjectName("trend_chart_view")
         self.chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self.chart_view.setMinimumHeight(260)
-        chart_layout.addWidget(self.chart_title)
+        self.chart_view.setMinimumHeight(360)
+        self.chart_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        chart_header = QHBoxLayout()
+        chart_header.setContentsMargins(0, 0, 0, 0)
+        chart_header.addWidget(self.chart_title)
+        chart_header.addStretch(1)
+        chart_header.addWidget(self.chart_axis_label)
+        chart_layout.addLayout(chart_header)
         chart_layout.addWidget(self.chart_status)
-        chart_layout.addWidget(self.chart_view)
-        chart_layout.addStretch(1)
+        chart_layout.addWidget(self.chart_view, stretch=1)
         self.root.addWidget(chart, stretch=1)
 
         self.trend_table = QTableWidget(0, 6)
         self.trend_table.setHorizontalHeaderLabels(["日期", "装备数量", "碎片总量", "等值分", "欧非值", "评价"])
-        self.trend_table.verticalHeader().setVisible(False)
         self.trend_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        polish_data_table(self.trend_table, 42)
         self.root.addWidget(self.trend_table, stretch=1)
+        self.apply_theme_tokens(self.theme_tokens)
         self.refresh_trend_preview()
+
+    def apply_theme_tokens(self, tokens: ThemeTokens) -> None:
+        """
+        接收主窗口皮肤令牌并刷新 QChart 的非 QSS 样式。
+        输入：
+            tokens: 当前主窗口皮肤令牌。
+        输出：
+            None。
+        使用示例：
+            page.apply_theme_tokens(window.theme_tokens)
+        """
+        self.theme_tokens = tokens
+        self.chart.setBackgroundBrush(QBrush(QColor(tokens.surface)))
+        self.chart.setPlotAreaBackgroundBrush(QBrush(QColor(tokens.table_row)))
+        self.chart.legend().setLabelColor(QColor(tokens.text_muted))
+        self.chart_view.setStyleSheet(f"background: {tokens.surface}; border: 0px;")
+        for axis in self.chart.axes():
+            self._style_chart_axis(axis)
 
     def refresh_trend_preview(self) -> None:
         """
@@ -1374,7 +1665,7 @@ class TrendPage(BasePage):
                 continue
             series = QLineSeries()
             series.setName(spec.title)
-            series.setPen(QPen(QColor(spec.color), 2))
+            series.setPen(QPen(QColor(self._metric_color(spec.color, metric_key)), 3))
             min_value = min(visible_values)
             max_value = max(visible_values)
             for index, value in enumerate(raw_values, start=1):
@@ -1434,22 +1725,71 @@ class TrendPage(BasePage):
             self.chart.removeAxis(axis)
 
         axis_x = QValueAxis()
-        axis_x.setTitleText(x_title)
+        axis_x.setTitleText("")
         axis_x.setLabelFormat("%d")
         axis_x.setRange(float(x_min), float(max(x_min, x_max)))
         axis_x.setTickCount(max(2, min(8, x_max)))
 
         axis_y = QValueAxis()
-        axis_y.setTitleText(y_title)
+        axis_y.setTitleText("")
         axis_y.setLabelFormat("%.2f")
         axis_y.setRange(float(y_min), float(y_max))
         axis_y.setTickCount(5)
+        self.chart_axis_label.setText(f"Y：{y_title} / X：{x_title}")
+        self._style_chart_axis(axis_x)
+        self._style_chart_axis(axis_y)
 
         self.chart.addAxis(axis_x, Qt.AlignmentFlag.AlignBottom)
         self.chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
         for series in self.chart.series():
             series.attachAxis(axis_x)
             series.attachAxis(axis_y)
+
+    def _style_chart_axis(self, axis: QValueAxis) -> None:
+        """
+        按当前皮肤刷新坐标轴文字、网格和轴线。
+        输入：
+            axis: 需要设置的数值坐标轴。
+        输出：
+            None。
+        使用示例：
+            self._style_chart_axis(axis_y)
+        """
+        tokens = getattr(self, "theme_tokens", ThemeTokens())
+        axis.setTitleBrush(QBrush(QColor(tokens.text_muted)))
+        axis.setLabelsBrush(QBrush(QColor(tokens.text)))
+        axis.setTitleFont(QFont("Microsoft YaHei UI", 9, QFont.Weight.Bold))
+        axis.setLabelsFont(QFont("Microsoft YaHei UI", 9))
+        axis.setGridLinePen(QPen(QColor(tokens.table_grid), 1))
+        axis.setLinePen(QPen(QColor(tokens.azure), 2))
+
+    def _metric_color(self, default_color: str, metric_key: str) -> str:
+        """
+        根据趋势图线色方案返回曲线颜色。
+        输入：
+            default_color: 指标默认颜色。
+            metric_key: 趋势指标 key。
+        输出：
+            str: 十六进制颜色。
+        使用示例：
+            color = self._metric_color("#58D7FF", "luck_value")
+        """
+        palette = str(self.chart_palette_combo.currentData() or "default")
+        palettes = {
+            "soft": {
+                "equipment_count": "#7FAFD2",
+                "fragment_count": "#D9B872",
+                "equivalent_score": "#91C9A4",
+                "luck_value": "#D69BC8",
+            },
+            "contrast": {
+                "equipment_count": "#1E88E5",
+                "fragment_count": "#F9A825",
+                "equivalent_score": "#00A86B",
+                "luck_value": "#D81B60",
+            },
+        }
+        return palettes.get(palette, {}).get(metric_key, default_color)
 
     @staticmethod
     def _normalize_chart_value(value: float, min_value: float, max_value: float) -> float:
@@ -1513,6 +1853,11 @@ class AutomationLabPage(BasePage):
         ]):
             grid.addWidget(BasePage.build_card(title, body), index // 2, index % 2)
 
+        self.crawler_status_label = QLabel("待命：资料爬取模块将在 v0.6.0 合并后接入真实执行。")
+        self.crawler_status_label.setObjectName("panel_body")
+        self.crawler_status_label.setWordWrap(True)
+        self.root.addWidget(self._build_crawler_update_panel())
+
         feature_panel = QFrame()
         feature_panel.setObjectName("content_panel")
         feature_layout = QVBoxLayout(feature_panel)
@@ -1524,6 +1869,46 @@ class AutomationLabPage(BasePage):
                 button.clicked.connect(lambda _checked=False, key=feature.key: self.featureRequested.emit(key))
                 feature_layout.addWidget(button)
         self.root.addWidget(feature_panel)
+
+    def _build_crawler_update_panel(self) -> QFrame:
+        """
+        构建资料爬取与更新入口。
+        输入：
+            无。
+        输出：
+            QFrame: 自动化实验室中的 crawler 预留面板。
+        使用示例：
+            panel = self._build_crawler_update_panel()
+        """
+        panel = QFrame()
+        panel.setObjectName("content_panel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title = QLabel("资料爬取与更新")
+        title.setObjectName("panel_title")
+        self.crawler_update_button = QPushButton("检查并更新资料")
+        self.crawler_update_button.setToolTip("后续会调用爬虫模块，更新装备、图片路径和科研基础资料。")
+        self.crawler_update_button.clicked.connect(self._on_crawler_update_clicked)
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        title_row.addWidget(self.crawler_update_button)
+
+        self.crawler_notice_label = QLabel("如果网页结构调整导致更新失败，请前往项目 GitHub 页面下载新版本；运行日志会保留错误信息，便于开发者修复。")
+        self.crawler_notice_label.setObjectName("card_caption")
+        self.crawler_notice_label.setWordWrap(True)
+
+        layout.addLayout(title_row)
+        layout.addWidget(self.crawler_status_label)
+        layout.addWidget(self.crawler_notice_label)
+        return panel
+
+    def _on_crawler_update_clicked(self) -> None:
+        """触发资料爬取预留入口，并给出当前阶段说明。"""
+        self.crawler_status_label.setText("已发送资料更新请求：当前 GUI 先保留接口，待 crawler 分支合并后接入真实执行。")
+        self.featureRequested.emit("crawler_update")
 
 
 class FutureDockPage(BasePage):
@@ -1542,36 +1927,55 @@ class FutureDockPage(BasePage):
     def __init__(self, registry: FeatureHookRegistry, parent: Optional[QWidget] = None) -> None:
         """创建等待开发页面。"""
         super().__init__("等待开发", "这里展示后续可能加入的功能方向，当前只作为入口预留。", parent)
+        self.set_header_compact()
         self.registry = registry
+        self.future_scroll_area = ElasticScrollArea()
+        self.future_scroll_area.setObjectName("future_scroll_area")
+        self.future_scroll_content = QWidget()
+        self.future_scroll_content.setObjectName("future_scroll_content")
+        self.future_scroll_layout = QVBoxLayout(self.future_scroll_content)
+        self.future_scroll_layout.setContentsMargins(0, 4, 10, 6)
+        self.future_scroll_layout.setSpacing(16)
+
         for feature in registry.get_all():
-            self.root.addWidget(self._build_feature_row(feature))
-        self.root.addStretch(1)
+            self.future_scroll_layout.addWidget(self._build_feature_row(feature))
+        self.future_scroll_layout.addStretch(1)
+        self.future_scroll_area.setWidget(self.future_scroll_content)
+        self.root.addWidget(self.future_scroll_area, stretch=1)
 
     def _build_feature_row(self, feature: FutureFeatureSpec) -> QFrame:
         """构建一个用户可见的未来功能行。"""
         row = QFrame()
         row.setObjectName("future_feature_row")
+        row.setMinimumHeight(104)
+        row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout = QHBoxLayout(row)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(12)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(18)
 
         text_box = QVBoxLayout()
+        text_box.setSpacing(5)
         title = QLabel(feature.title)
         title.setObjectName("panel_title")
+        title.setMinimumHeight(24)
         summary = QLabel(feature.summary)
         summary.setObjectName("panel_body")
         summary.setWordWrap(True)
+        summary.setMinimumHeight(30)
+        summary.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         status = QLabel("已预留入口")
         status.setObjectName("future_status")
+        status.setMinimumHeight(18)
         text_box.addWidget(title)
         text_box.addWidget(summary)
         text_box.addWidget(status)
 
         button = QPushButton("查看入口")
+        button.setMinimumWidth(96)
         button.clicked.connect(lambda _checked=False, key=feature.key: self.featureRequested.emit(key))
 
         layout.addLayout(text_box, stretch=1)
-        layout.addWidget(button)
+        layout.addWidget(button, alignment=Qt.AlignmentFlag.AlignVCenter)
         return row
 
 
@@ -1603,16 +2007,140 @@ class SettingsPage(BasePage):
         page = SettingsPage()
     """
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    skinChangeRequested = Signal(str)
+
+    def __init__(self, active_skin: str = "harbor_night", parent: Optional[QWidget] = None) -> None:
         """创建设置页面。"""
         super().__init__("设置", "管理主题、资源刷新、导出和后续自动化相关设置。", parent)
+        self.active_skin = active_skin
+        self.skin_combo = QComboBox()
+        self.skin_combo.setObjectName("skin_combo")
+        self.skin_preview_cards: Dict[str, QFrame] = {}
+        self.root.addWidget(self._build_skin_panel())
+        self.skin_combo.currentIndexChanged.connect(self._on_skin_combo_changed)
+
         grid = QGridLayout()
         grid.setSpacing(12)
         self.root.addLayout(grid, stretch=1)
-        grid.addWidget(BasePage.build_card("界面主题", "后续支持港区深色、明亮主题和节日样式。"), 0, 0)
+        grid.addWidget(BasePage.build_card("显示细节", "表格、日志和导航栏会跟随皮肤使用更柔和的低眩光样式。"), 0, 0)
         grid.addWidget(BasePage.build_card("刷新频率", "玩家资源未来由 OCR 运行期更新，默认约 5 分钟一次。"), 0, 1)
         grid.addWidget(BasePage.build_card("导出设置", "后续可选择 CSV、Excel 和图片报告导出偏好。"), 1, 0)
         grid.addWidget(BasePage.build_card("打包启动", "未来发布为双击即可打开的 exe/快捷方式，并包含运行依赖。"), 1, 1)
+
+    def _build_skin_panel(self) -> QFrame:
+        """
+        构建皮肤选择和预览区域。
+        输入：
+            无。
+        输出：
+            QFrame: 设置页顶部的皮肤面板。
+        使用示例：
+            panel = self._build_skin_panel()
+        """
+        panel = QFrame()
+        panel.setObjectName("content_panel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(12)
+
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
+        title = QLabel("界面皮肤")
+        title.setObjectName("panel_title")
+        hint = QLabel("选择后会立即应用，并写入 GUI 外观配置。")
+        hint.setObjectName("card_caption")
+        hint.setWordWrap(True)
+        title_row.addWidget(title)
+        title_row.addWidget(hint, stretch=1)
+        title_row.addWidget(self.skin_combo)
+        layout.addLayout(title_row)
+
+        preview_row = QHBoxLayout()
+        preview_row.setSpacing(10)
+        for skin in list_theme_skins():
+            self.skin_combo.addItem(skin.name, skin.key)
+            card = self._build_skin_preview_card(skin.key)
+            self.skin_preview_cards[skin.key] = card
+            card.setCursor(Qt.CursorShape.PointingHandCursor)
+            card.mousePressEvent = lambda _event, key=skin.key: self._select_skin_key(key)
+            preview_row.addWidget(card)
+        layout.addLayout(preview_row)
+
+        index = self.skin_combo.findData(self.active_skin)
+        self.skin_combo.setCurrentIndex(index if index >= 0 else 0)
+        self._refresh_skin_preview_state()
+        return panel
+
+    def _build_skin_preview_card(self, skin_key: str) -> QFrame:
+        """
+        构建单个皮肤预览卡。
+        输入：
+            skin_key: 皮肤 key。
+        输出：
+            QFrame: 皮肤预览卡。
+        使用示例：
+            card = self._build_skin_preview_card("harbor_night")
+        """
+        skin = get_theme_skin(skin_key)
+        card = QFrame()
+        card.setObjectName("skin_preview_card")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(8)
+
+        title = QLabel(skin.name)
+        title.setObjectName("panel_title")
+        desc = QLabel(skin.description)
+        desc.setObjectName("panel_body")
+        desc.setWordWrap(True)
+        swatch_row = QHBoxLayout()
+        swatch_row.setSpacing(5)
+        for color in skin.preview_colors:
+            swatch = QLabel()
+            swatch.setObjectName("skin_swatch")
+            swatch.setFixedSize(28, 18)
+            swatch.setStyleSheet(f"background: {color}; border: 1px solid rgba(255,255,255,0.34); border-radius: 5px;")
+            swatch_row.addWidget(swatch)
+        swatch_row.addStretch(1)
+
+        layout.addWidget(title)
+        layout.addWidget(desc)
+        layout.addLayout(swatch_row)
+        return card
+
+    def _on_skin_combo_changed(self) -> None:
+        """皮肤下拉切换时通知主窗口应用新皮肤。"""
+        skin_key = str(self.skin_combo.currentData() or "harbor_night")
+        self.active_skin = skin_key
+        self._refresh_skin_preview_state()
+        self.skinChangeRequested.emit(skin_key)
+
+    def _select_skin_key(self, skin_key: str) -> None:
+        """
+        点击皮肤预览卡时同步切换下拉框。
+        输入：
+            skin_key: 皮肤 key。
+        输出：
+            None。
+        使用示例：
+            self._select_skin_key("sakura_mist")
+        """
+        index = self.skin_combo.findData(skin_key)
+        if index >= 0:
+            self.skin_combo.setCurrentIndex(index)
+
+    def _refresh_skin_preview_state(self) -> None:
+        """刷新皮肤预览卡的选中边框。"""
+        for skin_key, card in self.skin_preview_cards.items():
+            skin = get_theme_skin(skin_key)
+            border = skin.tokens.sakura if skin_key == self.active_skin else skin.tokens.line
+            card.setStyleSheet(
+                f"QFrame#skin_preview_card {{"
+                f"background: {skin.tokens.surface};"
+                f"border: 1px solid {border};"
+                f"border-radius: {skin.tokens.radius}px;"
+                f"}}"
+            )
 
 
 class AboutPage(BasePage):
@@ -1654,7 +2182,9 @@ class MainWindow(QMainWindow):
         """初始化主窗口、导航栏、页面栈、日志抽屉、菜单和状态栏。"""
         super().__init__(parent)
         self.logger = get_logger()
-        self.theme_tokens = theme_tokens or ThemeTokens()
+        self.ui_config_manager = get_ui_config_manager()
+        self.active_skin = str(self.ui_config_manager.get_appearance_config().get("active_skin", "harbor_night"))
+        self.theme_tokens = theme_tokens or get_theme_skin(self.active_skin).tokens
         self.registry = registry or get_feature_hook_registry()
         self.runtime_manager = get_runtime_state_manager()
         self.gui_version = get_gui_version()
@@ -1677,6 +2207,7 @@ class MainWindow(QMainWindow):
         self._build_menu_bar()
         self._build_status_bar()
         self.setStyleSheet(build_stylesheet(self.theme_tokens))
+        self._apply_page_theme_tokens()
         self.runtime_manager.set_task_state(TaskStateKind.IDLE, 0)
         self.logger.info("GUI 主窗口骨架初始化完成")
 
@@ -1749,7 +2280,7 @@ class MainWindow(QMainWindow):
             list_item.setToolTip(item.summary)
             self.navigation_list.addItem(list_item)
 
-        layout.addWidget(self.nav_toggle_button, alignment=Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.nav_toggle_button, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         layout.addWidget(self.app_title)
         layout.addWidget(self.app_subtitle)
         layout.addSpacing(8)
@@ -1779,10 +2310,47 @@ class MainWindow(QMainWindow):
         if item.key == "mini_game":
             return MiniGamePage()
         if item.key == "settings":
-            return SettingsPage()
+            page = SettingsPage(self.active_skin)
+            page.skinChangeRequested.connect(self.apply_theme_skin)
+            return page
         if item.key == "about":
             return AboutPage()
         return BasePage(item.title, item.summary)
+
+    def apply_theme_skin(self, skin_key: str) -> None:
+        """
+        应用并保存 GUI 皮肤。
+        输入：
+            skin_key: 皮肤注册表中的稳定键名。
+        输出：
+            None。
+        使用示例：
+            window.apply_theme_skin("sakura_mist")
+        """
+        skin = get_theme_skin(skin_key)
+        self.active_skin = skin.key
+        self.theme_tokens = skin.tokens
+        self.setStyleSheet(build_stylesheet(self.theme_tokens))
+        self._apply_page_theme_tokens()
+        self.ui_config_manager.save_active_skin(skin.key)
+        width = self.theme_tokens.nav_collapsed_width if self.nav_collapsed else self.theme_tokens.nav_width
+        self.navigation_panel.setFixedWidth(width)
+        self.statusBar().showMessage(f"已切换界面皮肤：{skin.name}")
+
+    def _apply_page_theme_tokens(self) -> None:
+        """
+        把主窗口皮肤同步给使用手写 Qt 样式的页面。
+        输入：
+            无。
+        输出：
+            None。
+        使用示例：
+            self._apply_page_theme_tokens()
+        """
+        for page in self.pages.values():
+            apply_method = getattr(page, "apply_theme_tokens", None)
+            if callable(apply_method):
+                apply_method(self.theme_tokens)
 
     def _build_menu_bar(self) -> None:
         """创建菜单栏和快捷键。"""

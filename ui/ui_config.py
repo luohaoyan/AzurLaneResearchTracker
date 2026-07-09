@@ -55,6 +55,49 @@ DEFAULT_RESEARCH_PROGRESS_UI_CONFIG: Dict[str, Any] = {
 }
 
 
+DEFAULT_APPEARANCE_UI_CONFIG: Dict[str, Any] = {
+    "active_skin": "harbor_night",
+    "table_density": "comfortable",
+    "skin_notes": {
+        "harbor_night": "默认低眩光深色皮肤，适合长时间统计。",
+        "sakura_mist": "明亮皮肤预留，后续适合接入秘书舰和节日素材。",
+        "iron_blood": "调试向深色皮肤预留，适合自动化实验室。",
+    },
+}
+
+
+DEFAULT_SECRETARY_LINES_UI_CONFIG: Dict[str, Any] = {
+    "active_secretary": "default",
+    "dialog_duration_ms": 2400,
+    "secretaries": {
+        "default": {
+            "name": "默认秘书舰",
+            "avatar_path": "",
+            "placeholder_text": "秘书舰",
+            "lines": {
+                "idle": [
+                    "欢迎回来，指挥官。",
+                    "今天也要全力以赴哦。",
+                ],
+                "target_changed": [
+                    "指挥官，新的计划已经记录好了。",
+                    "资料已经整理完毕，接下来就交给你了。",
+                    "嗯，这个目标看起来很有挑战性。",
+                ],
+                "completed": [
+                    "任务完成得很漂亮，指挥官。",
+                    "这样一来，港区又向前推进了一步。",
+                ],
+                "history": [
+                    "旧档案也需要认真整理。",
+                    "慢慢来，过去的进度也很重要。",
+                ],
+            },
+        }
+    },
+}
+
+
 class UiConfigManager:
     """
     GUI 配置管理器。
@@ -111,6 +154,46 @@ class UiConfigManager:
         phase_dates[str(int(phase_number))] = start_date
         config["phase_start_dates"] = phase_dates
         self.config_loader.save_config("ui", "research_progress", config)
+
+    def get_appearance_config(self) -> Dict[str, Any]:
+        """
+        读取 GUI 外观配置。
+        输入：
+            无。
+        输出：
+            dict: 已合并默认值的外观配置。
+        使用示例：
+            config = manager.get_appearance_config()
+        """
+        loaded = self.config_loader.get_config("ui", "appearance")
+        return self._merge_dicts(DEFAULT_APPEARANCE_UI_CONFIG, loaded)
+
+    def get_secretary_lines_config(self) -> Dict[str, Any]:
+        """
+        读取秘书舰台词配置。
+        输入：
+            无。
+        输出：
+            dict: 已合并默认值的秘书舰台词配置。
+        使用示例：
+            config = manager.get_secretary_lines_config()
+        """
+        loaded = self.config_loader.get_config("ui", "secretary_lines")
+        return self._merge_dicts(DEFAULT_SECRETARY_LINES_UI_CONFIG, loaded)
+
+    def save_active_skin(self, skin_key: str) -> None:
+        """
+        保存当前 GUI 皮肤。
+        输入：
+            skin_key: 皮肤注册表中的稳定键名。
+        输出：
+            None。
+        使用示例：
+            manager.save_active_skin("harbor_night")
+        """
+        config = self.get_appearance_config()
+        config["active_skin"] = str(skin_key or "harbor_night")
+        self.config_loader.save_config("ui", "appearance", config)
 
     @classmethod
     def _merge_dicts(cls, defaults: Dict[str, Any], loaded: Dict[str, Any]) -> Dict[str, Any]:

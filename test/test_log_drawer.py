@@ -61,7 +61,7 @@ def test_log_drawer_starts_collapsed_and_can_toggle(log_drawer: LogDrawer) -> No
     assert log_drawer.toggle_button.text() == "展开日志"
 
     log_drawer.set_expanded(True)
-    QTest.qWait(log_drawer.animation_duration_ms + 80)
+    QTest.qWait(800)
 
     assert log_drawer.log_text.isHidden() is False
     assert log_drawer.toggle_button.text() == "收起日志"

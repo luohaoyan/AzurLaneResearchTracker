@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtWidgets import QApplication
@@ -54,11 +54,129 @@ class ThemeTokens:
     gold: str = "#FFD36A"
     success: str = "#7EE0A7"
     danger: str = "#FF7A8A"
+    table_header: str = "#18314A"
+    table_row: str = "#0D1C2B"
+    table_row_alt: str = "#13283C"
+    table_grid: str = "#23435E"
+    table_selection: str = "#285C7C"
+    table_selection_text: str = "#F4FBFF"
     nav_width: int = 236
     nav_collapsed_width: int = 60
     radius: int = 8
     font_family: str = '"Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Segoe UI"'
     utility_font_family: str = '"Consolas", "Cascadia Mono", "Microsoft YaHei UI"'
+
+
+@dataclass(frozen=True)
+class ThemeSkin:
+    """
+    GUI 皮肤定义。
+    输入：
+        key/name/description/tokens 等皮肤描述字段。
+    输出：
+        一个可被设置页展示、可被 MainWindow 应用的皮肤对象。
+    使用示例：
+        skin = get_theme_skin("harbor_night")
+    """
+
+    key: str
+    name: str
+    description: str
+    accent_name: str
+    preview_colors: List[str]
+    tokens: ThemeTokens
+
+
+THEME_SKINS: Dict[str, ThemeSkin] = {
+    "harbor_night": ThemeSkin(
+        key="harbor_night",
+        name="港区夜航",
+        description="低眩光深色控制台，适合长时间盯着表格和日志。",
+        accent_name="蓝粉航迹",
+        preview_colors=["#07131F", "#102337", "#58D7FF", "#FF8EC7"],
+        tokens=ThemeTokens(),
+    ),
+    "sakura_mist": ThemeSkin(
+        key="sakura_mist",
+        name="樱雾晨间",
+        description="偏柔和的明亮皮肤预留，后续可接入秘书舰立绘和节日素材。",
+        accent_name="樱雾金边",
+        preview_colors=["#F7FAFD", "#E9F1F8", "#D96BA8", "#4CA3C7"],
+        tokens=ThemeTokens(
+            background="#F7FAFD",
+            surface="#E9F1F8",
+            surface_soft="#D9E8F2",
+            surface_glow="#C8E5F5",
+            line="#A8C0D0",
+            text="#18314A",
+            text_muted="#5F7180",
+            sakura="#D96BA8",
+            azure="#4CA3C7",
+            gold="#B98D24",
+            success="#318C63",
+            danger="#C84D61",
+            table_header="#D8E7F0",
+            table_row="#FDFEFF",
+            table_row_alt="#EEF6FB",
+            table_grid="#C8D7E2",
+            table_selection="#B8DFF1",
+            table_selection_text="#102337",
+        ),
+    ),
+    "iron_blood": ThemeSkin(
+        key="iron_blood",
+        name="铁血机库",
+        description="更冷静的灰黑机库风格，给自动化实验室和调试场景预留。",
+        accent_name="红轴警戒",
+        preview_colors=["#0B0E12", "#171D24", "#E35D6A", "#8FC7FF"],
+        tokens=ThemeTokens(
+            background="#0B0E12",
+            surface="#171D24",
+            surface_soft="#222B34",
+            surface_glow="#2C3844",
+            line="#3A4652",
+            text="#EEF3F7",
+            text_muted="#AEB8C2",
+            sakura="#E35D6A",
+            azure="#8FC7FF",
+            gold="#E0BD65",
+            success="#82D49E",
+            danger="#FF6F7B",
+            table_header="#202933",
+            table_row="#11171D",
+            table_row_alt="#182029",
+            table_grid="#303B46",
+            table_selection="#384B5F",
+            table_selection_text="#F7FBFF",
+        ),
+    ),
+}
+
+
+def list_theme_skins() -> List[ThemeSkin]:
+    """
+    返回所有可选 GUI 皮肤。
+    输入：
+        无。
+    输出：
+        List[ThemeSkin]: 按注册顺序排列的皮肤列表。
+    使用示例：
+        skins = list_theme_skins()
+    """
+    return list(THEME_SKINS.values())
+
+
+def get_theme_skin(key: str) -> ThemeSkin:
+    """
+    按 key 获取皮肤，未知 key 自动回退到港区夜航。
+    输入：
+        key: 皮肤稳定键名。
+    输出：
+        ThemeSkin: 可直接应用的皮肤对象。
+    使用示例：
+        skin = get_theme_skin("harbor_night")
+    """
+    return THEME_SKINS.get(str(key or "").strip(), THEME_SKINS["harbor_night"])
 
 
 # ============================================================
@@ -82,6 +200,16 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
         color: {t.text};
         font-family: {t.font_family};
         font-size: 14px;
+    }}
+
+    QWidget {{
+        color: {t.text};
+        font-family: {t.font_family};
+    }}
+
+    QLabel,
+    QCheckBox {{
+        color: {t.text};
     }}
 
     QWidget#central_shell,
@@ -151,21 +279,26 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
     }}
 
     QLabel#secretary_avatar {{
-        background: {t.surface_soft};
+        background: {t.surface};
         color: {t.text_muted};
-        border: 1px solid {t.line};
+        border: 1px solid {t.surface_glow};
         border-radius: {t.radius}px;
         font-weight: 700;
     }}
 
     QFrame#secretary_dialog {{
-        background: #F5F8FC;
-        border: 1px solid rgba(88, 215, 255, 0.45);
+        background: {t.surface_soft};
+        border: 1px solid {t.surface_glow};
         border-radius: {t.radius}px;
     }}
 
+    QFrame#secretary_dialog[quiet="true"] {{
+        background: transparent;
+        border: 1px solid transparent;
+    }}
+
     QLabel#secretary_dialog_text {{
-        color: #102337;
+        color: {t.text};
         font-size: 13px;
         font-weight: 700;
     }}
@@ -181,8 +314,8 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
         min-height: 42px;
         padding: 8px 10px;
         margin: 3px 4px;
-        background: rgba(25, 58, 86, 0.38);
-        border: 1px solid rgba(44, 96, 125, 0.46);
+        background: {t.surface_soft};
+        border: 1px solid {t.line};
         border-radius: {t.radius}px;
     }}
 
@@ -194,7 +327,7 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
 
     QListWidget#navigation_list::item:hover {{
         color: {t.text};
-        background: rgba(88, 215, 255, 0.12);
+        background: {t.surface_glow};
     }}
 
     QFrame#content_panel,
@@ -205,6 +338,45 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
         background: {t.surface};
         border: 1px solid {t.line};
         border-radius: {t.radius}px;
+    }}
+
+    QFrame#future_feature_row QLabel#panel_title {{
+        color: {t.text};
+        font-size: 16px;
+        font-weight: 700;
+        padding-bottom: 1px;
+    }}
+
+    QFrame#future_feature_row QLabel#panel_body {{
+        color: {t.text_muted};
+        font-size: 13px;
+        padding-top: 1px;
+        padding-bottom: 1px;
+    }}
+
+    QFrame#future_feature_row QLabel#future_status {{
+        color: {t.azure};
+        font-size: 12px;
+        padding-top: 1px;
+    }}
+
+    QLabel#chart_axis_badge {{
+        background: {t.surface_soft};
+        color: {t.azure};
+        border: 1px solid {t.line};
+        border-radius: {t.radius}px;
+        padding: 4px 10px;
+        font-family: {t.utility_font_family};
+        font-weight: 700;
+    }}
+
+    QScrollArea#future_scroll_area {{
+        background: transparent;
+        border: none;
+    }}
+
+    QWidget#future_scroll_content {{
+        background: transparent;
     }}
 
     QLabel#panel_title {{
@@ -241,8 +413,8 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
     }}
 
     QComboBox#target_combo {{
-        min-width: 108px;
-        max-width: 108px;
+        min-width: 92px;
+        max-width: 92px;
     }}
 
     QDateEdit#research_start_date {{
@@ -260,19 +432,95 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
     }}
 
     QTableWidget {{
+        background: {t.table_row};
+        alternate-background-color: {t.table_row_alt};
+        color: {t.text};
+        border: 1px solid {t.table_grid};
+        border-radius: {t.radius}px;
+        gridline-color: {t.table_grid};
+        selection-background-color: {t.table_selection};
+        selection-color: {t.table_selection_text};
+        outline: none;
+        padding: 2px;
+    }}
+
+    QTableWidget::item {{
+        border: none;
+        padding: 7px 10px;
+    }}
+
+    QComboBox QAbstractItemView {{
         background: {t.surface};
         color: {t.text};
         border: 1px solid {t.line};
-        border-radius: {t.radius}px;
-        gridline-color: {t.line};
         selection-background-color: {t.surface_glow};
+        selection-color: {t.text};
+    }}
+
+    QTableWidget::item:hover {{
+        background: rgba(88, 215, 255, 0.10);
+    }}
+
+    QTableWidget::item:selected {{
+        background: {t.table_selection};
+        color: {t.table_selection_text};
+    }}
+
+    QHeaderView {{
+        background: {t.table_header};
+        border: none;
     }}
 
     QHeaderView::section {{
-        background: {t.surface_soft};
+        background: {t.table_header};
         color: {t.text};
         border: none;
-        padding: 8px;
+        border-right: 1px solid {t.table_grid};
+        border-bottom: 1px solid {t.table_grid};
+        padding: 9px 10px;
+        font-weight: 700;
+    }}
+
+    QTableCornerButton::section {{
+        background: {t.table_header};
+        border: none;
+        border-bottom: 1px solid {t.table_grid};
+    }}
+
+    QScrollBar:vertical {{
+        background: {t.surface};
+        width: 10px;
+        margin: 2px;
+        border-radius: 5px;
+    }}
+
+    QScrollBar::handle:vertical {{
+        background: {t.surface_glow};
+        border-radius: 5px;
+        min-height: 32px;
+    }}
+
+    QScrollBar::add-line:vertical,
+    QScrollBar::sub-line:vertical {{
+        height: 0px;
+    }}
+
+    QScrollBar:horizontal {{
+        background: {t.surface};
+        height: 10px;
+        margin: 2px;
+        border-radius: 5px;
+    }}
+
+    QScrollBar::handle:horizontal {{
+        background: {t.surface_glow};
+        border-radius: 5px;
+        min-width: 32px;
+    }}
+
+    QScrollBar::add-line:horizontal,
+    QScrollBar::sub-line:horizontal {{
+        width: 0px;
     }}
 
     QProgressBar {{
@@ -299,7 +547,7 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
     }}
 
     QPlainTextEdit#log_text {{
-        background: #06111B;
+        background: {t.table_row};
         color: {t.text};
         border: none;
         font-family: {t.utility_font_family};
@@ -326,6 +574,14 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
         background: {t.surface};
         color: {t.text};
         border: 1px solid {t.line};
+    }}
+
+    QToolTip {{
+        background: {t.surface_soft};
+        color: {t.text};
+        border: 1px solid {t.line};
+        border-radius: {t.radius}px;
+        padding: 6px 8px;
     }}
     """
 

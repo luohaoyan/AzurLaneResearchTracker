@@ -168,6 +168,13 @@ class FeatureHookRegistry:
                 entry_point="core.simulation.luck_prediction",
             ),
             FutureFeatureSpec(
+                key="crawler_update",
+                title="资料爬取与更新",
+                summary="从项目支持的数据源更新装备、图片路径和科研基础资料；网页结构变化导致失败时，引导用户前往 GitHub 下载新版本。",
+                status="planned",
+                entry_point="core.data.equipment_crawler",
+            ),
+            FutureFeatureSpec(
                 key="anime_motion_assets",
                 title="港区动效资源",
                 summary="接入待机、识别完成、保存成功等轻量动效，让反馈更有港区氛围。",

@@ -1,0 +1,9 @@
+{
+    "active_skin": "sakura_mist",
+    "table_density": "comfortable",
+    "skin_notes": {
+        "harbor_night": "默认低眩光深色皮肤，适合长时间统计。",
+        "sakura_mist": "明亮皮肤预留，后续适合接入秘书舰和节日素材。",
+        "iron_blood": "调试向深色皮肤预留，适合自动化实验室。"
+    }
+}
