@@ -195,13 +195,14 @@ class ExportManager:
 
     @staticmethod
     def _sort_equipment_key(equipment_id: str) -> Tuple[int, int, int, str]:
-        """尽量让科研装备排在前面，普通数字 ID 排在后面。"""
+        """尽量让科研装备排在前面，通用 G 前缀装备排在中间，其他 ID 排在后面。"""
         parsed = EquipmentManager.parse_research_id(equipment_id)
         if parsed:
             phase, seq = parsed
             return (0, phase, seq, equipment_id)
-        if str(equipment_id).isdigit():
-            return (1, 0, int(equipment_id), equipment_id)
+        # G 前缀通用装备：按序号排序
+        if str(equipment_id).startswith("G") and str(equipment_id)[1:].isdigit():
+            return (1, 0, int(str(equipment_id)[1:]), equipment_id)
         return (2, 0, 0, equipment_id)
 
     def _build_equipment_library_rows(self) -> List[Dict[str, Any]]:

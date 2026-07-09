@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 ╔══════════════════════════════════════════════════════════════════╗
 ║              🧪 计算层单元测试 (test_calculation.py)              ║
@@ -56,21 +56,21 @@ check("get_all() 返回列表", isinstance(all_special, list))
 check("get_all() 包含 2 件特殊装备", len(all_special) >= 2)
 
 # 测试2: is_special 判断
-check("ID=1(BR.810) 是特殊装备", sem.is_special("1") is True)
-check("ID=2(B-13) 是特殊装备", sem.is_special("2") is True)
+check("ID=G0001(BR.810) 是特殊装备", sem.is_special("G0001") is True)
+check("ID=G0002(B-13) 是特殊装备", sem.is_special("G0002") is True)
 check("S1-001 不是特殊装备", sem.is_special("S1-001") is False)
 check("空字符串不是特殊装备", sem.is_special("") is False)
 
 # 测试3: get_all_ids
 ids = sem.get_all_ids()
 check("get_all_ids 返回集合", isinstance(ids, set))
-check("id 集合包含 1(BR.810)", "1" in ids)
-check("id 集合包含 2(B-13)", "2" in ids)
+check("id 集合包含 G0001(BR.810)", "G0001" in ids)
+check("id 集合包含 G0002(B-13)", "G0002" in ids)
 
 # 测试4: get_by_id
-br = sem.get_by_id("1")
-check("get_by_id('BR.810') 不为 None", br is not None)
-check("ID=1 名称包含'剑鱼'", br and "剑鱼" in br.get("equipment_name", ""))
+br = sem.get_by_id("G0001")
+check("get_by_id('G0001') 不为 None", br is not None)
+check("G0001 名称包含'剑鱼'", br and "剑鱼" in br.get("equipment_name", ""))
 check("get_by_id('不存在的') 返回 None", sem.get_by_id("不存在的") is None)
 
 # 测试5: CRUD（增删改）— 先在装备库注册再测特殊装备
@@ -117,8 +117,8 @@ check("S1-002(科研金) 等值=25", fm.get_equivalent("S1-002", 4) == 25)
 check("S4-001(科研金) 等值=25", fm.get_equivalent("S4-001", 4) == 25)
 
 # 测试9: get_equivalent — 特殊金色
-check("ID=1/BR.810(特殊金) 等值=25", fm.get_equivalent("1", 4) == 25)
-check("ID=2/B-13(特殊金) 等值=25", fm.get_equivalent("2", 4) == 25)
+check("ID=G0001/BR.810(特殊金) 等值=25", fm.get_equivalent("G0001", 4) == 25)
+check("ID=G0002/B-13(特殊金) 等值=25", fm.get_equivalent("G0002", 4) == 25)
 
 # 测试10: get_equivalent — 普通金色
 check("普通金(假设ID=999) 等值=15", fm.get_equivalent("999", 4) == 15)
@@ -136,7 +136,7 @@ check("普通彩(假设ID=888) 等值=None", fm.get_equivalent("888", 5) is None
 # 测试14: 装备类别判断
 check("S1-001 类别=科研彩色", fm.get_equipment_category("S1-001", 5) == "科研彩色")
 check("S1-002 类别=科研金色", fm.get_equipment_category("S1-002", 4) == "科研金色")
-check("ID=1 类别=特殊金色", fm.get_equipment_category("1", 4) == "特殊金色")
+check("ID=G0001 类别=特殊金色", fm.get_equipment_category("G0001", 4) == "特殊金色")
 check("稀有度3 类别=紫色", fm.get_equipment_category("任意", 3) == "紫色")
 check("稀有度2 类别=蓝色", fm.get_equipment_category("任意", 2) == "蓝色")
 check("普通彩 类别=普通彩色", fm.get_equipment_category("888", 5) == "普通彩色")
@@ -166,7 +166,7 @@ check("第一个等级阈值最高", levels[0]["threshold"] >= levels[-1]["thres
 # 测试18: 科研装备判断
 check("S1-001 是科研装备", fm.is_research_equipment("S1-001") is True)
 check("S6-002 是科研装备", fm.is_research_equipment("S6-002") is True)
-check("ID=1(BR.810) 不是科研装备", fm.is_research_equipment("1") is False)
+check("ID=G0001(BR.810) 不是科研装备", fm.is_research_equipment("G0001") is False)
 
 
 # ══════════════════════════════════════════════════════════════════

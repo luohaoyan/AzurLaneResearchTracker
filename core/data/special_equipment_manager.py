@@ -122,8 +122,8 @@ class SpecialEquipmentManager:
             True 表示该装备在特殊装备清单中，False 表示不在
 
         示例:
-            is_special("1") → True  (BR.810 剑鱼)
-            is_special("2") → True  (B-13 双联装130mm)
+            is_special("G0001") → True  (BR.810 剑鱼)
+            is_special("G0002") → True  (B-13 双联装130mm)
             is_special("S1-001") → False
         """
         return equipment_id.strip() in self._id_set
@@ -132,7 +132,7 @@ class SpecialEquipmentManager:
         """📋 获取全部特殊装备列表（返回副本，防止外部意外修改）
 
         Returns:
-            [{"equipment_id":"1", "equipment_name":"BR.810 剑鱼(810中队)", "notes":"..."}, ...]
+            [{"equipment_id":"G0001", "equipment_name":"BR.810 剑鱼(810中队)", "notes":"..."}, ...]
         """
         return [item.copy() for item in self._data]
 
@@ -140,7 +140,7 @@ class SpecialEquipmentManager:
         """🔢 获取所有特殊装备 ID 的集合（返回副本）
 
         Returns:
-            {"1", "2", ...}  (equipment_library.csv 中的真实 ID)
+            {"G0001", "G0002", ...}  (equipment_library.csv 中的真实 ID)
         """
         return self._id_set.copy()
 
@@ -179,7 +179,7 @@ class SpecialEquipmentManager:
             True 表示添加成功，False 表示失败
 
         示例:
-            add_special("1", notes="特殊金装备——英航剑鱼")
+            add_special("G0001", notes="特殊金装备——英航剑鱼")
         """
         eq_id = equipment_id.strip()
         if not eq_id:
