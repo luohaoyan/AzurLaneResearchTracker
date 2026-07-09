@@ -244,6 +244,9 @@ class SpecialEquipmentManager:
             True 表示更新成功，False 表示 ID 不存在
         """
         eq_id = equipment_id.strip()
+        if not eq_id:
+            self.logger.warning("特殊装备 ID 不能为空")
+            return False
         for i, item in enumerate(self._data):
             if item["equipment_id"] == eq_id:
                 for key, value in updates.items():
@@ -265,6 +268,9 @@ class SpecialEquipmentManager:
             True 表示删除成功，False 表示 ID 不存在
         """
         eq_id = equipment_id.strip()
+        if not eq_id:
+            self.logger.warning("特殊装备 ID 不能为空")
+            return False
         for i, item in enumerate(self._data):
             if item["equipment_id"] == eq_id:
                 del self._data[i]

@@ -88,7 +88,9 @@ check("update_special 更新成功", sem.update_special(_tid, {"notes": "updated
 check("delete_special 删除成功", sem.delete_special(_tid) is True)
 check("删除后 is_special 返回 False", sem.is_special(_tid) is False)
 
-_em.delete_equipment(_tid)
+_eq = _em.get_by_name("__TEST_SP_EQ__")
+if _eq:
+    _em.delete_equipment(_eq["equipment_id"])
 
 
 # ══════════════════════════════════════════════════════════════════

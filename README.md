@@ -32,9 +32,9 @@
 | 测试 | pytest |
 | 模拟器控制 | ADB |
 
-## 当前版本：v0.4.1
+## 当前版本：v0.4.2
 
-已完成基础设施层、数据层、计算层和 CLI 入口，810 项测试全部通过。
+已完成基础设施层、数据层、计算层和 CLI 入口，785 项测试全部通过。
 
 下一步：v0.5.0 PySide6 GUI 界面。
 
@@ -54,7 +54,7 @@
 | ui/ | — | 📋 | PySide6 界面 |
 | config/ | games / simulators / automation | ✅ | 配置文件 |
 | data/ | CSV + user_records + exports | ✅ | 装备库 + 用户记录 + 导出 |
-| test/ + qa_tests/ | 810 项测试 | ✅ | 开发 + QA 测试 |
+| test/ + qa_tests/ | 785 项测试 | ✅ | 开发 + QA 测试 |
 
 ## 快速开始
 
