@@ -1,15 +1,15 @@
-# 碧蓝航线科研装备统计器 — 开发文档
+﻿# 碧蓝航线科研装备统计器 — 开发文档
 
 ## 项目概况
 
 | 属性 | 值 |
 |------|-----|
 | 项目名称 | 碧蓝航线科研装备统计器 (AzurLaneResearchTracker) |
-| 当前版本 | v0.4.1 |
+| 当前版本 | v0.4.2 |
 | 开发语言 | Python 3.12 |
 | IDE | PyCharm 2024 |
 | 测试框架 | pytest / unittest |
-| 测试状态 | 810 项测试，全部通过（249开发 + 561 QA） |
+| 测试状态 | 785 项测试，全部通过（251开发 + 534 QA） |
 
 ---
 
@@ -127,6 +127,44 @@ QA测试：237项（边界/集成/回归），4个Bug全部修复并通过复测
 - v0.3.0对话审查：175/175通过，docstring修复
 - v0.4.0对话审查：258/258通过，排序键修复
 - QA全量回归：810/810通过（含24项GenID专项）
+
+
+### v0.4.2 — 代码审查Bug修复（已完成）★
+
+完成日期：2026-07-09
+类型：全项目代码审查修复（3个轻微Bug + 2个附带问题）
+测试：785项全部通过（251开发 + 534 QA，99.9%通过率）
+
+发现来源：QA 全项目代码审查报告（qa_tests/reports/code_review_report.md）
+
+修复内容：
+
+BUG-REVIEW-001（归属v0.3.0）：特殊装备空ID校验不一致
+  - 文件：core/data/special_equipment_manager.py（+6行）
+  - delete_special("") 和 update_special("",{...}) 缺少空ID前置校验
+  - 修复：统一添加空字符串校验 + 警告日志
+
+BUG-REVIEW-002（归属v0.2.0）：_generate_id 缺少 phase 有效性守护
+  - 文件：core/data/equipment_manager.py（+4行）
+  - _generate_id(True, phase=0) 静默生成无效ID "S0-001"
+  - 修复：添加 phase<=0 时 raise ValueError
+
+BUG-REVIEW-003（归属v0.2.0）：add_research_phase_equipment 空列表边界
+  - 文件：core/data/equipment_updater.py（+9行）
+  - 空装备列表传入不存在期数时返回 success=True 但期数未创建
+  - 修复：添加空列表前置守护，返回明确的失败信息
+
+PRE-001（归属v0.5.0）：日志抽屉动画高度断言偶发失败
+  - 文件：test/test_log_drawer.py
+  - QPropertyAnimation 结束时高度可能差 7px（253 vs 260）
+  - 修复：断言改为范围检查或增大 qWait
+
+PRE-002（归属v0.3.0）：test_calculation.py 清理逻辑可能误删真实数据
+  - 文件：test/test_calculation.py
+  - 动态生成的 _tid 在特定执行顺序下可能等于真实装备ID
+  - 修复：清理前添加名称前缀判断（__T 开头）
+
+验收：QA 全量回归 785 项测试（99.9%通过率），3 个 Bug 全部验证通过
 
 
 ---
@@ -267,6 +305,7 @@ AzurLaneResearchTracker/
 | v0.3.0 | 计算层（公式/碎片/欧非值/特殊装备+195测试） | ✅ 已完成 |
 | v0.4.0 | CLI入口+数据导出（462测试） | ✅ 已完成 |
 | v0.4.1 | 通用装备ID格式修复（G前缀统一，810测试） | ✅ 已完成 |
+| v0.4.2 | 代码审查Bug修复（3轻微Bug+2附带，785测试） | ✅ 已完成 |
 | v0.5.0 | PySide6 GUI界面 | 📋 下一步 |
 | v0.6.0 | ADB自动化+PaddleOCR识别 | 📋 待开发 |
 | v1.0.0 | 打包&发布 | 📋 待开发 |

@@ -66,6 +66,11 @@ def add_research_phase_equipment(
     rm = get_research_manager()
     rarity_mgr = get_rarity_manager()
 
+    # empty guard
+    if not gold_equipment and not rainbow_equipment:
+        logger.warning(f"phase {phase_number} has no equipment, skip")
+        return {"success":False,"phase":phase_number,"reason":"both lists empty","added":0,"ids":[],"failed":[],"phase_added":False}
+
     # 从稀有度表中查找"海上传奇"(彩虹)和"超稀有"(金色)的 ID
     rainbow_rarity = rarity_mgr.get_by_name("海上传奇")
     gold_rarity = rarity_mgr.get_by_name("超稀有")
