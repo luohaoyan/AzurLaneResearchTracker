@@ -1,0 +1,56 @@
+{
+  "source_url": "https://wiki.biligame.com/blhx/%E8%A3%85%E5%A4%87%E5%9B%BE%E9%89%B4",
+  "sample_size_per_rarity": {
+    "白色": 4,
+    "蓝色": 4,
+    "紫色": 4,
+    "金色": 4,
+    "彩色": 4
+  },
+  "rarity_folder_map": {
+    "白色": "common",
+    "蓝色": "rare",
+    "紫色": "elite",
+    "金色": "super_rare",
+    "彩色": "ultra_rare"
+  },
+  "rarity_id_map": {
+    "白色": 1,
+    "蓝色": 2,
+    "紫色": 3,
+    "金色": 4,
+    "彩色": 5
+  },
+  "rarity_order": [
+    "白色",
+    "蓝色",
+    "紫色",
+    "金色",
+    "彩色"
+  ],
+  "exclude_keywords": [
+    "特殊兵装"
+  ],
+  "request": {
+    "timeout": [
+      10,
+      30
+    ],
+    "retry_total": 3,
+    "backoff_factor": 0.8,
+    "delay_seconds": 1.0,
+    "user_agent": "AzurLaneResearchTrackerCrawler/0.5.0"
+  },
+  "image": {
+    "referer": "https://wiki.biligame.com/blhx/%E8%A3%85%E5%A4%87%E5%9B%BE%E9%89%B4",
+    "download_workers": 8,
+    "delay_seconds": 0.05
+  },
+  "workspace": {
+    "base_dir": "workdir/crawler",
+    "runs_dir_name": "runs",
+    "raw_dir_name": "raw",
+    "manifests_dir_name": "manifests",
+    "images_dir_name": "images"
+  }
+}
