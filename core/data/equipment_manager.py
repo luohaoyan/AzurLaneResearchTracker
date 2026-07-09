@@ -9,7 +9,7 @@
 ║                                                                  ║
 ║   【ID 规则】                                                     ║
 ║   科研装备: S{期数}-{序号:03d}  例如: S1-001, S7-003              ║
-║   通用装备: 纯数字自增          例如: 1, 2, 3                     ║
+║   通用装备: G{序号:04d}         例如: G0001, G0002, G0003                     ║
 ║                                                                  ║
 ║   【期数编码】期数信息完全通过 ID 编码（S1-001 = 第1期第1件）     ║
 ║   CSV 中不再单独存 research_phase 字段，消除数据冗余              ║
@@ -132,7 +132,7 @@ class EquipmentManager:
     def _generate_id(self, is_research: bool, phase: int = 0) -> str:
         """🤖 自动生成下一个装备 ID
         - is_research=True  → 找该期最大序号+1
-        - is_research=False → 找最大纯数字 ID+1"""
+        - is_research=False → 找最大 G 前缀 ID+1"""
         if is_research:
             max_seq = 0
             prefix = f"S{phase}-"
@@ -144,8 +144,17 @@ class EquipmentManager:
                         max_seq = p[1]
             return self.make_research_id(phase, max_seq + 1)
         else:
-            nums = [int(eq.get("equipment_id", "0")) for eq in self._data if eq.get("equipment_id", "").isdigit()]
-            return str(max(nums, default=0) + 1)
+            max_seq = 0
+            for eq in self._data:
+                eid = eq.get("equipment_id", "")
+                if eid.startswith("G"):
+                    try:
+                        seq = int(eid[1:])
+                        if seq > max_seq:
+                            max_seq = seq
+                    except ValueError:
+                        pass
+            return f"G{max_seq + 1:04d}"
 
     def _is_research_equipment(self, equipment_id: str) -> bool:
         """🔍 判断是否为科研装备（ID 格式为 S{期数}-{序号}）"""

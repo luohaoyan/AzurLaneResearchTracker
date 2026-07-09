@@ -112,13 +112,14 @@ def _print_table(title: str, field_names: Sequence[str], rows: Sequence[Sequence
 
 
 def _sort_equipment_key(equipment_id: str) -> Tuple[int, int, int, str]:
-    """让科研装备优先、数字装备其次、其他 ID 最后。"""
+    """让科研装备优先、通用装备其次、其他 ID 最后。"""
     parsed = get_equipment_manager().parse_research_id(equipment_id)
     if parsed:
         phase, seq = parsed
         return (0, phase, seq, equipment_id)
-    if str(equipment_id).isdigit():
-        return (1, 0, int(equipment_id), equipment_id)
+    # G 前缀通用装备：按序号排序
+    if str(equipment_id).startswith("G") and str(equipment_id)[1:].isdigit():
+        return (1, 0, int(str(equipment_id)[1:]), equipment_id)
     return (2, 0, 0, equipment_id)
 
 

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 import os,sys
 sys.path.insert(0,os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.data.rarity_manager import get_rarity_manager
@@ -62,7 +62,7 @@ sec("6. CRUD")
 r=em.add_equipment({"name":"__T1__","rarity_id":3,"type":"x","research_phase":0})
 ck("add ok",r)
 t=em.get_by_name("__T1__");tid=t["equipment_id"]
-ck("num id",tid.isdigit())
+ck("num id",tid.startswith("G") and tid[1:].isdigit())
 ck("rename",em.update_equipment(tid,{"name":"__T1X__"}))
 ck("new name",em.get_by_id(tid)["name"]=="__T1X__")
 ck("chg rarity",em.update_equipment(tid,{"rarity_id":4}))
