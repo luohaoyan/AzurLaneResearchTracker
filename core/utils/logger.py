@@ -12,6 +12,28 @@ from logging.handlers import RotatingFileHandler
 from .path_manager import PathManager
 
 
+class _CloseAfterEmitRotatingFileHandler(RotatingFileHandler):
+    """每次写入后释放文件句柄，避免 Windows 测试环境锁住 Logs 目录。"""
+
+    def emit(self, record):
+        """写入一条日志，并在写入后立刻关闭底层文件流。"""
+        try:
+            super().emit(record)
+        finally:
+            self._close_stream()
+
+    def _close_stream(self):
+        """关闭当前文件流，但保留 handler 供下一条日志重新打开。"""
+        self.acquire()
+        try:
+            if self.stream:
+                self.stream.flush()
+                self.stream.close()
+                self.stream = None
+        finally:
+            self.release()
+
+
 class Logger:
     """日志管理类"""
 
@@ -55,6 +77,8 @@ class Logger:
         self._std_logger = logging.getLogger(self.name)
         self._std_logger.setLevel(self.level)
         # 清楚已有标准化日志器
+        for handler in list(self._std_logger.handlers):
+            handler.close()
         self._std_logger.handlers.clear()
 
         # 设置日志格式
@@ -71,22 +95,24 @@ class Logger:
         # 主日志文件处理器 - 使用日期时间文件名
         main_log_filename = f"{self.name}_{self.start_time}.log"
         main_log_path = os.path.join(self.log_dir, main_log_filename)
-        main_file_handler = RotatingFileHandler(
+        main_file_handler = _CloseAfterEmitRotatingFileHandler(
             filename=main_log_path,
             maxBytes=10 * 1024 * 1024,  # 10MB
             backupCount=5,
-            encoding='utf-8'
+            encoding='utf-8',
+            delay=True,
         )
         main_file_handler.setLevel(logging.DEBUG)
         main_file_handler.setFormatter(formatter)
         # 错误日志文件处理器 - 单独记录ERROR及以上级别的日志
         error_log_filename = f"{self.name}_error_{self.start_time}.log"
         error_log_path = os.path.join(self.log_dir, error_log_filename)
-        error_file_handler = RotatingFileHandler(
+        error_file_handler = _CloseAfterEmitRotatingFileHandler(
             filename=error_log_path,
             maxBytes=10 * 1024 * 1024,  # 10MB
             backupCount=5,
-            encoding='utf-8'
+            encoding='utf-8',
+            delay=True,
         )
         error_file_handler.setLevel(logging.ERROR)
         error_file_handler.setFormatter(formatter)

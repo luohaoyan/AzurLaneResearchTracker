@@ -158,17 +158,28 @@ def test_research_progress_page_shows_real_progress_widgets(qapp: QApplication) 
     assert page.secretary_dialog_frame.objectName() == "secretary_dialog"
     assert page.secretary_dialog_frame.height() >= 108
     assert "duration" in page.summary_cards
-    assert page.progress_table.columnCount() == 4
+    assert page.progress_table.columnCount() == 5
     assert [
         page.progress_table.horizontalHeaderItem(index).text()
         for index in range(page.progress_table.columnCount())
-    ] == ["装备", "需求图纸", "当前图纸", "整装"]
-    assert page.progress_table.rowCount() >= 1
+    ] == ["位置", "装备", "稀有度", "当前图纸", "整装"]
+    assert "需求图纸" not in [
+        page.progress_table.horizontalHeaderItem(index).text()
+        for index in range(page.progress_table.columnCount())
+    ]
+    assert page.progress_table.rowCount() == 6
+    assert page.progress_table.item(0, 0).text() == "彩装位"
+    assert [
+        page.progress_table.item(index, 0).text()
+        for index in range(1, page.progress_table.rowCount())
+    ] == [f"金装位 {index}" for index in range(1, 6)]
     assert "最新科研期" in page.notice_label.text()
     assert page.score_value_label.text() != ""
     assert page.luck_value_label.objectName() == "luck_badge"
 
-    history_index = page.phase_combo.findData(1)
+    assert page.phase_combo.findData(1) == -1
+    history_index = page.phase_combo.findData(2)
+    assert history_index >= 0
     page.phase_combo.setCurrentIndex(history_index)
     page.target_combo.setCurrentIndex(11)
     page.refresh_progress()
@@ -176,6 +187,31 @@ def test_research_progress_page_shows_real_progress_widgets(qapp: QApplication) 
     assert "历史科研期" in page.notice_label.text()
     assert page._last_target_context in {"history", "history_completed"}
     assert page._last_target_comment != ""
+
+    window.close()
+
+
+def test_research_progress_equipment_table_uses_fixed_rainbow_gold_slots(qapp: QApplication) -> None:
+    """科研装备明细应固定展示 1 彩 + 5 金槽位，不再把彩装目标数放进表格。"""
+    window = MainWindow()
+    page = window.pages["research_progress"]
+    rows = [
+        {"equipment_name": "金装 B", "rarity_id": 4, "rarity_name": "超稀有", "fragment_count": 12, "equipment_count": 0},
+        {"equipment_name": "彩装 A", "rarity_id": 5, "rarity_name": "海上传奇", "fragment_count": 35, "equipment_count": 1},
+        {"equipment_name": "金装 A", "rarity_id": 4, "rarity_name": "超稀有", "fragment_count": 7, "equipment_count": 0},
+    ]
+
+    page._update_table(rows)
+
+    assert page.progress_table.rowCount() == 6
+    assert page.progress_table.item(0, 0).text() == "彩装位"
+    assert page.progress_table.item(0, 1).text() == "彩装 A"
+    assert page.progress_table.item(1, 0).text() == "金装位 1"
+    assert page.progress_table.item(1, 1).text() == "金装 A"
+    assert page.progress_table.item(2, 0).text() == "金装位 2"
+    assert page.progress_table.item(2, 1).text() == "金装 B"
+    assert page.progress_table.item(3, 1).text() == "待资料同步"
+    assert page.progress_table.item(3, 3).text() == "—"
 
     window.close()
 
@@ -263,6 +299,26 @@ def test_research_progress_duration_and_dialog_use_ui_config(qapp: QApplication)
     window.close()
 
 
+def test_research_progress_secretary_dialog_timer_restarts_on_new_dialog(qapp: QApplication) -> None:
+    """连续切换目标时，新秘书舰对话不应被上一轮旧计时器提前清空。"""
+    window = MainWindow()
+    page = window.pages["research_progress"]
+    page.secretary_lines_config["dialog_duration_ms"] = 800
+    page.ui_config.setdefault("secretary", {})["dialog_duration_ms"] = 800
+
+    page._show_secretary_dialog("第一次目标提示")
+    QTest.qWait(100)
+    page._show_secretary_dialog("第二次目标提示")
+    QTest.qWait(950)
+
+    assert page._secretary_dialog_timer.interval() >= 3600
+    assert page.secretary_dialog_frame.property("quiet") is False
+    assert page.target_comment_label.text() == "第二次目标提示"
+
+    page._reset_secretary_dialog()
+    window.close()
+
+
 def test_research_progress_rejects_future_start_date_and_resets_official(qapp: QApplication) -> None:
     """科研开始时间不能超过今天，复位按钮应回到配置中的官方开始时间。"""
     manager = get_ui_config_manager()
@@ -303,19 +359,21 @@ def test_research_progress_persists_target_per_phase(qapp: QApplication) -> None
     page = window.pages["research_progress"]
 
     try:
-        phase_one_index = page.phase_combo.findData(1)
+        phase_two_index = page.phase_combo.findData(2)
         phase_six_index = page.phase_combo.findData(6)
-        page.phase_combo.setCurrentIndex(phase_one_index)
+        assert phase_two_index >= 0
+        assert phase_six_index >= 0
+        page.phase_combo.setCurrentIndex(phase_two_index)
         page.target_combo.setCurrentIndex(page.target_combo.findData(3))
         page.phase_combo.setCurrentIndex(phase_six_index)
         page.target_combo.setCurrentIndex(page.target_combo.findData(5))
 
         config = manager.get_research_progress_config()
 
-        assert config["phase_settings"]["PR1"]["target"] == 3
+        assert config["phase_settings"]["PR2"]["target"] == 3
         assert config["phase_settings"]["PR6"]["target"] == 5
 
-        page.phase_combo.setCurrentIndex(phase_one_index)
+        page.phase_combo.setCurrentIndex(phase_two_index)
 
         assert page.target_combo.currentData() == 3
     finally:
@@ -351,11 +409,47 @@ def test_user_data_table_hides_internal_equipment_id(qapp: QApplication) -> None
     assert "equipment_id" not in headers
     assert "装备编号" not in headers
     assert "类型" not in headers
-    assert "拥有数量" not in headers
-    assert "碎片数量" not in headers
-    assert headers == ["装备名称", "稀有度", "科研期"]
+    assert headers == ["装备名称", "稀有度", "科研期", "装备数", "碎片数"]
     assert page.table.cellWidget(0, 0) is not None
     assert page.table.cellWidget(0, 0).findChild(QLabel, "equipment_icon_label") is not None
+    assert page.table.item(0, 3) is not None
+    assert page.table.item(0, 4) is not None
+
+    window.close()
+
+
+def test_user_data_can_open_downloaded_equipment_library_view(qapp: QApplication) -> None:
+    """用户数据页应提供基础装备库表子界面，且只展示公开装备库列。"""
+    window = MainWindow()
+    page = window.pages["user_data"]
+
+    page.open_library_button.click()
+
+    assert page.view_stack.currentWidget() is page.library_view
+    headers = [
+        page.library_table.horizontalHeaderItem(index).text()
+        for index in range(page.library_table.columnCount())
+    ]
+    assert headers == ["装备名称", "稀有度", "科研期"]
+    assert "equipment_id" not in headers
+    assert "装备数" not in headers
+    assert "碎片数" not in headers
+    assert page.library_table.cellWidget(0, 0).findChild(QLabel, "equipment_icon_label") is not None
+    assert "equipment_library" not in page.open_library_button.toolTip()
+
+    page.library_search_input.setText("457")
+    assert page.library_table.rowCount() >= 1
+    assert all("457" in page.library_table.cellWidget(row, 0).findChild(QLabel, "equipment_name_label").text() for row in range(page.library_table.rowCount()))
+
+    page.library_search_input.setText("")
+    page.library_rarity_combo.setCurrentIndex(page.library_rarity_combo.findData(5))
+    page.library_phase_combo.setCurrentIndex(page.library_phase_combo.findData(2))
+    assert page.library_table.rowCount() >= 1
+    assert all(page.library_table.item(row, 1).text() == "海上传奇" for row in range(page.library_table.rowCount()))
+    assert all(page.library_table.item(row, 2).text() == "科研 2 期" for row in range(page.library_table.rowCount()))
+
+    page.back_to_player_data_button.click()
+    assert page.view_stack.currentWidget() is page.player_data_view
 
     window.close()
 
@@ -397,20 +491,95 @@ def test_user_data_missing_equipment_icon_uses_blank_pixmap(qapp: QApplication) 
     window.close()
 
 
-def test_trend_page_builds_matplotlib_dual_panels(qapp: QApplication) -> None:
+def test_trend_page_builds_single_matplotlib_panel_with_function_tabs(qapp: QApplication) -> None:
     """历史趋势页应重构为两个 matplotlib 折线图区域，不再展示表格。"""
     window = MainWindow()
     trend_page = window.pages["trend"]
 
-    assert hasattr(trend_page, "phase_ratio_panel")
-    assert hasattr(trend_page, "equipment_fragment_panel")
+    assert trend_page.trend_tabs.count() == 2
+    assert trend_page.trend_tabs.tabText(0) == "科研金彩比"
+    assert trend_page.trend_tabs.tabText(1) == "装备碎片趋势"
+    assert hasattr(trend_page, "trend_panel")
     assert not hasattr(trend_page, "trend_table")
-    assert trend_page.phase_ratio_panel.canvas.objectName() == "matplotlib_trend_canvas"
-    assert trend_page.equipment_fragment_panel.toolbar.objectName() == "trend_navigation_toolbar"
+    assert not hasattr(trend_page.trend_panel, "toolbar")
+    assert trend_page.trend_panel.canvas.objectName() == "matplotlib_trend_canvas"
+    assert trend_page.trend_panel.minimumHeight() >= 420
+    assert trend_page.trend_tabs.maximumHeight() <= 190
+    assert trend_page.trend_tabs.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Fixed
     assert trend_page.equipment_select_combo.objectName() == "trend_equipment_select"
     assert trend_page.phase_checks
+    assert 1 not in trend_page.phase_checks
+    assert 2 in trend_page.phase_checks
+    assert trend_page.phase_drawer_table.objectName() == "phase_drawer_table"
+    assert trend_page.phase_drawer_table.isHidden() is True
+    assert trend_page.phase_drawer_table.rowCount() == len(trend_page.phase_checks)
+    trend_page.phase_drawer_button.click()
+    assert trend_page.phase_drawer_table.isHidden() is False
+    assert trend_page.phase_drawer_button.text() == "收起科研期"
+    assert trend_page.trend_tabs.maximumHeight() >= 300
+    assert trend_page.import_history_button.objectName() == "import_history_button"
 
     window.close()
+
+
+def test_trend_page_gives_chart_more_vertical_space_than_controls(qapp: QApplication) -> None:
+    """趋势页默认应让图表区域明显大于中间选项区，避免折线图被挤到很小。"""
+    window = MainWindow()
+    window.resize(1280, 820)
+    window.switch_to_page("trend")
+    window.show()
+    qapp.processEvents()
+    QTest.qWait(120)
+    trend_page = window.pages["trend"]
+
+    assert trend_page.trend_tabs.height() <= 210
+    assert trend_page.trend_panel.height() > trend_page.trend_tabs.height()
+
+    window.close()
+
+
+def test_trend_equipment_selector_keeps_readable_layout(qapp: QApplication) -> None:
+    """装备碎片趋势页应给装备选择和已选列表足够空间，避免控件挤成一团。"""
+    window = MainWindow()
+    window.resize(1280, 820)
+    window.switch_to_page("trend")
+    window.show()
+    qapp.processEvents()
+    trend_page = window.pages["trend"]
+
+    trend_page.trend_tabs.setCurrentIndex(1)
+    qapp.processEvents()
+    QTest.qWait(120)
+
+    assert 220 <= trend_page.trend_tabs.height() <= 280
+    assert trend_page.equipment_search_input.width() >= 170
+    assert trend_page.equipment_select_combo.width() >= 250
+    assert trend_page.selected_equipment_list.height() >= 70
+    assert trend_page.trend_panel.height() > trend_page.trend_tabs.height()
+
+    window.close()
+
+
+def test_trend_selected_equipment_list_uses_skin_tokens(qapp: QApplication) -> None:
+    """已选划线装备列表应跟随皮肤配色，避免露出 Qt 默认白底。"""
+    manager = get_ui_config_manager()
+    original_config = manager.get_appearance_config()
+    window = MainWindow()
+    trend_page = window.pages["trend"]
+
+    try:
+        window.apply_theme_skin("iron_blood")
+        stylesheet = window.styleSheet()
+        skin = get_theme_skin("iron_blood")
+
+        assert trend_page.selected_equipment_list.objectName() == "selected_equipment_line_list"
+        assert "QListWidget#selected_equipment_line_list" in stylesheet
+        assert f"background: {skin.tokens.table_row};" in stylesheet
+        assert f"selection-background-color: {skin.tokens.table_selection};" in stylesheet
+        assert f"selection-color: {skin.tokens.table_selection_text};" in stylesheet
+    finally:
+        manager.config_loader.save_config("ui", "appearance", original_config)
+        window.close()
 
 
 def test_trend_page_builds_phase_ratio_and_equipment_fragment_series(qapp: QApplication) -> None:
@@ -440,13 +609,14 @@ def test_trend_page_builds_phase_ratio_and_equipment_fragment_series(qapp: QAppl
     trend_page.start_date.setDate(QDate(2026, 7, 1))
     trend_page.end_date.setDate(QDate(2026, 7, 2))
     for phase, checkbox in trend_page.phase_checks.items():
-        checkbox.setChecked(phase in {1, 2})
+        checkbox.setChecked(phase in {2, 3})
 
     ratio_series = trend_page._build_phase_ratio_series_map()
     fragment_series = trend_page._build_equipment_fragment_series("S1-001", "测试装备")
 
-    assert set(ratio_series) == {"PR1", "PR2"}
-    assert ratio_series["PR1"][0]["value"] == 0.5
+    assert "PR1" not in ratio_series
+    assert set(ratio_series) == {"PR2", "PR3"}
+    assert ratio_series["PR2"][0]["value"] == 0.5
     assert fragment_series[-1]["value"] == 35
 
     window.close()
@@ -457,18 +627,35 @@ def test_trend_page_searches_equipment_and_draws_lines(qapp: QApplication) -> No
     window = MainWindow()
     trend_page = window.pages["trend"]
 
+    class FakeUserDataManager:
+        def get_history(self, _equipment_id: str) -> list[dict[str, int | str]]:
+            return [
+                {"date": "2026-07-01", "equipment_count": 0, "fragment_count": 12},
+                {"date": "2026-07-02", "equipment_count": 1, "fragment_count": 35},
+            ]
+
+    trend_page.user_data_manager = FakeUserDataManager()
+    trend_page.start_date.setDate(QDate(2026, 7, 1))
+    trend_page.end_date.setDate(QDate(2026, 7, 2))
+
+    trend_page.trend_tabs.setCurrentIndex(1)
     trend_page.equipment_search_input.setText("406")
     trend_page.search_equipment_options()
 
     assert trend_page.equipment_select_combo.count() >= 1
     assert "406" in trend_page.equipment_select_combo.itemText(0)
+    assert str(trend_page.equipment_select_combo.itemData(0)).startswith("S1-")
+    trend_page._add_selected_equipment_line()
 
-    trend_page.equipment_fragment_panel.plot_series(
-        {"测试装备": [{"date": "2026-07-01", "value": 12, "detail": "测试"}]},
-        "碎片数量",
-        "暂无数据",
-    )
-    assert len(trend_page.equipment_fragment_panel.axes.lines) == 1
+    trend_page.equipment_search_input.setText("457")
+    trend_page.search_equipment_options()
+    assert "457" in trend_page.equipment_select_combo.itemText(0)
+    trend_page._add_selected_equipment_line()
+
+    assert trend_page.selected_equipment_list.count() == 2
+    assert len(trend_page._selected_equipment_lines) == 2
+    trend_page.refresh_equipment_fragment_chart()
+    assert len(trend_page.trend_panel.axes.lines) == 2
 
     window.close()
 
@@ -484,8 +671,8 @@ def test_trend_page_chart_colors_follow_selected_skin(qapp: QApplication) -> Non
         window.apply_theme_skin("dragon_empery")
 
         skin = get_theme_skin("dragon_empery")
-        assert to_hex(trend_page.phase_ratio_panel.figure.get_facecolor()).upper() == skin.tokens.surface.upper()
-        assert to_hex(trend_page.phase_ratio_panel.axes.get_facecolor()).upper() == skin.tokens.table_row.upper()
+        assert to_hex(trend_page.trend_panel.figure.get_facecolor()).upper() == skin.tokens.surface.upper()
+        assert to_hex(trend_page.trend_panel.axes.get_facecolor()).upper() == skin.tokens.table_row.upper()
     finally:
         manager.config_loader.save_config("ui", "appearance", original_config)
         window.close()
@@ -578,6 +765,14 @@ def test_settings_page_exposes_skin_selector_and_preview(qapp: QApplication) -> 
     assert set(page.skin_preview_cards) >= {"harbor_night", "iron_blood", "dragon_empery"}
     assert page.skin_combo.findData("iron_blood") >= 0
     assert page.skin_combo.findData("dragon_empery") >= 0
+    assert sum(not card.isHidden() for card in page.skin_preview_cards.values()) <= page.skin_preview_limit
+    assert page.skin_preview_expand_button.text() == "＋"
+    assert page.skin_preview_expand_button.minimumHeight() >= 104
+
+    page.skin_preview_expand_button.click()
+
+    assert sum(not card.isHidden() for card in page.skin_preview_cards.values()) == len(page.skin_preview_cards)
+    assert page.skin_preview_expand_button.text() == "－"
 
     window.close()
 
@@ -591,6 +786,8 @@ def test_settings_skin_preview_card_click_switches_skin(qapp: QApplication) -> N
     card = page.skin_preview_cards["iron_blood"]
 
     try:
+        if card.isHidden():
+            page.skin_preview_expand_button.click()
         QTest.mouseClick(card, Qt.MouseButton.LeftButton)
 
         assert page.skin_combo.currentData() == "iron_blood"
@@ -598,6 +795,47 @@ def test_settings_skin_preview_card_click_switches_skin(qapp: QApplication) -> N
     finally:
         manager.config_loader.save_config("ui", "appearance", original_config)
         window.close()
+
+
+def test_settings_and_research_pages_scroll_when_log_drawer_expands(qapp: QApplication) -> None:
+    """窗口变小且日志展开时，设置页和科研页应通过页面滚动保护内容可读性。"""
+    window = MainWindow()
+    window.resize(900, 620)
+    window.log_drawer.set_expanded(True, animate=False)
+    window.show()
+    qapp.processEvents()
+
+    try:
+        for page_key in ("settings", "research_progress"):
+            window.switch_to_page(page_key)
+            qapp.processEvents()
+            page = window.pages[page_key]
+
+            assert page.findChild(QScrollArea, "page_scroll_area") is page.page_scroll_area
+            assert page.page_scroll_area.widgetResizable() is True
+            assert page.page_scroll_area.content_overflows() is True
+    finally:
+        window.close()
+
+
+def test_settings_skin_preview_grid_keeps_expand_button_on_first_row(qapp: QApplication) -> None:
+    """设置页皮肤预览收起时应保持三张卡加一个加号同排，避免日志展开后挤压文字。"""
+    window = MainWindow()
+    window.resize(900, 620)
+    window.log_drawer.set_expanded(True, animate=False)
+    window.switch_to_page("settings")
+    window.show()
+    qapp.processEvents()
+    page = window.pages["settings"]
+    visible_cards = [card for card in page.skin_preview_cards.values() if not card.isHidden()]
+
+    assert len(visible_cards) <= page.skin_preview_limit
+    assert visible_cards
+    assert all(card.minimumHeight() >= 112 for card in visible_cards)
+    assert all(card.minimumWidth() >= 160 for card in visible_cards)
+    assert page.skin_preview_expand_button.geometry().y() == visible_cards[0].geometry().y()
+
+    window.close()
 
 
 def test_future_page_rows_keep_readable_height(qapp: QApplication) -> None:

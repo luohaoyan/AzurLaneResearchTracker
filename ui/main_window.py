@@ -22,10 +22,9 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from matplotlib import rcParams
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
 from matplotlib.figure import Figure
 from PySide6.QtCore import QEasingCurve, QParallelAnimationGroup, QDate, QPropertyAnimation, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QMovie, QPixmap, QWheelEvent
+from PySide6.QtGui import QAction, QMovie, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -49,6 +48,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QStackedWidget,
     QStatusBar,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -119,6 +119,28 @@ def polish_data_table(table: QTableWidget, row_height: int = 44) -> None:
     table.verticalHeader().setVisible(False)
     table.verticalHeader().setDefaultSectionSize(row_height)
     table.verticalHeader().setMinimumSectionSize(row_height)
+
+
+def get_visible_research_phases(min_phase_number: int = 2) -> List[Dict[str, Any]]:
+    """
+    从科研期数据表读取用户可选择的科研期。
+    输入：
+        min_phase_number: 最小科研期；默认从 PR2 开始，避开没有彩装的一期科研。
+    输出：
+        List[dict]: 过滤后的科研期数据，来源于 data/research_phases.csv。
+    使用示例：
+        phases = get_visible_research_phases()
+    """
+    visible: List[Dict[str, Any]] = []
+    for phase in get_research_manager().get_all():
+        try:
+            phase_number = int(phase.get("phase_number", 0))
+        except (TypeError, ValueError):
+            continue
+        if phase_number < min_phase_number:
+            continue
+        visible.append(phase)
+    return visible
 
 
 # ============================================================
@@ -353,8 +375,6 @@ class MatplotlibTrendPanel(QFrame):
         self.canvas = FigureCanvas(self.figure)
         self.canvas.setObjectName("matplotlib_trend_canvas")
         self.axes = self.figure.add_subplot(111)
-        self.toolbar = NavigationToolbar2QT(self.canvas, self)
-        self.toolbar.setObjectName("trend_navigation_toolbar")
         self.annotation = self.axes.annotate(
             "",
             xy=(0, 0),
@@ -368,9 +388,9 @@ class MatplotlibTrendPanel(QFrame):
 
         layout.addLayout(header)
         layout.addWidget(self.status_label)
-        layout.addWidget(self.toolbar)
         layout.addWidget(self.canvas, stretch=1)
-        self.setMinimumHeight(300)
+        self.setMinimumHeight(420)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.apply_theme_tokens(self.theme_tokens)
 
     def apply_theme_tokens(self, tokens: ThemeTokens) -> None:
@@ -525,9 +545,20 @@ class BasePage(QWidget):
         """创建统一页面外壳。"""
         super().__init__(parent)
         self.setObjectName("page_shell")
-        self.root = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        self.page_scroll_area = ElasticScrollArea(self)
+        self.page_scroll_area.setObjectName("page_scroll_area")
+        self.page_scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.page_scroll_content = QWidget()
+        self.page_scroll_content.setObjectName("page_scroll_content")
+        self.root = QVBoxLayout(self.page_scroll_content)
         self.root.setContentsMargins(28, 24, 28, 24)
         self.root.setSpacing(16)
+        self.page_scroll_area.setWidget(self.page_scroll_content)
+        outer_layout.addWidget(self.page_scroll_area)
 
         self.page_marker_label = QLabel("ALRT")
         self.page_marker_label.setObjectName("page_marker")
@@ -571,6 +602,8 @@ class BasePage(QWidget):
         """
         card = QFrame()
         card.setObjectName("content_panel")
+        card.setMinimumHeight(96)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
@@ -763,14 +796,37 @@ class UserDataPage(BasePage):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """创建用户装备数据表格与筛选栏。"""
-        super().__init__("用户数据", "展示当前本地装备库支持范围；内部装备编号不会显示，也不会修改基础装备表。", parent)
+        super().__init__("用户数据", "展示玩家当前装备与碎片数据；基础装备库清单可从本页单独打开。", parent)
         self.icon_size = 36
         self.equipment_manager = get_equipment_manager()
         self.all_equipment_rows: List[Dict[str, object]] = self.equipment_manager.get_equipment_with_image()
-        self._build_filters()
-        self._build_table()
+        self._build_views()
 
-    def _build_filters(self) -> None:
+    def _build_views(self) -> None:
+        """构建用户数据主视图和基础装备库子视图。"""
+        self.view_stack = QStackedWidget()
+        self.view_stack.setObjectName("user_data_view_stack")
+
+        self.player_data_view = QWidget()
+        player_layout = QVBoxLayout(self.player_data_view)
+        player_layout.setContentsMargins(0, 0, 0, 0)
+        player_layout.setSpacing(12)
+        self._build_filters(player_layout)
+        self._build_table(player_layout)
+
+        self.library_view = QWidget()
+        library_layout = QVBoxLayout(self.library_view)
+        library_layout.setContentsMargins(0, 0, 0, 0)
+        library_layout.setSpacing(12)
+        self._build_library_view(library_layout)
+
+        self.view_stack.addWidget(self.player_data_view)
+        self.view_stack.addWidget(self.library_view)
+        self.root.addWidget(self.view_stack, stretch=1)
+        self.refresh_equipment_table()
+        self.refresh_library_table()
+
+    def _build_filters(self, parent_layout: QVBoxLayout) -> None:
         """构建装备筛选控件。"""
         panel = QFrame()
         panel.setObjectName("content_panel")
@@ -793,24 +849,100 @@ class UserDataPage(BasePage):
         self.search_input.textChanged.connect(lambda _text="": self.refresh_equipment_table())
         self.rarity_combo.currentIndexChanged.connect(lambda _index=0: self.refresh_equipment_table())
         self.phase_combo.currentIndexChanged.connect(lambda _index=0: self.refresh_equipment_table())
+        self.open_library_button = QPushButton("查看装备库表")
+        self.open_library_button.setObjectName("open_equipment_library_button")
+        self.open_library_button.setToolTip("打开基础装备清单，只展示名称、稀有度和科研期。")
+        self.open_library_button.clicked.connect(self._show_library_view)
 
         row.addWidget(self.search_input, stretch=2)
         row.addWidget(self.rarity_combo)
         row.addWidget(self.phase_combo)
-        self.root.addWidget(panel)
+        row.addStretch(1)
+        row.addWidget(self.open_library_button)
+        parent_layout.addWidget(panel)
 
-    def _build_table(self) -> None:
+    def _build_table(self, parent_layout: QVBoxLayout) -> None:
         """构建用户可见装备表格。"""
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["装备名称", "稀有度", "科研期"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["装备名称", "稀有度", "科研期", "装备数", "碎片数"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for column in range(1, 5):
+            self.table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         polish_data_table(self.table, 52)
-        self.root.addWidget(self.table, stretch=1)
-        self.refresh_equipment_table()
+        parent_layout.addWidget(self.table, stretch=1)
+
+    def _build_library_view(self, parent_layout: QVBoxLayout) -> None:
+        """构建基础装备库表子页面。"""
+        panel = QFrame()
+        panel.setObjectName("content_panel")
+        row = QHBoxLayout(panel)
+        row.setContentsMargins(16, 14, 16, 14)
+        row.setSpacing(10)
+
+        title_box = QVBoxLayout()
+        title = QLabel("装备库表")
+        title.setObjectName("panel_title")
+        hint = QLabel("展示基础装备清单，仅保留玩家需要查看的名称、稀有度和科研期。")
+        hint.setObjectName("card_caption")
+        hint.setWordWrap(True)
+        title_box.addWidget(title)
+        title_box.addWidget(hint)
+
+        self.back_to_player_data_button = QPushButton("返回用户数据")
+        self.back_to_player_data_button.setObjectName("back_to_player_data_button")
+        self.back_to_player_data_button.clicked.connect(self._show_player_data_view)
+
+        row.addLayout(title_box, stretch=1)
+        row.addWidget(self.back_to_player_data_button)
+        parent_layout.addWidget(panel)
+
+        filter_panel = QFrame()
+        filter_panel.setObjectName("content_panel")
+        filter_row = QHBoxLayout(filter_panel)
+        filter_row.setContentsMargins(16, 12, 16, 12)
+        filter_row.setSpacing(10)
+
+        self.library_search_input = QLineEdit()
+        self.library_search_input.setObjectName("equipment_library_search")
+        self.library_search_input.setPlaceholderText("按装备名称搜索")
+        self.library_rarity_combo = QComboBox()
+        self.library_rarity_combo.setObjectName("equipment_library_rarity_filter")
+        self.library_rarity_combo.addItem("全部稀有度", None)
+        for rarity in self.equipment_manager.rarity_manager.get_all():
+            self.library_rarity_combo.addItem(str(rarity.get("name", "未知")), int(rarity.get("rarity_id", 0)))
+        self.library_phase_combo = QComboBox()
+        self.library_phase_combo.setObjectName("equipment_library_phase_filter")
+        self.library_phase_combo.addItem("全部科研期", None)
+        for phase in get_research_manager().get_all():
+            phase_number = int(phase.get("phase_number", 0))
+            self.library_phase_combo.addItem(f"科研 {phase_number} 期", phase_number)
+        self.library_phase_combo.addItem("通用", 0)
+
+        self.library_search_input.textChanged.connect(lambda _text="": self.refresh_library_table())
+        self.library_rarity_combo.currentIndexChanged.connect(lambda _index=0: self.refresh_library_table())
+        self.library_phase_combo.currentIndexChanged.connect(lambda _index=0: self.refresh_library_table())
+
+        filter_row.addWidget(QLabel("名称"))
+        filter_row.addWidget(self.library_search_input, stretch=2)
+        filter_row.addWidget(QLabel("稀有度"))
+        filter_row.addWidget(self.library_rarity_combo)
+        filter_row.addWidget(QLabel("科研期"))
+        filter_row.addWidget(self.library_phase_combo)
+        filter_row.addStretch(1)
+        parent_layout.addWidget(filter_panel)
+
+        self.library_table = QTableWidget(0, 3)
+        self.library_table.setObjectName("equipment_library_table")
+        self.library_table.setHorizontalHeaderLabels(["装备名称", "稀有度", "科研期"])
+        self.library_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for column in range(1, 3):
+            self.library_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        polish_data_table(self.library_table, 52)
+        parent_layout.addWidget(self.library_table, stretch=1)
 
     def refresh_equipment_table(self) -> None:
         """
-        按当前筛选条件刷新装备库展示。
+        按当前筛选条件刷新玩家装备数据展示。
         输入：
             无。
         输出：
@@ -823,9 +955,44 @@ class UserDataPage(BasePage):
         for row, equipment in enumerate(equipments):
             phase = self._phase_from_public_data(str(equipment.get("equipment_id", "")))
             self.table.setCellWidget(row, 0, self._build_name_icon_cell(equipment))
-            values = [equipment.get("rarity_name", "未知"), phase]
+            values = [
+                equipment.get("rarity_name", "未知"),
+                phase,
+                self._display_count(equipment, "owned_quantity"),
+                self._display_count(equipment, "fragment_quantity"),
+            ]
             for column, value in enumerate(values):
-                self.table.setItem(row, column + 1, QTableWidgetItem(str(value)))
+                item = QTableWidgetItem(str(value))
+                if column >= 2:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.table.setItem(row, column + 1, item)
+
+    def refresh_library_table(self) -> None:
+        """刷新基础装备库表，只展示公开列。"""
+        equipments = self._filtered_library_rows()
+        self.library_table.setRowCount(len(equipments))
+        for row, equipment in enumerate(equipments):
+            phase = self._phase_from_public_data(str(equipment.get("equipment_id", "")))
+            self.library_table.setCellWidget(row, 0, self._build_name_icon_cell(equipment))
+            for column, value in enumerate([equipment.get("rarity_name", "未知"), phase], start=1):
+                self.library_table.setItem(row, column, QTableWidgetItem(str(value)))
+
+    def _show_library_view(self) -> None:
+        """切换到基础装备库表视图。"""
+        self.refresh_library_table()
+        self.view_stack.setCurrentWidget(self.library_view)
+
+    def _show_player_data_view(self) -> None:
+        """切回玩家当前装备数据视图。"""
+        self.view_stack.setCurrentWidget(self.player_data_view)
+
+    @staticmethod
+    def _display_count(equipment: Dict[str, object], key: str) -> int:
+        """把装备数量字段转换成用户可读整数，缺失或异常时显示 0。"""
+        try:
+            return int(equipment.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
 
     def _filtered_equipment_rows(self) -> List[Dict[str, object]]:
         """
@@ -837,15 +1004,34 @@ class UserDataPage(BasePage):
         使用示例：
             rows = page._filtered_equipment_rows()
         """
-        keyword = self.search_input.text().strip().lower()
-        rarity_id = self.rarity_combo.currentData()
-        phase_filter = self.phase_combo.currentData()
+        return self._filter_equipment_rows(
+            self.search_input.text().strip(),
+            self.rarity_combo.currentData(),
+            self.phase_combo.currentData(),
+        )
+
+    def _filtered_library_rows(self) -> List[Dict[str, object]]:
+        """返回符合装备库子页筛选条件的公开装备行。"""
+        return self._filter_equipment_rows(
+            self.library_search_input.text().strip(),
+            self.library_rarity_combo.currentData(),
+            self.library_phase_combo.currentData(),
+        )
+
+    def _filter_equipment_rows(
+        self,
+        keyword: str,
+        rarity_id: Optional[int],
+        phase_filter: Optional[int],
+    ) -> List[Dict[str, object]]:
+        """按名称、稀有度和科研期过滤装备列表。"""
+        normalized_keyword = keyword.lower()
         rows: List[Dict[str, object]] = []
         for equipment in self.all_equipment_rows:
             name = str(equipment.get("name", ""))
             equipment_id = str(equipment.get("equipment_id", ""))
             parsed_phase = self._phase_number_from_id(equipment_id)
-            if keyword and keyword not in name.lower():
+            if normalized_keyword and normalized_keyword not in name.lower():
                 continue
             if rarity_id is not None and int(equipment.get("rarity_id", 0)) != int(rarity_id):
                 continue
@@ -979,8 +1165,13 @@ class ResearchProgressPage(BasePage):
         self._last_target_context = "target_changed"
         self._syncing_start_date = False
         self._syncing_target = False
-        phases = get_research_manager().get_all()
+        self._secretary_dialog_timer = QTimer(self)
+        self._secretary_dialog_timer.setSingleShot(True)
+        self._secretary_dialog_timer.timeout.connect(self._reset_secretary_dialog)
+        phases = get_visible_research_phases()
         latest_phase = self.progress_analyzer.get_latest_phase_number()
+        visible_phase_numbers = [int(phase.get("phase_number", 0)) for phase in phases]
+        selected_phase = latest_phase if latest_phase in visible_phase_numbers else (visible_phase_numbers[-1] if visible_phase_numbers else 0)
 
         top = QHBoxLayout()
         top.setSpacing(10)
@@ -992,7 +1183,7 @@ class ResearchProgressPage(BasePage):
             self.phase_combo.addItem(f"科研 {phase_number} 期 {suffix}", phase_number)
         if self.phase_combo.count() == 0:
             self.phase_combo.addItem("科研数据待加载", 0)
-        latest_index = self.phase_combo.findData(latest_phase)
+        latest_index = self.phase_combo.findData(selected_phase)
         if latest_index >= 0:
             self.phase_combo.setCurrentIndex(latest_index)
         self.phase_combo.currentIndexChanged.connect(lambda _index=0: self._on_phase_changed())
@@ -1088,12 +1279,15 @@ class ResearchProgressPage(BasePage):
         summary_grid.setColumnStretch(0, 2)
         summary_grid.setColumnStretch(1, 3)
 
-        self.progress_table = QTableWidget(0, 4)
-        self.progress_table.setHorizontalHeaderLabels(["装备", "需求图纸", "当前图纸", "整装"])
-        self.progress_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in range(1, 4):
+        self.progress_table = QTableWidget(0, 5)
+        self.progress_table.setHorizontalHeaderLabels(["位置", "装备", "稀有度", "当前图纸", "整装"])
+        self.progress_table.setMinimumHeight(156)
+        self.progress_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.progress_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.progress_table.setColumnWidth(0, 88)
+        for column in (2, 3, 4):
             self.progress_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
-            self.progress_table.setColumnWidth(column, 92)
+            self.progress_table.setColumnWidth(column, 90)
         polish_data_table(self.progress_table, 38)
         self.root.addWidget(self._build_research_detail_area(), stretch=1)
         self._sync_target_from_config()
@@ -1344,20 +1538,68 @@ class ResearchProgressPage(BasePage):
         self._apply_luck_badge_style(luck_level)
 
     def _update_table(self, rows: List[Dict[str, object]]) -> None:
-        """刷新当期科研装备数量表。"""
-        self.progress_table.setRowCount(len(rows))
-        for row_index, row in enumerate(rows):
+        """刷新当期科研装备数量表，固定以 1 彩 + 5 金的顺序展示 6 个装备位。"""
+        slot_rows = self._build_research_equipment_slots(rows)
+        self.progress_table.setRowCount(len(slot_rows))
+        for row_index, row in enumerate(slot_rows):
             values = [
+                row.get("slot_name", ""),
                 row.get("equipment_name", ""),
-                row.get("equivalent", "暂无") if row.get("equivalent") is not None else "暂无",
-                row.get("fragment_count", 0),
-                row.get("equipment_count", 0),
+                row.get("rarity_name", ""),
+                row.get("fragment_count", "—"),
+                row.get("equipment_count", "—"),
             ]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
-                if column in {1, 2, 3}:
+                if column in {0, 2, 3, 4}:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.progress_table.setItem(row_index, column, item)
+
+    def _build_research_equipment_slots(self, rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
+        """
+        构建科研装备固定展示槽位。
+        输入：
+            rows: 科研进度分析器返回的真实装备行。
+        输出：
+            List[dict]: 固定 6 行，顺序为 1 彩装位 + 5 金装位。
+        使用示例：
+            slots = page._build_research_equipment_slots(rows)
+        """
+        rows_by_rarity = {
+            5: self._sorted_research_rows_by_rarity(rows, 5),
+            4: self._sorted_research_rows_by_rarity(rows, 4),
+        }
+        slot_specs = [("彩装位", 5, "海上传奇")]
+        slot_specs.extend((f"金装位 {index}", 4, "超稀有") for index in range(1, 6))
+
+        slots: List[Dict[str, object]] = []
+        used_index_by_rarity = {5: 0, 4: 0}
+        for slot_name, rarity_id, rarity_name in slot_specs:
+            rarity_rows = rows_by_rarity.get(rarity_id, [])
+            row_index = used_index_by_rarity.get(rarity_id, 0)
+            if row_index < len(rarity_rows):
+                row = dict(rarity_rows[row_index])
+                used_index_by_rarity[rarity_id] = row_index + 1
+                row["slot_name"] = slot_name
+                slots.append(row)
+                continue
+            slots.append({
+                "slot_name": slot_name,
+                "equipment_name": "待资料同步",
+                "rarity_name": rarity_name,
+                "fragment_count": "—",
+                "equipment_count": "—",
+            })
+        return slots
+
+    @staticmethod
+    def _sorted_research_rows_by_rarity(rows: List[Dict[str, object]], rarity_id: int) -> List[Dict[str, object]]:
+        """按稀有度取出科研装备行，并用名称稳定排序。"""
+        filtered = [
+            row for row in rows
+            if int(row.get("rarity_id") or 0) == rarity_id
+        ]
+        return sorted(filtered, key=lambda row: str(row.get("equipment_name", "")))
 
     @staticmethod
     def _target_dialog_key(target_count: int, progress: float, is_latest: bool = True) -> str:
@@ -1493,16 +1735,34 @@ class ResearchProgressPage(BasePage):
         if not text:
             self._quiet_secretary_dialog()
             return
+        if self._secretary_dialog_timer.isActive():
+            self._secretary_dialog_timer.stop()
         self._set_secretary_dialog_quiet(False)
         self.target_comment_label.setText(text)
-        duration = int(
-            self.secretary_lines_config.get(
-                "dialog_duration_ms",
-                self._secretary_config().get("dialog_duration_ms", 2400),
-            )
-            or 2400
-        )
-        QTimer.singleShot(max(800, duration), self._reset_secretary_dialog)
+        self._secretary_dialog_timer.start(self._secretary_dialog_duration_ms())
+
+    def _secretary_dialog_duration_ms(self) -> int:
+        """
+        返回秘书舰对话展示时间。
+        输入：
+            无。
+        输出：
+            int: 毫秒；目标切换对话至少保留 3600ms，避免快速选择时刚弹出就被旧计时器清掉。
+        使用示例：
+            duration = self._secretary_dialog_duration_ms()
+        """
+        candidates = [
+            self.secretary_lines_config.get("dialog_duration_ms"),
+            self._secretary_config().get("dialog_duration_ms"),
+            3600,
+        ]
+        parsed: List[int] = []
+        for value in candidates:
+            try:
+                parsed.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        return max(3600, *(duration for duration in parsed if duration > 0))
 
     def _reset_secretary_dialog(self) -> None:
         """恢复秘书舰静默状态，保持头像和气泡位置不跳动。"""
@@ -1518,6 +1778,8 @@ class ResearchProgressPage(BasePage):
         使用示例：
             self._quiet_secretary_dialog()
         """
+        if self._secretary_dialog_timer.isActive():
+            self._secretary_dialog_timer.stop()
         self.target_comment_label.setText("")
         self._set_secretary_dialog_quiet(True)
 
@@ -1595,6 +1857,7 @@ class ResearchProgressPage(BasePage):
         card = QFrame()
         card.setObjectName("content_panel")
         card.setFixedWidth(172)
+        card.setMinimumHeight(320)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(10)
@@ -1622,6 +1885,7 @@ class ResearchProgressPage(BasePage):
         """构建科研进度页下方的竖向进度 + 金彩比 + 当期装备数量区域。"""
         area = QWidget()
         area.setObjectName("research_detail_area")
+        area.setMinimumHeight(320)
         layout = QHBoxLayout(area)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
@@ -1676,6 +1940,7 @@ class ResearchProgressPage(BasePage):
         """构建科研已进行天数卡片。"""
         card = QFrame()
         card.setObjectName("content_panel")
+        card.setMinimumHeight(144)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
@@ -1703,7 +1968,8 @@ class ResearchProgressPage(BasePage):
         """构建金彩比与欧非评价平分展示卡片。"""
         card = QFrame()
         card.setObjectName("content_panel")
-        card.setMaximumHeight(148)
+        card.setMinimumHeight(148)
+        card.setMaximumHeight(172)
         layout = QHBoxLayout(card)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(18)
@@ -1761,8 +2027,8 @@ class TrendPage(BasePage):
         self.equipment_manager = get_equipment_manager()
         self.research_manager = get_research_manager()
         self._equipment_search_results: List[Dict[str, object]] = []
+        self._selected_equipment_lines: Dict[str, str] = {}
 
-        controls = QHBoxLayout()
         self.start_date = QDateEdit()
         self.end_date = QDateEdit()
         self.start_date.setCalendarPopup(True)
@@ -1770,70 +2036,273 @@ class TrendPage(BasePage):
         self.start_date.setDisplayFormat("yyyy-MM-dd")
         self.end_date.setDisplayFormat("yyyy-MM-dd")
         self._apply_available_date_range()
+        self.start_date.dateChanged.connect(lambda _date=None: self.refresh_trend_preview())
+        self.end_date.dateChanged.connect(lambda _date=None: self.refresh_trend_preview())
+
         self.chart_palette_combo = QComboBox()
         self.chart_palette_combo.setObjectName("chart_palette_combo")
         self.chart_palette_combo.addItem("默认线色", "default")
         self.chart_palette_combo.addItem("柔和线色", "soft")
         self.chart_palette_combo.addItem("高对比线色", "contrast")
         self.chart_palette_combo.currentIndexChanged.connect(lambda _index=0: self.refresh_trend_preview())
+
+        common_panel = QFrame()
+        common_panel.setObjectName("content_panel")
+        common_controls = QHBoxLayout(common_panel)
+        common_controls.setContentsMargins(16, 12, 16, 12)
+        common_controls.setSpacing(10)
+        self._build_common_trend_controls(common_controls)
+        common_controls.addStretch(1)
+        self.root.addWidget(common_panel)
+
+        self.trend_tabs = QTabWidget()
+        self.trend_tabs.setObjectName("trend_mode_tabs")
+        self.trend_tabs.addTab(self._build_phase_trend_tab(), "科研金彩比")
+        self.trend_tabs.addTab(self._build_equipment_trend_tab(), "装备碎片趋势")
+        self.trend_tabs.currentChanged.connect(lambda _index=0: self._on_trend_tab_changed())
+        self.trend_tabs.setMinimumHeight(150)
+        self.trend_tabs.setMaximumHeight(190)
+        self.trend_tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.root.addWidget(self.trend_tabs)
+
+        self.trend_panel = MatplotlibTrendPanel(
+            "历史趋势图",
+            "选择上方功能标签后，这里只展示当前功能对应的一张折线图。",
+        )
+        self.trend_panel.setObjectName("single_trend_panel")
+        self.root.addWidget(self.trend_panel, stretch=4)
+
+        self.search_equipment_options()
+        self.apply_theme_tokens(self.theme_tokens)
+        self._sync_trend_tab_height()
+        self.refresh_trend_preview()
+
+    def _build_common_trend_controls(self, parent_layout: QHBoxLayout) -> None:
+        """构建两个趋势功能共用的日期、线色和刷新控件。"""
+        self.import_history_button = QPushButton("导入/刷新历史数据")
+        self.import_history_button.setObjectName("import_history_button")
+        self.import_history_button.setToolTip("用户手动添加历史记录后，点击这里重新读取并刷新当前趋势图。")
+        self.import_history_button.clicked.connect(self.reload_history_data)
         refresh_button = QPushButton("刷新趋势")
         refresh_button.clicked.connect(self.refresh_trend_preview)
-        controls.addWidget(QLabel("开始"))
-        controls.addWidget(self.start_date)
-        controls.addWidget(QLabel("结束"))
-        controls.addWidget(self.end_date)
-        controls.addWidget(QLabel("线色"))
-        controls.addWidget(self.chart_palette_combo)
-        controls.addWidget(refresh_button)
-        controls.addStretch(1)
-        self.root.addLayout(controls)
+        parent_layout.addWidget(QLabel("开始日期"))
+        parent_layout.addWidget(self.start_date)
+        parent_layout.addWidget(QLabel("结束日期"))
+        parent_layout.addWidget(self.end_date)
+        parent_layout.addWidget(QLabel("折线配色"))
+        parent_layout.addWidget(self.chart_palette_combo)
+        parent_layout.addWidget(self.import_history_button)
+        parent_layout.addWidget(refresh_button)
 
-        phase_bar = QHBoxLayout()
-        phase_bar.setSpacing(10)
-        phase_bar.addWidget(QLabel("科研期"))
+    def _build_phase_trend_tab(self) -> QWidget:
+        """构建科研金彩比趋势的控制标签页。"""
+        page = QWidget()
+        page.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(8)
+        intro = QLabel("功能说明：从 PR2 开始，按日期展示不同科研期的金彩装备比（金色等效碎片总量 / 彩色等效碎片总量），可同时选择多个科研期。")
+        intro.setObjectName("card_caption")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        phase_panel = QFrame()
+        phase_panel.setObjectName("content_panel")
+        phase_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        phase_layout = QVBoxLayout(phase_panel)
+        phase_layout.setContentsMargins(14, 10, 14, 10)
+        phase_layout.setSpacing(6)
+        phase_header = QHBoxLayout()
+        self.phase_drawer_button = QPushButton("选择科研期")
+        self.phase_drawer_button.setObjectName("phase_drawer_button")
+        self.phase_drawer_button.setToolTip("展开或收起科研期选择表。")
+        self.phase_drawer_button.clicked.connect(self._toggle_phase_drawer)
+        self.phase_selection_summary_label = QLabel("")
+        self.phase_selection_summary_label.setObjectName("card_caption")
+        phase_header.addWidget(self.phase_drawer_button)
+        phase_header.addWidget(self.phase_selection_summary_label, stretch=1)
+        phase_layout.addLayout(phase_header)
+
+        self.phase_drawer_table = QTableWidget(0, 2)
+        self.phase_drawer_table.setObjectName("phase_drawer_table")
+        self.phase_drawer_table.setHorizontalHeaderLabels(["选择", "科研期"])
+        self.phase_drawer_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.phase_drawer_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.phase_drawer_table.setMinimumHeight(0)
+        self.phase_drawer_table.setMaximumHeight(190)
+        polish_data_table(self.phase_drawer_table, 34)
+        self.phase_drawer_table.setVisible(False)
         self.phase_checks: Dict[int, QCheckBox] = {}
-        for phase in self.research_manager.get_all():
+        for row, phase in enumerate(get_visible_research_phases()):
             phase_number = int(phase.get("phase_number", 0))
             checkbox = QCheckBox(f"PR{phase_number}")
             checkbox.setChecked(True)
-            checkbox.stateChanged.connect(lambda _state=0: self.refresh_trend_preview())
+            checkbox.stateChanged.connect(lambda _state=0: self._on_phase_selection_changed())
             self.phase_checks[phase_number] = checkbox
-            phase_bar.addWidget(checkbox)
-        phase_bar.addStretch(1)
-        self.root.addLayout(phase_bar)
+            self.phase_drawer_table.insertRow(row)
+            self.phase_drawer_table.setCellWidget(row, 0, checkbox)
+            self.phase_drawer_table.setItem(row, 1, QTableWidgetItem(str(phase.get("name") or f"科研{phase_number}期(PR{phase_number})")))
+        phase_layout.addWidget(self.phase_drawer_table)
+        layout.addWidget(phase_panel)
+        self._refresh_phase_selection_summary()
+        return page
 
-        equipment_bar = QHBoxLayout()
-        equipment_bar.setSpacing(10)
+    def _build_equipment_trend_tab(self) -> QWidget:
+        """构建单件装备碎片趋势的控制标签页。"""
+        page = QWidget()
+        page.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(8)
+        intro = QLabel("功能说明：先输入装备名称进行查询，再把结果添加到右侧列表；列表中的多件装备会同时绘制碎片趋势线。")
+        intro.setObjectName("card_caption")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        content_row = QHBoxLayout()
+        content_row.setSpacing(12)
+
+        search_panel = QFrame()
+        search_panel.setObjectName("content_panel")
+        search_panel.setMinimumHeight(112)
+        search_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        search_grid = QGridLayout(search_panel)
+        search_grid.setContentsMargins(14, 12, 14, 12)
+        search_grid.setHorizontalSpacing(10)
+        search_grid.setVerticalSpacing(8)
+
         self.equipment_search_input = QLineEdit()
         self.equipment_search_input.setObjectName("trend_equipment_search")
         self.equipment_search_input.setPlaceholderText("输入装备名称，支持模糊或精确查询")
+        self.equipment_search_input.setMinimumWidth(180)
         self.equipment_search_button = QPushButton("查询装备")
         self.equipment_search_button.clicked.connect(self.search_equipment_options)
         self.equipment_select_combo = QComboBox()
         self.equipment_select_combo.setObjectName("trend_equipment_select")
-        self.equipment_select_combo.currentIndexChanged.connect(lambda _index=0: self.refresh_equipment_fragment_chart())
-        equipment_bar.addWidget(QLabel("装备碎片"))
-        equipment_bar.addWidget(self.equipment_search_input, stretch=2)
-        equipment_bar.addWidget(self.equipment_search_button)
-        equipment_bar.addWidget(self.equipment_select_combo, stretch=2)
-        self.root.addLayout(equipment_bar)
+        self.equipment_select_combo.setMinimumWidth(260)
+        self.add_equipment_line_button = QPushButton("添加折线")
+        self.add_equipment_line_button.clicked.connect(self._add_selected_equipment_line)
+        search_grid.addWidget(QLabel("装备名称"), 0, 0)
+        search_grid.addWidget(self.equipment_search_input, 0, 1)
+        search_grid.addWidget(self.equipment_search_button, 0, 2)
+        search_grid.addWidget(QLabel("查询结果"), 1, 0)
+        search_grid.addWidget(self.equipment_select_combo, 1, 1)
+        search_grid.addWidget(self.add_equipment_line_button, 1, 2)
+        search_grid.setColumnStretch(1, 1)
 
-        self.phase_ratio_panel = MatplotlibTrendPanel(
-            "科研期金彩比趋势",
-            "按日期展示各科研期：金色等效碎片总量 / 彩色等效碎片总量。",
-        )
-        self.phase_ratio_panel.setObjectName("phase_ratio_trend_panel")
-        self.equipment_fragment_panel = MatplotlibTrendPanel(
-            "装备碎片数量趋势",
-            "先搜索并选择装备，再展示该装备碎片数量随时间变化。",
-        )
-        self.equipment_fragment_panel.setObjectName("equipment_fragment_trend_panel")
-        self.root.addWidget(self.phase_ratio_panel, stretch=1)
-        self.root.addWidget(self.equipment_fragment_panel, stretch=1)
+        selected_panel = QFrame()
+        selected_panel.setObjectName("content_panel")
+        selected_panel.setMinimumWidth(320)
+        selected_panel.setMinimumHeight(136)
+        selected_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        selected_layout = QVBoxLayout(selected_panel)
+        selected_layout.setContentsMargins(14, 10, 14, 10)
+        selected_layout.setSpacing(6)
+        selected_title = QLabel("已选择划线装备")
+        selected_title.setObjectName("panel_title")
+        selected_hint = QLabel("右侧列表中的装备会一起绘制折线。")
+        selected_hint.setObjectName("card_caption")
+        selected_hint.setWordWrap(True)
+        self.selected_equipment_list = QListWidget()
+        self.selected_equipment_list.setObjectName("selected_equipment_line_list")
+        self.selected_equipment_list.setMinimumHeight(78)
+        button_row = QHBoxLayout()
+        self.remove_equipment_line_button = QPushButton("移除")
+        self.remove_equipment_line_button.clicked.connect(self._remove_selected_equipment_line)
+        self.clear_equipment_lines_button = QPushButton("清空")
+        self.clear_equipment_lines_button.clicked.connect(self._clear_selected_equipment_lines)
+        button_row.addWidget(self.remove_equipment_line_button)
+        button_row.addWidget(self.clear_equipment_lines_button)
+        selected_layout.addWidget(selected_title)
+        selected_layout.addWidget(selected_hint)
+        selected_layout.addWidget(self.selected_equipment_list, stretch=1)
+        selected_layout.addLayout(button_row)
 
-        self.search_equipment_options()
-        self.apply_theme_tokens(self.theme_tokens)
+        content_row.addWidget(search_panel, stretch=1)
+        content_row.addWidget(selected_panel)
+        layout.addLayout(content_row)
+        return page
+
+    def _on_trend_tab_changed(self) -> None:
+        """
+        趋势功能切换时同步控制区高度并刷新图表。
+        输入：
+            无。
+        输出：
+            None。
+        使用示例：
+            self._on_trend_tab_changed()
+        """
+        self._sync_trend_tab_height()
         self.refresh_trend_preview()
+
+    def _sync_trend_tab_height(self) -> None:
+        """
+        按当前趋势功能调节上方控制区高度。
+        输入：
+            无。
+        输出：
+            None。
+        使用示例：
+            self._sync_trend_tab_height()
+        """
+        if self.trend_tabs.currentIndex() == 1:
+            self.trend_tabs.setMinimumHeight(220)
+            self.trend_tabs.setMaximumHeight(260)
+            return
+        expanded = getattr(self, "phase_drawer_table", None) is not None and not self.phase_drawer_table.isHidden()
+        self.trend_tabs.setMinimumHeight(150)
+        self.trend_tabs.setMaximumHeight(320 if expanded else 190)
+
+    def _toggle_phase_drawer(self) -> None:
+        """
+        展开或收起科研期抽屉表。
+        输入：
+            无。
+        输出：
+            None。
+        使用示例：
+            self._toggle_phase_drawer()
+        """
+        expanded = not self.phase_drawer_table.isVisible()
+        self.phase_drawer_table.setVisible(expanded)
+        self.phase_drawer_button.setText("收起科研期" if expanded else "选择科研期")
+        self._sync_trend_tab_height()
+        self._refresh_phase_selection_summary()
+
+    def _on_phase_selection_changed(self) -> None:
+        """
+        科研期勾选变化时刷新摘要和金彩比图。
+        输入：
+            无。
+        输出：
+            None。
+        使用示例：
+            checkbox.stateChanged.connect(lambda: self._on_phase_selection_changed())
+        """
+        self._refresh_phase_selection_summary()
+        if hasattr(self, "trend_panel"):
+            self.refresh_trend_preview()
+
+    def _refresh_phase_selection_summary(self) -> None:
+        """
+        刷新科研期抽屉旁边的已选摘要。
+        输入：
+            无。
+        输出：
+            None。
+        使用示例：
+            self._refresh_phase_selection_summary()
+        """
+        if not self.phase_checks:
+            self.phase_selection_summary_label.setText("暂无可选科研期")
+            return
+        checked = [phase for phase, checkbox in self.phase_checks.items() if checkbox.isChecked()]
+        if not checked:
+            self.phase_selection_summary_label.setText("未勾选时默认绘制全部可选科研期")
+            return
+        display = "、".join(f"PR{phase}" for phase in checked)
+        self.phase_selection_summary_label.setText(f"已选择：{display}")
 
     def apply_theme_tokens(self, tokens: ThemeTokens) -> None:
         """
@@ -1846,12 +2315,11 @@ class TrendPage(BasePage):
             page.apply_theme_tokens(window.theme_tokens)
         """
         self.theme_tokens = tokens
-        self.phase_ratio_panel.apply_theme_tokens(tokens)
-        self.equipment_fragment_panel.apply_theme_tokens(tokens)
+        self.trend_panel.apply_theme_tokens(tokens)
 
     def refresh_trend_preview(self) -> None:
         """
-        刷新两张历史趋势折线图。
+        按当前功能标签刷新单张历史趋势折线图。
         输入：
             无。
         输出：
@@ -1859,13 +2327,16 @@ class TrendPage(BasePage):
         使用示例：
             page.refresh_trend_preview()
         """
-        self.refresh_phase_ratio_chart()
+        if self.trend_tabs.currentIndex() == 0:
+            self.refresh_phase_ratio_chart()
+            return
         self.refresh_equipment_fragment_chart()
 
     def refresh_phase_ratio_chart(self) -> None:
         """刷新各科研期金彩比折线图。"""
         series_map = self._build_phase_ratio_series_map()
-        self.phase_ratio_panel.plot_series(
+        self.trend_panel.title_label.setText("科研期金彩比趋势")
+        self.trend_panel.plot_series(
             series_map,
             "金彩比",
             "当前时间区间暂无可绘制的科研金彩比记录。",
@@ -1873,23 +2344,42 @@ class TrendPage(BasePage):
         )
 
     def refresh_equipment_fragment_chart(self) -> None:
-        """刷新指定装备碎片数量折线图。"""
-        equipment_id = self.equipment_select_combo.currentData()
-        if not equipment_id:
-            self.equipment_fragment_panel.plot_series(
+        """刷新已选择装备的碎片数量折线图。"""
+        if not self._selected_equipment_lines:
+            self.trend_panel.title_label.setText("装备碎片数量趋势")
+            self.trend_panel.plot_series(
                 {},
                 "碎片数量",
-                "请先输入装备名称并从查询结果中选择装备。",
+                "请先查询装备，并把需要划线的装备添加到右侧列表。",
             )
             return
-        equipment_name = self.equipment_select_combo.currentText()
-        series = self._build_equipment_fragment_series(str(equipment_id), equipment_name)
-        self.equipment_fragment_panel.plot_series(
-            {equipment_name: series},
+        series_map = {
+            equipment_name: self._build_equipment_fragment_series(equipment_id, equipment_name)
+            for equipment_id, equipment_name in self._selected_equipment_lines.items()
+        }
+        self.trend_panel.title_label.setText("装备碎片数量趋势")
+        self.trend_panel.plot_series(
+            series_map,
             "碎片数量",
-            "当前时间区间内没有该装备的碎片历史记录。",
-            {equipment_name: self.theme_tokens.gold},
+            "当前时间区间内没有已选择装备的碎片历史记录。",
+            self._phase_color_map(series_map.keys()),
         )
+
+    def reload_history_data(self) -> None:
+        """
+        重新读取历史数据并刷新当前趋势图。
+        输入：
+            无。
+        输出：
+            None。
+        使用示例：
+            page.reload_history_data()
+        """
+        self.user_data_manager = get_user_data_manager()
+        self.trend_analyzer = get_trend_analyzer()
+        self._apply_available_date_range()
+        self.refresh_trend_preview()
+        self.trend_panel.status_label.setText("已重新读取历史记录，并刷新当前趋势图。")
 
     def search_equipment_options(self) -> None:
         """
@@ -1913,6 +2403,39 @@ class TrendPage(BasePage):
                 self.equipment_select_combo.addItem(str(equipment.get("name", "")), str(equipment.get("equipment_id", "")))
         self.equipment_select_combo.blockSignals(False)
         self.refresh_equipment_fragment_chart()
+
+    def _add_selected_equipment_line(self) -> None:
+        """把查询结果中的当前装备加入右侧划线列表。"""
+        equipment_id = self.equipment_select_combo.currentData()
+        if not equipment_id:
+            return
+        self._selected_equipment_lines[str(equipment_id)] = self.equipment_select_combo.currentText()
+        self._refresh_selected_equipment_list()
+        self.refresh_equipment_fragment_chart()
+
+    def _remove_selected_equipment_line(self) -> None:
+        """从右侧划线列表移除当前选中的装备。"""
+        current_item = self.selected_equipment_list.currentItem()
+        if current_item is None:
+            return
+        equipment_id = current_item.data(Qt.ItemDataRole.UserRole)
+        self._selected_equipment_lines.pop(str(equipment_id), None)
+        self._refresh_selected_equipment_list()
+        self.refresh_equipment_fragment_chart()
+
+    def _clear_selected_equipment_lines(self) -> None:
+        """清空所有已选择的装备折线。"""
+        self._selected_equipment_lines.clear()
+        self._refresh_selected_equipment_list()
+        self.refresh_equipment_fragment_chart()
+
+    def _refresh_selected_equipment_list(self) -> None:
+        """刷新右侧已选择划线装备列表。"""
+        self.selected_equipment_list.clear()
+        for equipment_id, equipment_name in self._selected_equipment_lines.items():
+            item = QListWidgetItem(equipment_name)
+            item.setData(Qt.ItemDataRole.UserRole, equipment_id)
+            self.selected_equipment_list.addItem(item)
 
     def _search_equipment_rows(self, keyword: str) -> List[Dict[str, object]]:
         """
@@ -2262,6 +2785,8 @@ class SettingsPage(BasePage):
         self.skin_combo = QComboBox()
         self.skin_combo.setObjectName("skin_combo")
         self.skin_preview_cards: Dict[str, QFrame] = {}
+        self.skin_preview_expanded = False
+        self.skin_preview_limit = 3
         self.root.addWidget(self._build_skin_panel())
         self.skin_combo.currentIndexChanged.connect(self._on_skin_combo_changed)
 
@@ -2303,20 +2828,32 @@ class SettingsPage(BasePage):
         title_row.addWidget(self.skin_combo)
         layout.addLayout(title_row)
 
-        preview_row = QHBoxLayout()
-        preview_row.setSpacing(10)
-        for skin in list_theme_skins():
+        preview_grid = QGridLayout()
+        preview_grid.setSpacing(10)
+        self.skin_preview_grid = preview_grid
+        self.skin_preview_row = preview_grid
+        preview_columns = self.skin_preview_limit + 1
+        for index, skin in enumerate(list_theme_skins()):
             self.skin_combo.addItem(skin.name, skin.key)
             card = self._build_skin_preview_card(skin.key)
             self.skin_preview_cards[skin.key] = card
             card.setCursor(Qt.CursorShape.PointingHandCursor)
             card.mousePressEvent = lambda _event, key=skin.key: self._select_skin_key(key)
-            preview_row.addWidget(card)
-        layout.addLayout(preview_row)
+            preview_grid.addWidget(card, index // preview_columns, index % preview_columns)
+        self.skin_preview_expand_button = QPushButton("＋")
+        self.skin_preview_expand_button.setObjectName("skin_preview_expand_button")
+        self.skin_preview_expand_button.setToolTip("展开或收起其余阵营皮肤预览卡。")
+        self.skin_preview_expand_button.setFixedWidth(56)
+        self.skin_preview_expand_button.setMinimumHeight(104)
+        self.skin_preview_expand_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.skin_preview_expand_button.clicked.connect(self._toggle_skin_preview_expand)
+        preview_grid.addWidget(self.skin_preview_expand_button, 0, self.skin_preview_limit)
+        layout.addLayout(preview_grid)
 
         index = self.skin_combo.findData(self.active_skin)
         self.skin_combo.setCurrentIndex(index if index >= 0 else 0)
         self._refresh_skin_preview_state()
+        self._refresh_skin_preview_visibility()
         return panel
 
     def _build_skin_preview_card(self, skin_key: str) -> QFrame:
@@ -2332,6 +2869,9 @@ class SettingsPage(BasePage):
         skin = get_theme_skin(skin_key)
         card = QFrame()
         card.setObjectName("skin_preview_card")
+        card.setMinimumWidth(165)
+        card.setMinimumHeight(112)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(8)
@@ -2341,6 +2881,7 @@ class SettingsPage(BasePage):
         desc = QLabel(skin.description)
         desc.setObjectName("panel_body")
         desc.setWordWrap(True)
+        desc.setMinimumHeight(38)
         swatch_row = QHBoxLayout()
         swatch_row.setSpacing(5)
         for color in skin.preview_colors:
@@ -2377,6 +2918,46 @@ class SettingsPage(BasePage):
         if index >= 0:
             self.skin_combo.setCurrentIndex(index)
 
+    def _toggle_skin_preview_expand(self) -> None:
+        """展开或收起额外皮肤预览卡。"""
+        self.skin_preview_expanded = not self.skin_preview_expanded
+        self._refresh_skin_preview_visibility()
+
+    def _refresh_skin_preview_visibility(self) -> None:
+        """默认只展示少量皮肤卡，展开后显示全部。"""
+        keys = list(self.skin_preview_cards)
+        if len(keys) <= self.skin_preview_limit:
+            self.skin_preview_expand_button.setVisible(False)
+            visible_keys = set(keys)
+        elif self.skin_preview_expanded:
+            self.skin_preview_expand_button.setText("－")
+            self.skin_preview_expand_button.setVisible(True)
+            visible_keys = set(keys)
+        else:
+            self.skin_preview_expand_button.setText("＋")
+            self.skin_preview_expand_button.setVisible(True)
+            visible = keys[:self.skin_preview_limit]
+            if self.active_skin in keys and self.active_skin not in visible:
+                visible[-1] = self.active_skin
+            visible_keys = set(visible)
+        visible_order = [key for key in keys if key in visible_keys]
+        for skin_key, card in self.skin_preview_cards.items():
+            card.setVisible(skin_key in visible_keys)
+        preview_columns = self.skin_preview_limit + 1
+        for index, skin_key in enumerate(visible_order):
+            self.skin_preview_grid.addWidget(
+                self.skin_preview_cards[skin_key],
+                index // preview_columns,
+                index % preview_columns,
+            )
+        if self.skin_preview_expand_button.isVisible():
+            button_index = len(visible_order)
+            self.skin_preview_grid.addWidget(
+                self.skin_preview_expand_button,
+                button_index // preview_columns,
+                button_index % preview_columns,
+            )
+
     def _refresh_skin_preview_state(self) -> None:
         """刷新皮肤预览卡的选中边框。"""
         for skin_key, card in self.skin_preview_cards.items():
@@ -2388,7 +2969,14 @@ class SettingsPage(BasePage):
                 f"border: 1px solid {border};"
                 f"border-radius: {skin.tokens.radius}px;"
                 f"}}"
+                f"QFrame#skin_preview_card QLabel#panel_title {{"
+                f"color: {skin.tokens.text};"
+                f"}}"
+                f"QFrame#skin_preview_card QLabel#panel_body {{"
+                f"color: {skin.tokens.text_muted};"
+                f"}}"
             )
+        self._refresh_skin_preview_visibility()
 
 
 class AboutPage(BasePage):
@@ -2453,7 +3041,7 @@ class MainWindow(QMainWindow):
         self.setObjectName("main_window")
         self.setWindowTitle(self._build_window_title())
         self.resize(1280, 820)
-        self.setMinimumSize(1040, 700)
+        self.setMinimumSize(900, 620)
 
         self._build_shell()
         self._build_menu_bar()

@@ -11,6 +11,10 @@ from .logger import get_logger
 from .path_manager import PathManager
 
 
+class ConfigSaveError(RuntimeError):
+    """配置文件保存失败时抛出的明确异常。"""
+
+
 class ConfigLoader:
     """配置加载器 - 管理所有配置文件"""
 
@@ -254,7 +258,7 @@ class ConfigLoader:
             self.logger.error(f"加载配置失败 {cache_key}: {e}")
             return {}
 
-    def save_config(self, config_type: str, config_name: str, config_data: Dict[str, Any]):
+    def save_config(self, config_type: str, config_name: str, config_data: Dict[str, Any]) -> bool:
         """
         保存配置
 
@@ -263,23 +267,46 @@ class ConfigLoader:
             config_name: 配置名称
             config_data: 配置数据
         """
+        cache_key = f"{config_type}/{config_name}" if config_type else config_name
+        temp_path = ""
         try:
-            config_dir = os.path.join(self.config_dir, config_type)
+            config_dir = os.path.join(self.config_dir, config_type) if config_type else str(self.config_dir)
             os.makedirs(config_dir, exist_ok=True)
 
             config_path = os.path.join(config_dir, f"{config_name}.json")
+            temp_path = f"{config_path}.tmp"
+            serialized = json.dumps(config_data, ensure_ascii=False, indent=4)
 
-            with open(config_path, 'w', encoding='utf-8') as f:
-                json.dump(config_data, f, ensure_ascii=False, indent=4)
+            # 先写入同目录临时文件，再用 os.replace 原子替换，避免写入中断时损坏原配置。
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                f.write(serialized)
+                f.flush()
+                os.fsync(f.fileno())
 
-            # 更新缓存
-            cache_key = f"{config_type}/{config_name}"
-            self.cache[cache_key] = config_data
+            os.replace(temp_path, config_path)
+
+            # 写后重新读取校验。只有磁盘内容确认成功后才更新缓存。
+            with open(config_path, 'r', encoding='utf-8') as f:
+                verified_data = json.load(f)
+            expected_data = json.loads(serialized)
+            if verified_data != expected_data:
+                raise ConfigSaveError(f"配置写入校验失败: {cache_key}")
+
+            self.cache[cache_key] = verified_data
 
             self.logger.info(f"已保存配置: {cache_key}")
+            return True
 
         except Exception as e:
-            self.logger.error(f"保存配置失败 {config_type}/{config_name}: {e}")
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            self.logger.exception(f"保存配置失败 {cache_key}: {e}")
+            if isinstance(e, ConfigSaveError):
+                raise
+            raise ConfigSaveError(f"保存配置失败 {cache_key}: {e}") from e
 
     def get_simulator_config(self, simulator_name: str = None) -> Dict[str, Any]:
         """

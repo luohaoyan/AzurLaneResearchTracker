@@ -431,6 +431,37 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
         background: {t.surface_glow};
     }}
 
+    QListWidget#selected_equipment_line_list {{
+        background: {t.table_row};
+        alternate-background-color: {t.table_row_alt};
+        color: {t.text};
+        border: 1px solid {t.table_grid};
+        border-radius: {t.radius}px;
+        padding: 3px;
+        outline: none;
+        selection-background-color: {t.table_selection};
+        selection-color: {t.table_selection_text};
+    }}
+
+    QListWidget#selected_equipment_line_list::item {{
+        background: transparent;
+        color: {t.text};
+        border: none;
+        border-radius: {max(3, t.radius - 2)}px;
+        padding: 7px 9px;
+        min-height: 22px;
+    }}
+
+    QListWidget#selected_equipment_line_list::item:hover {{
+        background: {t.surface_glow};
+        color: {t.text};
+    }}
+
+    QListWidget#selected_equipment_line_list::item:selected {{
+        background: {t.table_selection};
+        color: {t.table_selection_text};
+    }}
+
     QFrame#content_panel,
     QFrame#stat_card,
     QFrame#future_feature_row,
@@ -471,13 +502,42 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
         font-weight: 700;
     }}
 
-    QScrollArea#future_scroll_area {{
+    QScrollArea#future_scroll_area,
+    QScrollArea#page_scroll_area {{
         background: transparent;
         border: none;
     }}
 
-    QWidget#future_scroll_content {{
+    QWidget#future_scroll_content,
+    QWidget#page_scroll_content {{
         background: transparent;
+    }}
+
+    QScrollArea#page_scroll_area > QWidget > QWidget {{
+        background: transparent;
+    }}
+
+    QTabWidget::pane {{
+        background: {t.surface};
+        border: 1px solid {t.line};
+        border-radius: {t.radius}px;
+        top: -1px;
+    }}
+
+    QTabBar::tab {{
+        background: {t.surface_soft};
+        color: {t.text_muted};
+        border: 1px solid {t.line};
+        border-bottom: none;
+        padding: 8px 16px;
+        min-width: 96px;
+        min-height: 28px;
+    }}
+
+    QTabBar::tab:selected {{
+        background: {t.surface};
+        color: {t.text};
+        border-color: {t.azure};
     }}
 
     QLabel#panel_title {{
@@ -680,27 +740,6 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
         background: {t.surface};
         color: {t.text};
         border: 1px solid {t.line};
-    }}
-
-    QToolBar#trend_navigation_toolbar {{
-        background: {t.surface};
-        border: 1px solid {t.line};
-        border-radius: {t.radius}px;
-        spacing: 4px;
-        padding: 3px;
-    }}
-
-    QToolBar#trend_navigation_toolbar QToolButton {{
-        background: {t.surface_soft};
-        color: {t.text};
-        border: 1px solid {t.line};
-        border-radius: {max(3, t.radius - 2)}px;
-        padding: 4px;
-    }}
-
-    QToolBar#trend_navigation_toolbar QToolButton:hover {{
-        background: {t.surface_glow};
-        border-color: {t.azure};
     }}
 
     QToolTip {{

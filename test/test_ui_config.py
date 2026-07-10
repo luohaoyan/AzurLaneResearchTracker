@@ -15,6 +15,9 @@ from __future__ import annotations
 # 📦 第一部分：导入依赖
 # ============================================================
 
+import json
+from pathlib import Path
+
 from ui.ui_config import (
     DEFAULT_APPEARANCE_UI_CONFIG,
     DEFAULT_RESEARCH_PROGRESS_UI_CONFIG,
@@ -27,6 +30,13 @@ from ui.ui_config import (
 # ============================================================
 # 🧪 第二部分：测试用例
 # ============================================================
+
+
+def _read_ui_config_file(manager: UiConfigManager, config_name: str) -> dict:
+    """从磁盘读取 GUI 配置原文，用于测试结束后恢复现场。"""
+    config_path = Path(manager.config_loader.config_dir) / "ui" / f"{config_name}.json"
+    return json.loads(config_path.read_text(encoding="utf-8"))
+
 
 def test_ui_config_manager_loads_research_progress_json() -> None:
     """UI 配置管理器应能读取科研页配置，并保留秘书舰和目标对话字段。"""
@@ -78,13 +88,16 @@ def test_ui_config_manager_loads_appearance_json() -> None:
 def test_ui_config_manager_saves_active_skin_and_can_restore() -> None:
     """保存当前皮肤时应写入 appearance.json，并允许测试结束后恢复原配置。"""
     manager = get_ui_config_manager()
-    original_config = manager.get_appearance_config()
+    appearance_path = Path(manager.config_loader.config_dir) / "ui" / "appearance.json"
+    original_config = _read_ui_config_file(manager, "appearance")
 
     try:
-        manager.save_active_skin("iron_blood")
+        manager.save_active_skin("sakura_mist")
         updated = manager.get_appearance_config()
+        disk_config = json.loads(appearance_path.read_text(encoding="utf-8"))
 
-        assert updated["active_skin"] == "iron_blood"
+        assert updated["active_skin"] == "sakura_mist"
+        assert disk_config["active_skin"] == "sakura_mist"
     finally:
         manager.config_loader.save_config("ui", "appearance", original_config)
 
@@ -110,18 +123,46 @@ def test_ui_config_manager_appearance_defaults_merge_nested_notes() -> None:
 def test_ui_config_manager_saves_phase_target_and_setting() -> None:
     """科研目标数量应按 PR 期数独立保存到 phase_settings。"""
     manager = get_ui_config_manager()
-    original_config = manager.get_research_progress_config()
+    research_path = Path(manager.config_loader.config_dir) / "ui" / "research_progress.json"
+    original_config = _read_ui_config_file(manager, "research_progress")
 
     try:
-        manager.save_phase_target_count(8, 4)
+        manager.save_phase_target_count(8, 5)
         manager.save_phase_start_date(8, "2026-06-01")
         setting = manager.get_phase_setting(8)
         config = manager.get_research_progress_config()
+        disk_config = json.loads(research_path.read_text(encoding="utf-8"))
 
-        assert setting["target"] == 4
+        assert setting["target"] == 5
         assert setting["start_date"] == "2026-06-01"
-        assert config["phase_settings"]["PR8"]["target"] == 4
+        assert config["phase_settings"]["PR8"]["target"] == 5
         assert config["phase_settings"]["PR8"]["start_date"] == "2026-06-01"
+        assert disk_config["phase_settings"]["PR8"]["target"] == 5
+        assert disk_config["phase_settings"]["PR8"]["start_date"] == "2026-06-01"
+    finally:
+        manager.config_loader.save_config("ui", "research_progress", original_config)
+
+
+def test_ui_config_manager_clamps_phase_target_to_disk() -> None:
+    """目标彩装数量越界时应夹紧到 1~20，并真实写入磁盘配置。"""
+    manager = get_ui_config_manager()
+    research_path = Path(manager.config_loader.config_dir) / "ui" / "research_progress.json"
+    original_config = _read_ui_config_file(manager, "research_progress")
+
+    try:
+        manager.save_phase_target_count(8, 0)
+        low_config = json.loads(research_path.read_text(encoding="utf-8"))
+
+        assert manager.get_phase_setting(8)["target"] == 1
+        assert low_config["phase_settings"]["PR8"]["target"] == 1
+        assert low_config["phase_targets"]["8"] == 1
+
+        manager.save_phase_target_count(8, 99)
+        high_config = json.loads(research_path.read_text(encoding="utf-8"))
+
+        assert manager.get_phase_setting(8)["target"] == 20
+        assert high_config["phase_settings"]["PR8"]["target"] == 20
+        assert high_config["phase_targets"]["8"] == 20
     finally:
         manager.config_loader.save_config("ui", "research_progress", original_config)
 
