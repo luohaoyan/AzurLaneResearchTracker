@@ -53,3 +53,24 @@ class PathManager:
         data_dir = cls._project_root / "data"
         data_dir.mkdir(parents=True, exist_ok=True)
         return data_dir
+
+    @classmethod
+    def get_work_dir(cls):
+        """获取通用工作目录路径"""
+        work_dir = cls._project_root / "workdir"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        return work_dir
+
+    @classmethod
+    def get_crawler_dir(cls):
+        """获取爬虫专用工作目录路径"""
+        crawler_dir = cls.get_work_dir() / "crawler"
+        crawler_dir.mkdir(parents=True, exist_ok=True)
+        return crawler_dir
+
+    @classmethod
+    def get_crawler_runs_dir(cls):
+        """获取爬虫运行记录目录路径"""
+        runs_dir = cls.get_crawler_dir() / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        return runs_dir

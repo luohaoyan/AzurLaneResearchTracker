@@ -1,0 +1,73 @@
+{
+    "phase_settings": {
+        "PR6": {
+            "target": 2,
+            "start_date": "2026-03-10"
+        },
+        "PR1": {
+            "target": 12,
+            "start_date": "2026-01-01"
+        },
+        "PR5": {
+            "target": 4,
+            "start_date": "2026-03-10"
+        },
+        "PR3": {
+            "target": 8,
+            "start_date": "2026-03-10"
+        },
+        "PR2": {
+            "target": 12,
+            "start_date": "2026-03-10"
+        }
+    },
+    "phase_start_dates": {
+        "6": "2026-03-10",
+        "1": "2026-01-01"
+    },
+    "phase_targets": {
+        "6": 2
+    },
+    "official_start_dates": {
+        "6": "2026-03-10"
+    },
+    "fallback_start_date": "2026-03-10",
+    "official_fallback_start_date": "2026-03-10",
+    "duration_messages": [
+        {
+            "min_day": 1,
+            "max_day": 7,
+            "text": "科研室刚开灯，先把每日委托稳稳拿下吧。"
+        },
+        {
+            "min_day": 8,
+            "max_day": 30,
+            "text": "科研节奏进入巡航，秘书舰已经把进度表贴在墙上了。"
+        },
+        {
+            "min_day": 31,
+            "max_day": 90,
+            "text": "漫长作战进行中，港区后勤建议保持补给和睡眠。"
+        },
+        {
+            "min_day": 91,
+            "max_day": null,
+            "text": "这已经是长期工程了，旧账也会被认真清算。"
+        }
+    ],
+    "secretary": {
+        "name": "默认秘书舰",
+        "image_path": "",
+        "placeholder_text": "秘书舰",
+        "dialog_duration_ms": 3600
+    },
+    "target_dialogs": {
+        "history": "补旧期属于港区档案整理任务，过期科研可不代表欧非程度哦，按自己的节奏推进就好。",
+        "history_completed": "旧期目标已经补完啦，档案室盖章通过；不过过期科研可不代表欧非程度哦。",
+        "completed": "目标已经突破啦，科研室建议立刻换个更闪亮的新目标。",
+        "target_1": "秘书舰歪头：只锁定一件吗？稳是很稳，但港区烟花还没点燃呢。",
+        "target_2_4": "标准指挥官路线，后勤妖精点头通过，肝度刚刚好。",
+        "target_5_7": "勇者级科研计划启动，今晚科研室的灯大概要常亮了。",
+        "target_8_plus": "指挥官，理智值还在线吗？这么多彩装连科研终端都开始冒蓝光了。"
+    }
+}

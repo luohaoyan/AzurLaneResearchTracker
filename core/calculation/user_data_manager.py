@@ -301,28 +301,35 @@ class UserDataManager:
             target_date: 指定日期（不传则默认今天）
         
         Returns:
-            True 表示删除成功（或本来就不存在），False 表示失败
+            True 表示确实删除了记录，False 表示记录不存在或删除失败
         """
         eq_id = str(equipment_id).strip()
+        if not eq_id:
+            self.logger.warning("装备 ID 不能为空")
+            return False
+
         filepath = self._get_filepath(target_date)
         if not os.path.exists(filepath):
-            return True  # 文件不存在 = 本来就没记录
+            return False  # 文件不存在 = 没有可删除的记录
 
         try:
             day_data = self.get_data_by_date(target_date or self._today_str())
-            if eq_id in day_data:
-                del day_data[eq_id]
-                # 写回 CSV
-                with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
-                    writer = csv.DictWriter(f, fieldnames=self.FIELDNAMES)
-                    writer.writeheader()
-                    for eid, data in day_data.items():
-                        writer.writerow({
-                            "equipment_id": eid,
-                            "equipment_count": data["equipment_count"],
-                            "fragment_count": data["fragment_count"],
-                        })
-                self.logger.debug(f"已删除记录: {eq_id}")
+            if eq_id not in day_data:
+                self.logger.debug(f"记录不存在，无需删除: {eq_id}")
+                return False
+
+            del day_data[eq_id]
+            # 写回 CSV
+            with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=self.FIELDNAMES)
+                writer.writeheader()
+                for eid, data in day_data.items():
+                    writer.writerow({
+                        "equipment_id": eid,
+                        "equipment_count": data["equipment_count"],
+                        "fragment_count": data["fragment_count"],
+                    })
+            self.logger.debug(f"已删除记录: {eq_id}")
             return True
         except Exception as e:
             self.logger.error(f"删除记录失败 ({eq_id}): {e}")

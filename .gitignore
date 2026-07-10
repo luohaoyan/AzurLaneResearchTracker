@@ -4,6 +4,10 @@ __pycache__/
 *.class
 *.so
 .Python
+.pytest_cache/
+test/.pytest_cache/
+.tmp_pytest/
+.tmp_pytest*/
 env/
 venv/
 .venv/

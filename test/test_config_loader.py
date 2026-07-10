@@ -1,11 +1,68 @@
 # test_config_loader.py
+import json
 import os
 import sys
+
+import pytest
 
 # 添加项目路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from core.utils.config_loader import get_config_loader
+from core.utils import config_loader as config_loader_module
+from core.utils.config_loader import ConfigSaveError, get_config_loader
+
+
+def test_save_config_persists_to_disk_and_cache(tmp_path):
+    """save_config 应在磁盘写入成功并校验后再更新缓存。"""
+    config_loader = get_config_loader()
+    original_dir = config_loader.config_dir
+    original_cache = dict(config_loader.cache)
+    config_loader.config_dir = tmp_path
+    config_loader.cache = {}
+
+    try:
+        payload = {"active_skin": "sakura_mist", "nested": {"target": 5}}
+
+        assert config_loader.save_config("ui", "appearance", payload) is True
+
+        saved_path = tmp_path / "ui" / "appearance.json"
+        assert saved_path.exists()
+        assert json.loads(saved_path.read_text(encoding="utf-8")) == payload
+        assert config_loader.cache["ui/appearance"] == payload
+    finally:
+        config_loader.config_dir = original_dir
+        config_loader.cache = original_cache
+
+
+def test_save_config_failure_keeps_old_disk_file_and_cache(tmp_path, monkeypatch):
+    """磁盘替换失败时应抛出异常，并保持旧文件与旧缓存不被污染。"""
+    config_loader = get_config_loader()
+    original_dir = config_loader.config_dir
+    original_cache = dict(config_loader.cache)
+    config_loader.config_dir = tmp_path
+    config_loader.cache = {}
+
+    try:
+        old_payload = {"active_skin": "harbor_night"}
+        new_payload = {"active_skin": "sakura_mist"}
+        config_loader.save_config("ui", "appearance", old_payload)
+        cache_before = dict(config_loader.cache)
+        saved_path = tmp_path / "ui" / "appearance.json"
+
+        def fail_replace(_source, _target):
+            raise PermissionError("locked by test")
+
+        monkeypatch.setattr(config_loader_module.os, "replace", fail_replace)
+
+        with pytest.raises(ConfigSaveError):
+            config_loader.save_config("ui", "appearance", new_payload)
+
+        assert json.loads(saved_path.read_text(encoding="utf-8")) == old_payload
+        assert config_loader.cache == cache_before
+        assert not saved_path.with_suffix(".json.tmp").exists()
+    finally:
+        config_loader.config_dir = original_dir
+        config_loader.cache = original_cache
 
 def test_config_init():
     # 测试配置初始化

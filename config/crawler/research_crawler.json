@@ -1,0 +1,30 @@
+{
+  "source_url": "https://wiki.biligame.com/blhx/%E5%86%9B%E9%83%A8%E7%A0%94%E7%A9%B6%E5%AE%A4",
+  "crawl": {
+    "phase_limit": null,
+    "common_limit": null
+  },
+  "request": {
+    "timeout": [
+      10,
+      30
+    ],
+    "retry_total": 3,
+    "backoff_factor": 0.8,
+    "delay_seconds": 1.0,
+    "user_agent": "AzurLaneResearchTrackerCrawler/0.5.0"
+  },
+  "workspace": {
+    "base_dir": "workdir/crawler/research",
+    "runs_dir_name": "runs",
+    "raw_dir_name": "raw",
+    "manifests_dir_name": "manifests"
+  },
+  "output": {
+    "raw_html_name": "research_room.html",
+    "phase_stage_name": "research_phases_stage.csv",
+    "equipment_stage_name": "research_equipment_stage.csv",
+    "override_stage_name": "equipment_id_overrides_stage.csv",
+    "manifest_name": "crawl_manifest.json"
+  }
+}
