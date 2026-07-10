@@ -1,38 +1,53 @@
 {
     "phase_settings": {
         "PR6": {
-            "target": 2,
-            "start_date": "2026-03-10"
+            "target": 5,
+            "start_date": "2023-07-13"
         },
         "PR1": {
             "target": 12,
-            "start_date": "2026-01-01"
+            "start_date": "2018-04-26"
         },
         "PR5": {
-            "target": 4,
-            "start_date": "2026-03-10"
+            "target": 8,
+            "start_date": "2022-07-14"
         },
         "PR3": {
             "target": 8,
-            "start_date": "2026-03-10"
+            "start_date": "2020-07-09"
         },
         "PR2": {
             "target": 12,
-            "start_date": "2026-03-10"
+            "start_date": "2019-04-18"
+        },
+        "PR9": {
+            "target": 5,
+            "start_date": "2026-07-09"
+        },
+        "PR8": {
+            "target": 5,
+            "start_date": "2025-07-10"
         }
     },
     "phase_start_dates": {
-        "6": "2026-03-10",
-        "1": "2026-01-01"
+        "6": "2023-07-13",
+        "1": "2018-04-26",
+        "2": "2019-04-18",
+        "3": "2020-07-09",
+        "4": "2021-07-08",
+        "5": "2022-07-14",
+        "7": "2024-07-11",
+        "8": "2025-07-10",
+        "9": "2026-07-09"
     },
     "phase_targets": {
-        "6": 2
-    },
-    "official_start_dates": {
-        "6": "2026-03-10"
+        "6": 5,
+        "9": 5,
+        "8": 5,
+        "2": 12,
+        "5": 8
     },
     "fallback_start_date": "2026-03-10",
-    "official_fallback_start_date": "2026-03-10",
     "duration_messages": [
         {
             "min_day": 1,

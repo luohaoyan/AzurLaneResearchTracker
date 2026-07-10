@@ -49,6 +49,7 @@ class AutomationBridgeResult:
     status: str
     message: str
     detail: str = ""
+    payload: Optional[Dict[str, Any]] = None
 
 
 class AutomationBridge:
@@ -63,6 +64,7 @@ class AutomationBridge:
     """
 
     CRAWLER_MODULE_CANDIDATES = (
+        "core.data.crawler_update",
         "core.data.equipment_crawler",
         "core.data.crawler",
         "core.automation.crawler_update",
@@ -128,7 +130,9 @@ class AutomationBridge:
         message = self._success_message(raw_result)
         self.runtime_manager.set_task_state(TaskStateKind.IDLE, 100, message, "资料爬取与更新")
         self.logger.info(message)
-        return AutomationBridgeResult(True, "success", message, str(raw_result or ""))
+        payload = raw_result if isinstance(raw_result, dict) else None
+        detail = self._success_detail(raw_result)
+        return AutomationBridgeResult(True, "success", message, detail, payload)
 
     def _find_first_module(self, candidates: Iterable[str]) -> Optional[ModuleType]:
         """
@@ -174,6 +178,43 @@ class AutomationBridge:
         if isinstance(raw_result, dict) and raw_result.get("message"):
             return str(raw_result["message"])
         return "资料更新流程已完成，基础数据已准备刷新。"
+
+    @staticmethod
+    def _success_detail(raw_result: Any) -> str:
+        """
+        把 crawler 结构化结果压缩成适合日志和 GUI 次级说明的摘要。
+        输入：
+            raw_result: crawler_update.run_update() 返回的 dict 或其他结果。
+        输出：
+            str: 包含正式表路径、计数和告警数量的简短说明。
+        使用示例：
+            detail = AutomationBridge._success_detail(payload)
+        """
+        if not isinstance(raw_result, dict):
+            return str(raw_result or "")
+
+        count_parts = []
+        for key, label in (
+            ("equipment_count", "装备"),
+            ("image_count", "图片"),
+            ("phase_count", "科研期数"),
+            ("copied_image_count", "复制图片"),
+        ):
+            if key in raw_result:
+                count_parts.append(f"{label}: {raw_result[key]}")
+
+        path_parts = []
+        for key, label in (
+            ("equipment_library_path", "装备表"),
+            ("equipment_images_path", "图片表"),
+            ("research_phases_path", "科研表"),
+        ):
+            if raw_result.get(key):
+                path_parts.append(f"{label}: {raw_result[key]}")
+
+        warnings = raw_result.get("warnings") or []
+        warning_text = f"告警: {len(warnings)}"
+        return "；".join(["，".join(count_parts), "；".join(path_parts), warning_text]).strip("；")
 
 
 # ============================================================

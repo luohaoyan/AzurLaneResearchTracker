@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import csv
 import json
+import os
+import re
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
@@ -151,14 +153,45 @@ def _coerce_optional_text(value: Any) -> Optional[str]:
     return text or None
 
 
+def _coerce_optional_path(value: Any) -> Optional[Path]:
+    """????????? Path????????????? Path?"""
+    text = _coerce_optional_text(value)
+    if text is None:
+        return None
+    return Path(text)
+
+
 def _sanitize_text(value: Any) -> str:
     """去掉多余空白，保留用于匹配的核心文本。"""
     return " ".join(str(value or "").split()).strip()
 
 
+def _clean_sync_equipment_name(value: Any) -> str:
+    """灞忚斀 wiki 鏈夊彲鑳芥販鍏ョ殑澶撮儴/灏鹃儴鏉傚瓧绗︺€?"""
+    text = _clean_sync_equipment_name(value)
+    text = re.sub(r"^[\s,，。;；:：、{}【】\[\]（）()<>《》]+", "", text)
+    text = re.sub(r"[\s,，。;；:：、{}【】\[\]（）()<>《》]+$", "", text)
+    return text
+
+
+def _strip_equipment_artifacts(value: Any) -> str:
+    text = _strip_equipment_artifacts(value)
+    text = re.sub(r"^[\s,，。;；:：、{}【】\[\]（）()<>《》]+", "", text)
+    text = re.sub(r"[\s,，。;；:：、{}【】\[\]（）()<>《》]+$", "", text)
+    return text
+
+
+def _safe_equipment_name(value: Any) -> str:
+    """灞忚斀 wiki 鏈夊彲鑳芥販鍏ョ殑澶撮儴/灏鹃儴鏉傚瓧绗︺€?"""
+    text = _sanitize_text(value)
+    text = re.sub(r"^[\s,，。;；:：、{}【】\[\]（）()<>《》]+", "", text)
+    text = re.sub(r"[\s,，。;；:：、{}【】\[\]（）()<>《》]+$", "", text)
+    return text
+
+
 def _normalize_equipment_name(value: Any) -> str:
     """把装备名压缩成稳定的匹配形式。"""
-    text = _sanitize_text(value)
+    text = _safe_equipment_name(value)
     text = text.replace("#", "")
     text = text.replace("（", "(").replace("）", ")")
     return text.replace(" ", "").lower()
@@ -181,6 +214,23 @@ def _write_csv(csv_path: Path, rows: Sequence[Dict[str, Any]], fieldnames: Seque
         for row in rows:
             writer.writerow({field: row.get(field, "") for field in fieldnames})
     return csv_path
+
+
+def _atomic_write_csv(csv_path: Path, rows: Sequence[Dict[str, Any]], fieldnames: Sequence[str]) -> Path:
+    """先写临时文件，再用原子替换保护正式 CSV。"""
+    tmp_path = csv_path.with_suffix(f"{csv_path.suffix}.tmp")
+    replaced = False
+    try:
+        _write_csv(tmp_path, rows, fieldnames)
+        os.replace(tmp_path, csv_path)
+        replaced = True
+        return csv_path
+    finally:
+        if not replaced and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
 
 
 def _write_json(json_path: Path, payload: Dict[str, Any]) -> Path:
@@ -317,7 +367,7 @@ def _build_research_index(research_equipment_rows: Sequence[Dict[str, str]]) -> 
     ranked: Dict[str, Tuple[Tuple[int, int, int, str], str]] = {}
     for row in research_equipment_rows:
         equipment_id = _sanitize_text(row.get("equipment_id", ""))
-        name = _sanitize_text(row.get("name", ""))
+        name = _safe_equipment_name(row.get("name", ""))
         if not equipment_id or not name:
             continue
         normalized_name = _normalize_equipment_name(name)
@@ -350,7 +400,7 @@ def _build_image_source_index(
     id_to_name: Dict[str, str] = {}
     for row in source_library_rows:
         equipment_id = _sanitize_text(row.get("equipment_id", ""))
-        name = _sanitize_text(row.get("name", ""))
+        name = _safe_equipment_name(row.get("name", ""))
         if equipment_id and name:
             id_to_name[equipment_id] = name
 
@@ -403,8 +453,10 @@ class CrawlerDataSynchronizer:
         self.workdir_root = workdir_root or PathManager.get_work_dir()
         self.settings = CrawlerSyncSettings.from_mapping(config_data or _load_json_config())
 
-    def _resolve_equipment_run_dir(self) -> Path:
-        """定位装备爬虫的最近一次运行目录。"""
+    def _resolve_equipment_run_dir(self, explicit_run_dir: Optional[Path] = None) -> Path:
+        """????????????????"""
+        if explicit_run_dir is not None:
+            return explicit_run_dir
         if self.settings.equipment_run_dir:
             return _resolve_existing_path(self.settings.equipment_run_dir, self.project_root)
         return _discover_latest_directory(
@@ -412,8 +464,10 @@ class CrawlerDataSynchronizer:
             ["equipment_library_stage.csv", "equipment_images_stage.csv"],
         )
 
-    def _resolve_research_run_dir(self) -> Path:
-        """定位科研爬虫的最近一次运行目录。"""
+    def _resolve_research_run_dir(self, explicit_run_dir: Optional[Path] = None) -> Path:
+        """????????????????"""
+        if explicit_run_dir is not None:
+            return explicit_run_dir
         if self.settings.research_run_dir:
             return _resolve_existing_path(self.settings.research_run_dir, self.project_root)
         return _discover_latest_directory(
@@ -442,6 +496,11 @@ class CrawlerDataSynchronizer:
         preserved_rows = [row for row in current_rows if _sanitize_text(row.get("equipment_id", "")) in special_ids]
         return preserved_rows, special_ids
 
+    def _load_current_library_rows(self) -> List[Dict[str, str]]:
+        """读取当前正式装备表，用于 stage 缺行时兜底保留旧数据。"""
+        library_path = self.data_root / "equipment_library.csv"
+        return _load_csv_rows(library_path) if library_path.exists() else []
+
     def _load_current_image_rows(self) -> Dict[str, str]:
         """读取当前图片映射，用于保留特殊装备的已有路径。"""
         image_path = self.data_root / "equipment_images.csv"
@@ -453,6 +512,11 @@ class CrawlerDataSynchronizer:
             if equipment_id and image_value:
                 result[equipment_id] = image_value
         return result
+
+    def _load_current_image_rows_list(self) -> List[Dict[str, str]]:
+        """读取当前正式图片表原始行顺序，便于完整保留遗漏项。"""
+        image_path = self.data_root / "equipment_images.csv"
+        return _load_csv_rows(image_path) if image_path.exists() else []
 
     def _collect_final_rows(
         self,
@@ -470,7 +534,9 @@ class CrawlerDataSynchronizer:
             project_root=self.project_root,
             source_run_dir=source_run_dir,
         )
+        current_library_rows = self._load_current_library_rows()
         current_image_rows = self._load_current_image_rows()
+        current_image_row_list = self._load_current_image_rows_list()
 
         final_library_rows: List[Dict[str, str]] = []
         final_image_rows: List[Dict[str, str]] = []
@@ -478,6 +544,8 @@ class CrawlerDataSynchronizer:
         warnings: List[str] = []
 
         seen_ids: set[str] = set()
+        replaced_ids: set[str] = set()
+        replaced_names: set[str] = set()
 
         rarity_folder_map = _load_rarity_folder_map()
 
@@ -492,6 +560,9 @@ class CrawlerDataSynchronizer:
             if final_equipment_id in seen_ids:
                 continue
             seen_ids.add(final_equipment_id)
+            if final_equipment_id != old_equipment_id:
+                replaced_ids.add(old_equipment_id)
+                replaced_names.add(normalized_name)
 
             final_row = dict(row)
             final_row["equipment_id"] = final_equipment_id
@@ -548,7 +619,81 @@ class CrawlerDataSynchronizer:
                 sorted(special_ids),
             )
         )
+
+        for row in current_library_rows:
+            equipment_id = _sanitize_text(row.get("equipment_id", ""))
+            normalized_name = _normalize_equipment_name(row.get("name", ""))
+            if (
+                not equipment_id
+                or equipment_id in replaced_ids
+                or normalized_name in replaced_names
+                or any(_sanitize_text(item.get("equipment_id", "")) == equipment_id for item in final_library_rows)
+            ):
+                continue
+            final_library_rows.append(dict(row))
+            warnings.append(f"保留旧行: {equipment_id}={_sanitize_text(row.get('name', ''))}")
+
+        for row in current_image_row_list:
+            equipment_id = _sanitize_text(row.get("equipment_id", ""))
+            if (
+                not equipment_id
+                or equipment_id in replaced_ids
+                or any(_sanitize_text(item.get("equipment_id", "")) == equipment_id for item in final_image_rows)
+            ):
+                continue
+            final_image_rows.append(dict(row))
+            warnings.append(f"保留旧图行: {equipment_id}")
+
         return final_library_rows, final_image_rows, copied_paths, warnings
+
+    def _sync_special_equipment_file(
+        self,
+        final_library_rows: Sequence[Dict[str, str]],
+        warnings: List[str],
+    ) -> Optional[Path]:
+        """按名称把 special_equipment.csv 的 equipment_id 对齐到最新装备库。"""
+        special_path = self.data_root / "special_equipment.csv"
+        if not special_path.exists():
+            return None
+
+        special_rows = _load_csv_rows(special_path)
+        name_to_id: Dict[str, str] = {}
+        for row in final_library_rows:
+            equipment_name = _sanitize_text(row.get("name", ""))
+            equipment_id = _sanitize_text(row.get("equipment_id", ""))
+            if not equipment_name or not equipment_id:
+                continue
+            normalized_name = _normalize_equipment_name(equipment_name)
+            if normalized_name not in name_to_id:
+                name_to_id[normalized_name] = equipment_id
+
+        updated_rows: List[Dict[str, str]] = []
+        updated_count = 0
+        for row in special_rows:
+            equipment_name = _sanitize_text(row.get("equipment_name", ""))
+            if not equipment_name:
+                updated_rows.append(dict(row))
+                continue
+
+            normalized_name = _normalize_equipment_name(equipment_name)
+            new_equipment_id = name_to_id.get(normalized_name)
+            if not new_equipment_id:
+                warnings.append(f"特殊装备未匹配到新ID: {equipment_name}")
+                updated_rows.append(dict(row))
+                continue
+
+            updated_row = dict(row)
+            old_equipment_id = _sanitize_text(updated_row.get("equipment_id", ""))
+            updated_row["equipment_id"] = new_equipment_id
+            updated_rows.append(updated_row)
+            if old_equipment_id != new_equipment_id:
+                updated_count += 1
+                warnings.append(f"特殊装备ID已更新: {equipment_name} {old_equipment_id} -> {new_equipment_id}")
+
+        _atomic_write_csv(special_path, updated_rows, CSV_SPECIAL_FIELDNAMES)
+        if updated_count:
+            self.logger.info("特殊装备表已按名称完成 ID 对齐: %s 条", updated_count)
+        return special_path
 
     def _rarity_name_from_id(self, rarity_id: Any) -> str:
         """把 rarity_id 转成中文稀有度名。"""
@@ -562,10 +707,17 @@ class CrawlerDataSynchronizer:
         }
         return rarity_map.get(text, "未知")
 
-    def sync(self, workspace_name: Optional[str] = None) -> CrawlerSyncResult:
-        """执行一次完整同步。"""
-        equipment_run_dir = self._resolve_equipment_run_dir()
-        research_run_dir = self._resolve_research_run_dir()
+    def sync(
+        self,
+        workspace_name: Optional[str] = None,
+        equipment_run_dir: Optional[Path | str] = None,
+        research_run_dir: Optional[Path | str] = None,
+    ) -> CrawlerSyncResult:
+        """????????????????????????????"""
+        explicit_equipment_run_dir = _coerce_optional_path(equipment_run_dir)
+        explicit_research_run_dir = _coerce_optional_path(research_run_dir)
+        equipment_run_dir = self._resolve_equipment_run_dir(explicit_equipment_run_dir)
+        research_run_dir = self._resolve_research_run_dir(explicit_research_run_dir)
         workspace_dir = self._prepare_workspace(workspace_name)
         backup_dir = workspace_dir / self.settings.backup_dir_name
         backup_dir.mkdir(parents=True, exist_ok=True)
@@ -598,9 +750,10 @@ class CrawlerDataSynchronizer:
             source_run_dir=equipment_run_dir,
         )
 
-        _write_csv(equipment_library_path, final_library_rows, CSV_LIBRARY_FIELDNAMES)
-        _write_csv(equipment_images_path, final_image_rows, CSV_IMAGE_FIELDNAMES)
-        _write_csv(research_phases_path, research_phase_rows, CSV_PHASE_FIELDNAMES)
+        _atomic_write_csv(equipment_library_path, final_library_rows, CSV_LIBRARY_FIELDNAMES)
+        _atomic_write_csv(equipment_images_path, final_image_rows, CSV_IMAGE_FIELDNAMES)
+        _atomic_write_csv(research_phases_path, research_phase_rows, CSV_PHASE_FIELDNAMES)
+        special_equipment_path = self._sync_special_equipment_file(final_library_rows, warnings)
 
         manifest_path = workspace_dir / "crawler_sync_manifest.json"
         result = CrawlerSyncResult(
@@ -616,7 +769,13 @@ class CrawlerDataSynchronizer:
             copied_image_paths=copied_paths,
             warnings=warnings,
         )
-        _write_json(manifest_path, result.to_manifest() | {"source_equipment_run_dir": str(equipment_run_dir), "source_research_run_dir": str(research_run_dir)})
+        manifest_payload = result.to_manifest() | {
+            "source_equipment_run_dir": str(equipment_run_dir),
+            "source_research_run_dir": str(research_run_dir),
+        }
+        if special_equipment_path is not None:
+            manifest_payload["special_equipment_path"] = str(special_equipment_path)
+        _write_json(manifest_path, manifest_payload)
 
         self.logger.info(
             "爬虫数据同步完成: 装备%s条, 图片%s条, 科研期数%s条, 工作区%s",

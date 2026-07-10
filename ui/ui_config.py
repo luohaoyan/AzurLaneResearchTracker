@@ -32,9 +32,7 @@ DEFAULT_RESEARCH_PROGRESS_UI_CONFIG: Dict[str, Any] = {
     },
     "phase_start_dates": {"6": "2026-03-10"},
     "phase_targets": {"6": 2},
-    "official_start_dates": {"6": "2026-03-10"},
     "fallback_start_date": "2026-03-10",
-    "official_fallback_start_date": "2026-03-10",
     "duration_messages": [
         {"min_day": 1, "max_day": 7, "text": "科研室刚开灯，先把每日委托稳稳拿下吧。"},
         {"min_day": 8, "max_day": 30, "text": "科研节奏进入巡航，秘书舰已经把进度表贴在墙上了。"},
@@ -56,6 +54,22 @@ DEFAULT_RESEARCH_PROGRESS_UI_CONFIG: Dict[str, Any] = {
         "target_5_7": "勇者级科研计划启动，今晚科研室的灯大概要常亮了。",
         "target_8_plus": "指挥官，理智值还在线吗？这么多彩装连科研终端都开始冒蓝光了。",
     },
+}
+
+
+DEFAULT_RESEARCH_OFFICIAL_START_DATES_CONFIG: Dict[str, Any] = {
+    "phase_start_dates": {
+        "1": "2018-04-26",
+        "2": "2019-04-18",
+        "3": "2020-07-09",
+        "4": "2021-07-08",
+        "5": "2022-07-14",
+        "6": "2023-07-13",
+        "7": "2024-07-11",
+        "8": "2025-07-10",
+        "9": "2026-07-09",
+    },
+    "fallback_start_date": "2026-07-09",
 }
 
 
@@ -152,6 +166,37 @@ class UiConfigManager:
         loaded = self.config_loader.get_config("ui", "research_progress")
         return self._merge_dicts(DEFAULT_RESEARCH_PROGRESS_UI_CONFIG, loaded)
 
+    def get_research_official_start_dates_config(self) -> Dict[str, Any]:
+        """
+        读取科研官方开始时间固定配置。
+        输入：
+            无。
+        输出：
+            dict: 包含 phase_start_dates 与 fallback_start_date 的固定日期表。
+        使用示例：
+            cfg = manager.get_research_official_start_dates_config()
+        """
+        loaded = self.config_loader.get_config("ui", "research_official_start_dates")
+        return self._merge_dicts(DEFAULT_RESEARCH_OFFICIAL_START_DATES_CONFIG, loaded)
+
+    def get_official_research_start_date(self, phase_number: int) -> str:
+        """
+        获取指定科研期数的官方开始日期。
+        输入：
+            phase_number: 科研期数。
+        输出：
+            str: YYYY-MM-DD 日期字符串。
+        使用示例：
+            manager.get_official_research_start_date(9)
+        """
+        config = self.get_research_official_start_dates_config()
+        phase_dates = config.get("phase_start_dates", {})
+        return str(
+            phase_dates.get(str(int(phase_number)))
+            or config.get("fallback_start_date")
+            or DEFAULT_RESEARCH_OFFICIAL_START_DATES_CONFIG["fallback_start_date"]
+        )
+
     def save_phase_start_date(self, phase_number: int, start_date: str) -> None:
         """
         保存用户为某一期科研设置的开始日期。
@@ -196,8 +241,7 @@ class UiConfigManager:
         if "start_date" not in setting:
             setting["start_date"] = str(
                 legacy_dates.get(str(int(phase_number)))
-                or config.get("official_start_dates", {}).get(str(int(phase_number)))
-                or config.get("official_fallback_start_date")
+                or self.get_official_research_start_date(phase_number)
                 or config.get("fallback_start_date")
             )
         return setting

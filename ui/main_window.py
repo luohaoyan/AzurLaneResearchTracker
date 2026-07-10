@@ -23,8 +23,8 @@ from typing import Any, Dict, List, Optional, Sequence
 from matplotlib import rcParams
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from PySide6.QtCore import QEasingCurve, QParallelAnimationGroup, QDate, QPropertyAnimation, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QMovie, QPixmap, QWheelEvent
+from PySide6.QtCore import QEasingCurve, QEvent, QObject, QParallelAnimationGroup, QDate, QPropertyAnimation, QThread, Qt, QTimer, Signal, Slot
+from PySide6.QtGui import QAction, QColor, QIcon, QMovie, QPixmap, QTextCharFormat, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -65,7 +65,7 @@ from core.state.runtime_state import TaskStateKind, get_runtime_state_manager
 from core.utils.config_loader import get_config_loader
 from core.utils.logger import get_logger
 from core.utils.path_manager import PathManager
-from ui.automation_bridge import get_automation_bridge
+from ui.automation_bridge import AutomationBridgeResult, get_automation_bridge
 from ui.future_hooks import FeatureHookRegistry, FutureFeatureSpec, get_feature_hook_registry
 from ui.secretary_pack import validate_secretary_pack
 from ui.theme import ThemeTokens, build_stylesheet, get_theme_skin, install_application_fonts, list_theme_skins
@@ -121,6 +121,150 @@ def polish_data_table(table: QTableWidget, row_height: int = 44) -> None:
     table.verticalHeader().setMinimumSectionSize(row_height)
 
 
+class BusyOverlay(QWidget):
+    """
+    页面级悬浮等待层。
+    输入：
+        parent: 覆盖的页面或容器。
+    输出：
+        半透明遮罩 + 转动提示，避免长任务时用户误以为程序卡死。
+    使用示例：
+        overlay = BusyOverlay(page)
+        overlay.show_busy("正在更新资料，请稍候。")
+    """
+
+    _frames = ("◐", "◓", "◑", "◒")
+
+    def __init__(self, parent: QWidget) -> None:
+        """创建覆盖在 parent 上的等待层。"""
+        super().__init__(parent)
+        self._frame_index = 0
+        self.setObjectName("busy_overlay")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setGeometry(parent.rect())
+        self.hide()
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.addStretch(1)
+
+        panel = QFrame()
+        panel.setObjectName("busy_overlay_panel")
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(28, 24, 28, 24)
+        panel_layout.setSpacing(12)
+
+        self.spinner_label = QLabel(self._frames[0])
+        self.spinner_label.setObjectName("busy_overlay_spinner")
+        self.spinner_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.message_label = QLabel("港区资料整理中，请稍候。")
+        self.message_label.setObjectName("busy_overlay_message")
+        self.message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.message_label.setWordWrap(True)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setTextVisible(False)
+
+        panel_layout.addWidget(self.spinner_label)
+        panel_layout.addWidget(self.message_label)
+        panel_layout.addWidget(self.progress_bar)
+
+        center_row = QHBoxLayout()
+        center_row.addStretch(1)
+        center_row.addWidget(panel)
+        center_row.addStretch(1)
+        root.addLayout(center_row)
+        root.addStretch(1)
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(120)
+        self._timer.timeout.connect(self._advance_spinner)
+        parent.installEventFilter(self)
+        self.setStyleSheet(
+            """
+            QWidget#busy_overlay {
+                background: rgba(4, 11, 18, 150);
+            }
+            QFrame#busy_overlay_panel {
+                min-width: 320px;
+                max-width: 520px;
+                border-radius: 8px;
+                border: 1px solid rgba(125, 208, 255, 0.42);
+                background: rgba(13, 28, 43, 235);
+            }
+            QLabel#busy_overlay_spinner {
+                color: #7dd0ff;
+                font-size: 34px;
+                font-weight: 700;
+            }
+            QLabel#busy_overlay_message {
+                color: #eef8ff;
+                font-size: 15px;
+                font-weight: 600;
+            }
+            """
+        )
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """父容器变化大小时保持遮罩铺满页面。"""
+        if watched is self.parentWidget() and event.type() == QEvent.Type.Resize:
+            parent = self.parentWidget()
+            if parent is not None:
+                self.setGeometry(parent.rect())
+        return super().eventFilter(watched, event)
+
+    def show_busy(self, message: str) -> None:
+        """显示等待层并开始转动提示。"""
+        self.message_label.setText(message)
+        self.setGeometry(self.parentWidget().rect() if self.parentWidget() else self.geometry())
+        self.raise_()
+        self.show()
+        self._timer.start()
+
+    def hide_busy(self) -> None:
+        """隐藏等待层并停止动画。"""
+        self._timer.stop()
+        self.hide()
+
+    def _advance_spinner(self) -> None:
+        """推进转动字符。"""
+        self._frame_index = (self._frame_index + 1) % len(self._frames)
+        self.spinner_label.setText(self._frames[self._frame_index])
+
+
+class CrawlerUpdateWorker(QObject):
+    """
+    资料爬取后台执行器。
+    输入：
+        automation_bridge: 提供 run_crawler_update() 的桥接对象。
+    输出：
+        finished 信号携带 AutomationBridgeResult。
+    使用示例：
+        worker.moveToThread(thread)
+    """
+
+    finished = Signal(object)
+
+    def __init__(self, automation_bridge: object) -> None:
+        """保存桥接对象，等待线程启动后执行。"""
+        super().__init__()
+        self.automation_bridge = automation_bridge
+
+    @Slot()
+    def run(self) -> None:
+        """在线程中执行 crawler 更新，避免阻塞 GUI 主线程。"""
+        try:
+            result = self.automation_bridge.run_crawler_update()
+        except Exception as exc:
+            result = AutomationBridgeResult(
+                False,
+                "error",
+                "资料更新执行失败，可能是网页结构变化或更新模块异常；请复制运行日志给开发者。",
+                f"{type(exc).__name__}: {exc}",
+            )
+        self.finished.emit(result)
+
+
 def get_visible_research_phases(min_phase_number: int = 2) -> List[Dict[str, Any]]:
     """
     从科研期数据表读取用户可选择的科研期。
@@ -131,8 +275,14 @@ def get_visible_research_phases(min_phase_number: int = 2) -> List[Dict[str, Any
     使用示例：
         phases = get_visible_research_phases()
     """
+    research_manager = get_research_manager()
+    phases = research_manager.get_all()
+    if not phases:
+        research_manager.reload()
+        phases = research_manager.get_all()
+
     visible: List[Dict[str, Any]] = []
-    for phase in get_research_manager().get_all():
+    for phase in phases:
         try:
             phase_number = int(phase.get("phase_number", 0))
         except (TypeError, ValueError):
@@ -141,6 +291,217 @@ def get_visible_research_phases(min_phase_number: int = 2) -> List[Dict[str, Any
             continue
         visible.append(phase)
     return visible
+
+
+def is_valid_research_progress_phase(phase: Dict[str, Any]) -> bool:
+    """
+    判断某一期科研是否适合放入“科研进度”页选择。
+    输入：
+        phase: research_phases.csv 中的一行数据。
+    输出：
+        bool: True 表示装备结构为 1 彩 + 5 金，可以用于进度页。
+    使用示例：
+        valid = is_valid_research_progress_phase(phase)
+    """
+    equipment_ids = [
+        item.strip()
+        for item in str(phase.get("equipment_list", "")).split(",")
+        if item.strip()
+    ]
+    phase_number = int(phase.get("phase_number", 0) or 0)
+    if len(equipment_ids) != 6:
+        get_logger().warning(f"科研 {phase_number} 期装备数量异常，已从进度页选择中隐藏")
+        return False
+
+    rainbow_count = 0
+    gold_count = 0
+    equipment_manager = get_equipment_manager()
+    for equipment_id in equipment_ids:
+        equipment = equipment_manager.get_by_id(equipment_id)
+        if not equipment:
+            get_logger().warning(f"科研 {phase_number} 期装备 {equipment_id} 不存在，已从进度页选择中隐藏")
+            return False
+        rarity_id = int(equipment.get("rarity_id", 0) or 0)
+        if rarity_id == 5:
+            rainbow_count += 1
+        elif rarity_id == 4:
+            gold_count += 1
+
+    if rainbow_count != 1 or gold_count != 5:
+        get_logger().warning(
+            f"科研 {phase_number} 期稀有度结构异常：彩装 {rainbow_count} 件，金装 {gold_count} 件，已从进度页选择中隐藏"
+        )
+        return False
+    return True
+
+
+def get_selectable_research_progress_phases() -> List[Dict[str, Any]]:
+    """
+    读取科研进度页可选择的有效科研期。
+    输入：
+        无。
+    输出：
+        List[dict]: 已排除 PR1、科研通用装备和结构异常期数的科研期列表。
+    使用示例：
+        phases = get_selectable_research_progress_phases()
+    """
+    return [
+        phase
+        for phase in get_visible_research_phases()
+        if is_valid_research_progress_phase(phase)
+    ]
+
+
+def apply_calendar_theme(date_edit: QDateEdit, tokens: ThemeTokens) -> None:
+    """
+    把 QDateEdit 的弹出日历染成当前皮肤颜色。
+    输入：
+        date_edit: 需要设置的日期选择器。
+        tokens: 当前皮肤令牌。
+    输出：
+        None。
+    使用示例：
+        apply_calendar_theme(self.start_date, self.theme_tokens)
+    """
+    calendar = date_edit.calendarWidget()
+    calendar.setObjectName("themed_calendar")
+    calendar.setStyleSheet(f"""
+        QCalendarWidget {{
+            background: {tokens.surface};
+            color: {tokens.text};
+            border: 1px solid {tokens.line};
+            border-radius: {tokens.radius}px;
+        }}
+        QCalendarWidget QWidget#qt_calendar_navigationbar {{
+            background: {tokens.surface_soft};
+            border-bottom: 1px solid {tokens.line};
+            min-height: 34px;
+        }}
+        QCalendarWidget QToolButton {{
+            background: transparent;
+            color: {tokens.text};
+            border: none;
+            border-radius: {max(3, tokens.radius - 2)}px;
+            margin: 3px;
+            padding: 5px 8px;
+            font-weight: 700;
+        }}
+        QCalendarWidget QToolButton:hover {{
+            background: {tokens.surface_glow};
+            color: {tokens.text};
+        }}
+        QCalendarWidget QToolButton#qt_calendar_prevmonth,
+        QCalendarWidget QToolButton#qt_calendar_nextmonth {{
+            qproperty-icon: none;
+            color: {tokens.azure};
+            min-width: 28px;
+            max-width: 28px;
+        }}
+        QCalendarWidget QMenu {{
+            background: {tokens.surface};
+            color: {tokens.text};
+            border: 1px solid {tokens.line};
+        }}
+        QCalendarWidget QSpinBox {{
+            background: {tokens.surface};
+            color: {tokens.text};
+            border: 1px solid {tokens.line};
+            border-radius: {max(3, tokens.radius - 2)}px;
+            padding: 4px 8px;
+            selection-background-color: {tokens.table_selection};
+            selection-color: {tokens.table_selection_text};
+        }}
+        QCalendarWidget QAbstractItemView {{
+            background: {tokens.table_row};
+            alternate-background-color: {tokens.table_row_alt};
+            color: {tokens.text};
+            selection-background-color: {tokens.azure};
+            selection-color: {tokens.background};
+            border: none;
+            outline: none;
+            gridline-color: {tokens.table_grid};
+        }}
+        QCalendarWidget QAbstractItemView:disabled,
+        QCalendarWidget QAbstractItemView::item:disabled {{
+            color: {tokens.line};
+            background: {tokens.table_row};
+        }}
+    """)
+
+    calendar.setProperty("calendarTextColor", tokens.text)
+    calendar.setProperty("calendarWeekendColor", tokens.sakura)
+    calendar.setProperty("calendarMutedColor", tokens.text_muted)
+    calendar.setProperty("calendarDisabledColor", tokens.line)
+    if not bool(calendar.property("calendarFormatterConnected")):
+        calendar.currentPageChanged.connect(lambda _year=0, _month=0, bound_calendar=calendar: _refresh_calendar_date_formats(bound_calendar))
+        calendar.setProperty("calendarFormatterConnected", True)
+
+    normal_format = QTextCharFormat()
+    normal_format.setForeground(QColor(tokens.text))
+    weekend_format = QTextCharFormat()
+    weekend_format.setForeground(QColor(tokens.sakura))
+    header_format = QTextCharFormat()
+    header_format.setForeground(QColor(tokens.text_muted))
+    for day in (
+        Qt.DayOfWeek.Monday,
+        Qt.DayOfWeek.Tuesday,
+        Qt.DayOfWeek.Wednesday,
+        Qt.DayOfWeek.Thursday,
+        Qt.DayOfWeek.Friday,
+    ):
+        calendar.setWeekdayTextFormat(day, normal_format)
+    calendar.setWeekdayTextFormat(Qt.DayOfWeek.Saturday, weekend_format)
+    calendar.setWeekdayTextFormat(Qt.DayOfWeek.Sunday, weekend_format)
+    calendar.setHeaderTextFormat(header_format)
+    _refresh_calendar_date_formats(calendar)
+
+
+def _refresh_calendar_date_formats(calendar: object) -> None:
+    """
+    按当前显示月份刷新日历日期颜色，让不可选日期和非本月日期更容易区分。
+    输入：
+        calendar: QCalendarWidget 实例。
+    输出：
+        None。
+    使用示例：
+        _refresh_calendar_date_formats(date_edit.calendarWidget())
+    """
+    previous_dates = calendar.property("formattedDateKeys") or []
+    for date_key in previous_dates:
+        date = QDate.fromString(str(date_key), "yyyy-MM-dd")
+        if date.isValid():
+            calendar.setDateTextFormat(date, QTextCharFormat())
+
+    normal_format = QTextCharFormat()
+    normal_format.setForeground(QColor(str(calendar.property("calendarTextColor") or "#EAF7FF")))
+    weekend_format = QTextCharFormat()
+    weekend_format.setForeground(QColor(str(calendar.property("calendarWeekendColor") or "#FF8EC7")))
+    adjacent_format = QTextCharFormat()
+    adjacent_format.setForeground(QColor(str(calendar.property("calendarMutedColor") or "#A5BDCB")))
+    disabled_format = QTextCharFormat()
+    disabled_format.setForeground(QColor(str(calendar.property("calendarDisabledColor") or "#2C607D")))
+    disabled_format.setFontItalic(True)
+
+    shown_month = int(calendar.monthShown())
+    first_day = QDate(int(calendar.yearShown()), shown_month, 1)
+    start_day = first_day.addDays(-14)
+    max_days = 74
+    min_date = calendar.minimumDate()
+    max_date = calendar.maximumDate()
+    formatted_keys: List[str] = []
+    for offset in range(max_days):
+        date = start_day.addDays(offset)
+        if date < min_date or date > max_date:
+            text_format = disabled_format
+        elif date.month() != shown_month:
+            text_format = adjacent_format
+        elif date.dayOfWeek() in (6, 7):
+            text_format = weekend_format
+        else:
+            text_format = normal_format
+        calendar.setDateTextFormat(date, text_format)
+        formatted_keys.append(date.toString("yyyy-MM-dd"))
+    calendar.setProperty("formattedDateKeys", formatted_keys)
 
 
 # ============================================================
@@ -442,12 +803,17 @@ class MatplotlibTrendPanel(QFrame):
         self._line_metadata.clear()
         visible_count = 0
         color_map = colors or {}
+        all_y_values: List[float] = []
+        x_labels: List[str] = []
         for index, (name, points) in enumerate(series_map.items()):
             visible_points = [point for point in points if point.get("value") is not None]
             if not visible_points:
                 continue
             x_values = list(range(1, len(visible_points) + 1))
             y_values = [float(point.get("value", 0.0)) for point in visible_points]
+            all_y_values.extend(y_values)
+            if len(visible_points) > len(x_labels):
+                x_labels = [str(point.get("date", "")) for point in visible_points]
             line_color = color_map.get(name) or self._fallback_line_color(index)
             line, = self.axes.plot(
                 x_values,
@@ -459,8 +825,6 @@ class MatplotlibTrendPanel(QFrame):
                 color=line_color,
             )
             self._line_metadata[line] = visible_points
-            self.axes.set_xticks(x_values)
-            self.axes.set_xticklabels([str(point.get("date", ""))[5:] for point in visible_points], rotation=0)
             visible_count += 1
 
         if visible_count == 0:
@@ -475,6 +839,8 @@ class MatplotlibTrendPanel(QFrame):
             )
             self.status_label.setText(empty_message)
         else:
+            self._apply_readable_x_axis(x_labels)
+            self._apply_readable_y_axis(all_y_values, y_label)
             self.axes.legend(loc="upper left", frameon=False)
             for text in self.axes.get_legend().get_texts():
                 text.set_color(self.theme_tokens.text)
@@ -483,6 +849,64 @@ class MatplotlibTrendPanel(QFrame):
         self.axes.set_ylabel(y_label)
         self.axes.grid(True, color=self.theme_tokens.table_grid, linewidth=0.8, alpha=0.72)
         self.apply_theme_tokens(self.theme_tokens)
+
+    def _apply_readable_x_axis(self, date_labels: List[str]) -> None:
+        """
+        根据日期数量抽样显示 X 轴标签，避免长时间范围把坐标轴挤乱。
+        输入：
+            date_labels: 折线点位对应的日期字符串。
+        输出：
+            None。
+        使用示例：
+            panel._apply_readable_x_axis(["2026-07-01", "2026-07-02"])
+        """
+        if not date_labels:
+            return
+        count = len(date_labels)
+        if count <= 7:
+            step = 1
+        elif count <= 20:
+            step = 5
+        elif count <= 45:
+            step = 10
+        else:
+            step = 30
+        tick_indexes = list(range(0, count, step))
+        if (count - 1) not in tick_indexes:
+            tick_indexes.append(count - 1)
+        tick_positions = [index + 1 for index in tick_indexes]
+        tick_texts = [date_labels[index][5:] if len(date_labels[index]) >= 10 else date_labels[index] for index in tick_indexes]
+        self.axes.set_xlim(0.8, count + 0.2)
+        self.axes.set_xticks(tick_positions)
+        self.axes.set_xticklabels(tick_texts, rotation=0)
+
+    def _apply_readable_y_axis(self, y_values: List[float], y_label: str) -> None:
+        """
+        给 Y 轴增加留白，让趋势变化不会贴边显示。
+        输入：
+            y_values: 当前可见点位的 Y 值。
+            y_label: Y 轴标题，用于判断是否保留 0 基线。
+        输出：
+            None。
+        使用示例：
+            panel._apply_readable_y_axis([5.0, 10.0], "金彩比")
+        """
+        if not y_values:
+            return
+        minimum = min(y_values)
+        maximum = max(y_values)
+        span = maximum - minimum
+        minimum_padding = 1.0 if "碎片" in y_label else 0.25
+        padding = max(span * 0.24, minimum_padding)
+        if span == 0:
+            padding = max(abs(maximum) * 0.18, minimum_padding)
+        lower = minimum - padding
+        upper = maximum + padding
+        if "碎片" in y_label and lower > 0:
+            lower = max(0.0, lower)
+        if lower == upper:
+            upper = lower + minimum_padding
+        self.axes.set_ylim(lower, upper)
 
     def _fallback_line_color(self, index: int) -> str:
         """返回稳定的默认折线颜色。"""
@@ -794,13 +1218,22 @@ class UserDataPage(BasePage):
         page = UserDataPage()
     """
 
+    equipmentTrendRequested = Signal(str, str)
+
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """创建用户装备数据表格与筛选栏。"""
         super().__init__("用户数据", "展示玩家当前装备与碎片数据；基础装备库清单可从本页单独打开。", parent)
         self.icon_size = 36
         self.equipment_manager = get_equipment_manager()
+        self.research_manager = get_research_manager()
+        self.user_data_manager = get_user_data_manager()
+        self.automation_bridge = get_automation_bridge()
         self.all_equipment_rows: List[Dict[str, object]] = self.equipment_manager.get_equipment_with_image()
+        self._icon_cache: Dict[str, QIcon] = {}
+        self._crawler_thread: Optional[QThread] = None
+        self._crawler_worker: Optional[CrawlerUpdateWorker] = None
         self._build_views()
+        self.busy_overlay = BusyOverlay(self)
 
     def _build_views(self) -> None:
         """构建用户数据主视图和基础装备库子视图。"""
@@ -824,7 +1257,6 @@ class UserDataPage(BasePage):
         self.view_stack.addWidget(self.library_view)
         self.root.addWidget(self.view_stack, stretch=1)
         self.refresh_equipment_table()
-        self.refresh_library_table()
 
     def _build_filters(self, parent_layout: QVBoxLayout) -> None:
         """构建装备筛选控件。"""
@@ -837,15 +1269,9 @@ class UserDataPage(BasePage):
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("按装备名称搜索")
         self.rarity_combo = QComboBox()
-        self.rarity_combo.addItem("全部稀有度", None)
-        for rarity in self.equipment_manager.rarity_manager.get_all():
-            self.rarity_combo.addItem(str(rarity.get("name", "未知")), int(rarity.get("rarity_id", 0)))
+        self._populate_rarity_combo(self.rarity_combo)
         self.phase_combo = QComboBox()
-        self.phase_combo.addItem("全部科研期", None)
-        for phase in get_research_manager().get_all():
-            phase_number = int(phase.get("phase_number", 0))
-            self.phase_combo.addItem(f"科研 {phase_number} 期", phase_number)
-        self.phase_combo.addItem("通用", 0)
+        self._populate_phase_combo(self.phase_combo)
         self.search_input.textChanged.connect(lambda _text="": self.refresh_equipment_table())
         self.rarity_combo.currentIndexChanged.connect(lambda _index=0: self.refresh_equipment_table())
         self.phase_combo.currentIndexChanged.connect(lambda _index=0: self.refresh_equipment_table())
@@ -853,13 +1279,23 @@ class UserDataPage(BasePage):
         self.open_library_button.setObjectName("open_equipment_library_button")
         self.open_library_button.setToolTip("打开基础装备清单，只展示名称、稀有度和科研期。")
         self.open_library_button.clicked.connect(self._show_library_view)
+        self.refresh_user_table_button = QPushButton("刷新表")
+        self.refresh_user_table_button.setObjectName("refresh_user_data_table_button")
+        self.refresh_user_table_button.setToolTip("重新读取本地装备表和今日用户记录，并刷新当前用户数据表。")
+        self.refresh_user_table_button.clicked.connect(self._refresh_user_data_table_from_local)
 
         row.addWidget(self.search_input, stretch=2)
         row.addWidget(self.rarity_combo)
         row.addWidget(self.phase_combo)
         row.addStretch(1)
+        row.addWidget(self.refresh_user_table_button)
         row.addWidget(self.open_library_button)
         parent_layout.addWidget(panel)
+
+        self.user_data_status_label = QLabel("当前展示已载入的本地用户数据；更新或修改记录后可点击“刷新表”。")
+        self.user_data_status_label.setObjectName("card_caption")
+        self.user_data_status_label.setWordWrap(True)
+        parent_layout.addWidget(self.user_data_status_label)
 
     def _build_table(self, parent_layout: QVBoxLayout) -> None:
         """构建用户可见装备表格。"""
@@ -869,6 +1305,9 @@ class UserDataPage(BasePage):
         for column in range(1, 5):
             self.table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         polish_data_table(self.table, 52)
+        self.table.setIconSize(QPixmap(self.icon_size, self.icon_size).size())
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_user_table_context_menu)
         parent_layout.addWidget(self.table, stretch=1)
 
     def _build_library_view(self, parent_layout: QVBoxLayout) -> None:
@@ -891,10 +1330,25 @@ class UserDataPage(BasePage):
         self.back_to_player_data_button = QPushButton("返回用户数据")
         self.back_to_player_data_button.setObjectName("back_to_player_data_button")
         self.back_to_player_data_button.clicked.connect(self._show_player_data_view)
+        self.refresh_library_button = QPushButton("刷新装备表")
+        self.refresh_library_button.setObjectName("refresh_equipment_library_button")
+        self.refresh_library_button.setToolTip("重新读取本地 data/ 下的正式装备表，并刷新当前 UI 展示。")
+        self.refresh_library_button.clicked.connect(self._refresh_equipment_sources_from_local)
+        self.update_library_button = QPushButton("更新装备表")
+        self.update_library_button.setObjectName("update_equipment_library_button")
+        self.update_library_button.setToolTip("调用爬虫更新正式装备表、图片表、科研期数表和特殊装备 ID。")
+        self.update_library_button.clicked.connect(self._update_library_from_crawler)
 
         row.addLayout(title_box, stretch=1)
+        row.addWidget(self.refresh_library_button)
+        row.addWidget(self.update_library_button)
         row.addWidget(self.back_to_player_data_button)
         parent_layout.addWidget(panel)
+
+        self.library_status_label = QLabel("装备表展示使用当前已载入数据；如已完成爬虫更新，请点击“刷新装备表”重新载入。")
+        self.library_status_label.setObjectName("card_caption")
+        self.library_status_label.setWordWrap(True)
+        parent_layout.addWidget(self.library_status_label)
 
         filter_panel = QFrame()
         filter_panel.setObjectName("content_panel")
@@ -907,16 +1361,10 @@ class UserDataPage(BasePage):
         self.library_search_input.setPlaceholderText("按装备名称搜索")
         self.library_rarity_combo = QComboBox()
         self.library_rarity_combo.setObjectName("equipment_library_rarity_filter")
-        self.library_rarity_combo.addItem("全部稀有度", None)
-        for rarity in self.equipment_manager.rarity_manager.get_all():
-            self.library_rarity_combo.addItem(str(rarity.get("name", "未知")), int(rarity.get("rarity_id", 0)))
+        self._populate_rarity_combo(self.library_rarity_combo)
         self.library_phase_combo = QComboBox()
         self.library_phase_combo.setObjectName("equipment_library_phase_filter")
-        self.library_phase_combo.addItem("全部科研期", None)
-        for phase in get_research_manager().get_all():
-            phase_number = int(phase.get("phase_number", 0))
-            self.library_phase_combo.addItem(f"科研 {phase_number} 期", phase_number)
-        self.library_phase_combo.addItem("通用", 0)
+        self._populate_phase_combo(self.library_phase_combo)
 
         self.library_search_input.textChanged.connect(lambda _text="": self.refresh_library_table())
         self.library_rarity_combo.currentIndexChanged.connect(lambda _index=0: self.refresh_library_table())
@@ -938,6 +1386,9 @@ class UserDataPage(BasePage):
         for column in range(1, 3):
             self.library_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         polish_data_table(self.library_table, 52)
+        self.library_table.setIconSize(QPixmap(self.icon_size, self.icon_size).size())
+        self.library_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.library_table.customContextMenuRequested.connect(self._show_library_table_context_menu)
         parent_layout.addWidget(self.library_table, stretch=1)
 
     def refresh_equipment_table(self) -> None:
@@ -951,31 +1402,120 @@ class UserDataPage(BasePage):
             page.refresh_equipment_table()
         """
         equipments = self._filtered_equipment_rows()
-        self.table.setRowCount(len(equipments))
-        for row, equipment in enumerate(equipments):
-            phase = self._phase_from_public_data(str(equipment.get("equipment_id", "")))
-            self.table.setCellWidget(row, 0, self._build_name_icon_cell(equipment))
-            values = [
-                equipment.get("rarity_name", "未知"),
-                phase,
-                self._display_count(equipment, "owned_quantity"),
-                self._display_count(equipment, "fragment_quantity"),
-            ]
-            for column, value in enumerate(values):
-                item = QTableWidgetItem(str(value))
-                if column >= 2:
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.table.setItem(row, column + 1, item)
+        self.table.setUpdatesEnabled(False)
+        try:
+            self.table.setRowCount(len(equipments))
+            for row, equipment in enumerate(equipments):
+                phase = self._phase_from_public_data(str(equipment.get("equipment_id", "")))
+                name_item = self._build_name_icon_item(equipment)
+                name_item.setData(Qt.ItemDataRole.UserRole, str(equipment.get("equipment_id", "")))
+                self.table.setItem(row, 0, name_item)
+                values = [
+                    equipment.get("rarity_name", "未知"),
+                    phase,
+                    self._display_count(equipment, "equipment_count"),
+                    self._display_count(equipment, "fragment_count"),
+                ]
+                for column, value in enumerate(values):
+                    item = QTableWidgetItem(str(value))
+                    if column >= 2:
+                        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self.table.setItem(row, column + 1, item)
+        finally:
+            self.table.setUpdatesEnabled(True)
 
     def refresh_library_table(self) -> None:
         """刷新基础装备库表，只展示公开列。"""
         equipments = self._filtered_library_rows()
-        self.library_table.setRowCount(len(equipments))
-        for row, equipment in enumerate(equipments):
-            phase = self._phase_from_public_data(str(equipment.get("equipment_id", "")))
-            self.library_table.setCellWidget(row, 0, self._build_name_icon_cell(equipment))
-            for column, value in enumerate([equipment.get("rarity_name", "未知"), phase], start=1):
-                self.library_table.setItem(row, column, QTableWidgetItem(str(value)))
+        self.library_table.setUpdatesEnabled(False)
+        try:
+            self.library_table.setRowCount(len(equipments))
+            for row, equipment in enumerate(equipments):
+                phase = self._phase_from_public_data(str(equipment.get("equipment_id", "")))
+                name_item = self._build_name_icon_item(equipment)
+                name_item.setData(Qt.ItemDataRole.UserRole, str(equipment.get("equipment_id", "")))
+                self.library_table.setItem(row, 0, name_item)
+                for column, value in enumerate([equipment.get("rarity_name", "未知"), phase], start=1):
+                    self.library_table.setItem(row, column, QTableWidgetItem(str(value)))
+        finally:
+            self.library_table.setUpdatesEnabled(True)
+
+    def _show_user_table_context_menu(self, position: object) -> None:
+        """
+        在用户数据主表中弹出右键菜单，把当前装备加入历史趋势折线。
+        输入：
+            position: 表格视口坐标。
+        输出：
+            None。
+        使用示例：
+            self.table.customContextMenuRequested.connect(self._show_user_table_context_menu)
+        """
+        row = self.table.rowAt(position.y())
+        if row < 0:
+            return
+        item = self.table.item(row, 0)
+        if item is None:
+            return
+        equipment_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        equipment_name = item.text()
+        if not equipment_id:
+            return
+        menu = QMenu(self.table)
+        add_action = menu.addAction("添加到历史趋势折线")
+        selected_action = menu.exec(self.table.viewport().mapToGlobal(position))
+        if selected_action != add_action:
+            return
+        self._confirm_add_equipment_to_trend(equipment_id, equipment_name)
+
+    def _show_library_table_context_menu(self, position: object) -> None:
+        """
+        在装备库表中弹出右键菜单，支持把装备加入历史趋势折线。
+        输入：
+            position: 表格视口坐标。
+        输出：
+            None。
+        使用示例：
+            self.library_table.customContextMenuRequested.connect(self._show_library_table_context_menu)
+        """
+        row = self.library_table.rowAt(position.y())
+        if row < 0:
+            return
+        item = self.library_table.item(row, 0)
+        if item is None:
+            return
+        equipment_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        equipment_name = item.text()
+        if not equipment_id:
+            return
+        menu = QMenu(self.library_table)
+        add_action = menu.addAction("添加到历史趋势折线")
+        selected_action = menu.exec(self.library_table.viewport().mapToGlobal(position))
+        if selected_action != add_action:
+            return
+        self._confirm_add_equipment_to_trend(equipment_id, equipment_name)
+
+    def _confirm_add_equipment_to_trend(self, equipment_id: str, equipment_name: str) -> None:
+        """
+        二次确认后发送装备趋势添加请求。
+        输入：
+            equipment_id: 装备内部 ID，仅用于程序内部定位。
+            equipment_name: 用户可见装备名称。
+        输出：
+            None。
+        使用示例：
+            page._confirm_add_equipment_to_trend("S8-001", "试作型装备")
+        """
+        reply = QMessageBox.question(
+            self,
+            "添加装备趋势",
+            f"确认把“{equipment_name}”添加到历史趋势折线吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self.equipmentTrendRequested.emit(equipment_id, equipment_name)
+        self.library_status_label.setText(f"已添加“{equipment_name}”到历史趋势折线。")
 
     def _show_library_view(self) -> None:
         """切换到基础装备库表视图。"""
@@ -985,6 +1525,168 @@ class UserDataPage(BasePage):
     def _show_player_data_view(self) -> None:
         """切回玩家当前装备数据视图。"""
         self.view_stack.setCurrentWidget(self.player_data_view)
+
+    def _refresh_user_data_table_from_local(self) -> None:
+        """
+        从本地正式表和今日用户记录重新载入用户数据主表。
+        输入：
+            无。
+        输出：
+            None，主表会重新读取最新本地数据。
+        使用示例：
+            page._refresh_user_data_table_from_local()
+        """
+        self.busy_overlay.show_busy("正在重新整理指挥官的装备账本，请稍候。")
+        self.refresh_user_table_button.setEnabled(False)
+        QTimer.singleShot(30, self._perform_refresh_user_data_table_from_local)
+
+    def _perform_refresh_user_data_table_from_local(self) -> None:
+        """执行用户数据主表的本地重载，并恢复按钮状态。"""
+        try:
+            self.equipment_manager.reload()
+            self.research_manager.reload()
+            self.all_equipment_rows = self.equipment_manager.get_equipment_with_image()
+            self.user_data_manager = get_user_data_manager()
+            # 主表刷新主要用于重新读取用户记录；保留已有图标缓存，避免大量图片重复缩放导致界面卡顿。
+            self._reload_phase_filters()
+            self.refresh_equipment_table()
+            self.user_data_status_label.setText(f"已刷新用户数据表：当前载入 {len(self.all_equipment_rows)} 件装备。")
+        except Exception as exc:
+            self.user_data_status_label.setText(f"用户数据表刷新失败：{exc}")
+        finally:
+            self.refresh_user_table_button.setEnabled(True)
+            self.busy_overlay.hide_busy()
+
+    def _update_library_from_crawler(self) -> None:
+        """
+        调用 crawler 统一入口更新正式装备表。
+        输入：
+            无。
+        输出：
+            None，更新结果展示在装备库状态栏。
+        使用示例：
+            page._update_library_from_crawler()
+        """
+        if self._crawler_thread is not None and self._crawler_thread.isRunning():
+            self.library_status_label.setText("装备资料还在更新中，指挥官先喝口茶等一下。")
+            return
+        self.library_status_label.setText("正在调用爬虫更新正式装备表，请稍候。")
+        self.busy_overlay.show_busy("正在向资料库远征，装备情报下载中，请稍候。")
+        self.update_library_button.setEnabled(False)
+        self.refresh_library_button.setEnabled(False)
+        self._start_crawler_update_worker(self._on_library_crawler_finished)
+
+    def _start_crawler_update_worker(self, finished_handler: object) -> None:
+        """启动资料更新后台线程。"""
+        thread = QThread(self)
+        worker = CrawlerUpdateWorker(self.automation_bridge)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(finished_handler)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_crawler_worker)
+        self._crawler_thread = thread
+        self._crawler_worker = worker
+        thread.start()
+
+    def _clear_crawler_worker(self) -> None:
+        """清理后台线程引用。"""
+        self._crawler_thread = None
+        self._crawler_worker = None
+
+    def _on_library_crawler_finished(self, result: AutomationBridgeResult) -> None:
+        """资料更新完成后刷新状态和按钮。"""
+        self.busy_overlay.hide_busy()
+        self.update_library_button.setEnabled(True)
+        self.refresh_library_button.setEnabled(True)
+        if result.success:
+            detail = f" {result.detail}" if result.detail else ""
+            self.library_status_label.setText(f"{result.message}{detail} 请点击“刷新装备表”载入到当前界面。")
+            return
+        self.library_status_label.setText(f"{result.message} {result.detail}".strip())
+
+    def _refresh_equipment_sources_from_local(self) -> None:
+        """
+        从正式 CSV 重新载入装备、图片和科研期数，并刷新两个装备表。
+        输入：
+            无。
+        输出：
+            None，表格和筛选项会使用最新正式数据。
+        使用示例：
+            page._refresh_equipment_sources_from_local()
+        """
+        self.busy_overlay.show_busy("正在把最新装备档案搬进表格，马上就好。")
+        self.refresh_library_button.setEnabled(False)
+        QTimer.singleShot(30, self._perform_refresh_equipment_sources_from_local)
+
+    def _perform_refresh_equipment_sources_from_local(self) -> None:
+        """执行正式 CSV 重新载入，并在结束后关闭等待层。"""
+        self.equipment_manager.reload()
+        self.research_manager.reload()
+        self.all_equipment_rows = self.equipment_manager.get_equipment_with_image()
+        self._icon_cache.clear()
+        self._reload_phase_filters()
+        self.refresh_equipment_table()
+        if self.view_stack.currentWidget() is self.library_view:
+            self.refresh_library_table()
+        self.library_status_label.setText(f"已从正式装备表载入 {len(self.all_equipment_rows)} 条装备数据。")
+        self.refresh_library_button.setEnabled(True)
+        self.busy_overlay.hide_busy()
+
+    def _reload_phase_filters(self) -> None:
+        """按当前 research_phases.csv 重建两个科研期筛选框。"""
+        for combo in (self.phase_combo, self.library_phase_combo):
+            current_data = combo.currentData()
+            combo.blockSignals(True)
+            combo.clear()
+            self._populate_phase_combo(combo)
+            index = combo.findData(current_data)
+            combo.setCurrentIndex(index if index >= 0 else 0)
+            combo.blockSignals(False)
+
+    def _populate_phase_combo(self, combo: QComboBox) -> None:
+        """
+        按用户阅读习惯填充装备科研期筛选。
+        输入：
+            combo: 需要填充的下拉框。
+        输出：
+            None。
+        使用示例：
+            self._populate_phase_combo(self.phase_combo)
+        """
+        combo.addItem("全部", None)
+        combo.addItem("科研通用装备", 0)
+        phase_numbers = sorted(
+            {
+                int(phase.get("phase_number", 0))
+                for phase in self.research_manager.get_all()
+                if int(phase.get("phase_number", 0)) > 0
+            },
+            reverse=True,
+        )
+        for phase_number in phase_numbers:
+            combo.addItem(f"科研 {phase_number} 期", phase_number)
+
+    def _populate_rarity_combo(self, combo: QComboBox) -> None:
+        """
+        按高稀有度到低稀有度填充筛选下拉框。
+        输入：
+            combo: 需要填充的下拉框。
+        输出：
+            None。
+        使用示例：
+            self._populate_rarity_combo(self.rarity_combo)
+        """
+        combo.addItem("全部稀有度", None)
+        rarities = sorted(
+            self.equipment_manager.rarity_manager.get_all(),
+            key=lambda rarity: int(rarity.get("sort_order", rarity.get("rarity_id", 0))),
+            reverse=True,
+        )
+        for rarity in rarities:
+            combo.addItem(str(rarity.get("name", "未知")), int(rarity.get("rarity_id", 0)))
 
     @staticmethod
     def _display_count(equipment: Dict[str, object], key: str) -> int:
@@ -1008,6 +1710,7 @@ class UserDataPage(BasePage):
             self.search_input.text().strip(),
             self.rarity_combo.currentData(),
             self.phase_combo.currentData(),
+            self._player_equipment_rows(),
         )
 
     def _filtered_library_rows(self) -> List[Dict[str, object]]:
@@ -1016,18 +1719,42 @@ class UserDataPage(BasePage):
             self.library_search_input.text().strip(),
             self.library_rarity_combo.currentData(),
             self.library_phase_combo.currentData(),
+            self.all_equipment_rows,
         )
+
+    def _player_equipment_rows(self) -> List[Dict[str, object]]:
+        """
+        将当天用户记录合并到基础装备库行，供“用户数据”主表展示。
+        输入：
+            无。
+        输出：
+            List[dict]: 每行包含 equipment_count 与 fragment_count。
+        使用示例：
+            rows = page._player_equipment_rows()
+        """
+        today_data = self.user_data_manager.get_today_data()
+        rows: List[Dict[str, object]] = []
+        for equipment in self.all_equipment_rows:
+            equipment_id = str(equipment.get("equipment_id", ""))
+            record = today_data.get(equipment_id, {})
+            row = dict(equipment)
+            row["equipment_count"] = self._display_count(record, "equipment_count")
+            row["fragment_count"] = self._display_count(record, "fragment_count")
+            rows.append(row)
+        return rows
 
     def _filter_equipment_rows(
         self,
         keyword: str,
         rarity_id: Optional[int],
         phase_filter: Optional[int],
+        source_rows: Optional[List[Dict[str, object]]] = None,
     ) -> List[Dict[str, object]]:
         """按名称、稀有度和科研期过滤装备列表。"""
         normalized_keyword = keyword.lower()
+        scoped_rows = source_rows if source_rows is not None else self.all_equipment_rows
         rows: List[Dict[str, object]] = []
-        for equipment in self.all_equipment_rows:
+        for equipment in scoped_rows:
             name = str(equipment.get("name", ""))
             equipment_id = str(equipment.get("equipment_id", ""))
             parsed_phase = self._phase_number_from_id(equipment_id)
@@ -1036,69 +1763,63 @@ class UserDataPage(BasePage):
             if rarity_id is not None and int(equipment.get("rarity_id", 0)) != int(rarity_id):
                 continue
             if phase_filter is not None:
-                if int(phase_filter) == 0 and parsed_phase is not None:
+                if int(phase_filter) == 0 and parsed_phase != 0:
                     continue
                 if int(phase_filter) > 0 and parsed_phase != int(phase_filter):
                     continue
             rows.append(equipment)
         return rows
 
-    def _build_name_icon_cell(self, equipment: Dict[str, object]) -> QWidget:
+    def _build_name_icon_item(self, equipment: Dict[str, object]) -> QTableWidgetItem:
         """
-        构建装备名称 + 小图标单元格。
+        构建 icon + 装备名称的轻量表格项。
         输入：
             equipment: 装备数据，包含 name 与 image_path。
         输出：
-            QWidget: 固定尺寸图标不会撑大表格行高。
+            QTableWidgetItem: 使用 Qt 原生 icon 渲染，避免每行创建 QWidget。
         使用示例：
-            self.table.setCellWidget(row, 0, self._build_name_icon_cell(equipment))
+            self.table.setItem(row, 0, self._build_name_icon_item(equipment))
         """
-        cell = QWidget()
-        cell.setObjectName("equipment_name_icon_cell")
-        layout = QHBoxLayout(cell)
-        layout.setContentsMargins(8, 4, 8, 4)
-        layout.setSpacing(8)
+        item = QTableWidgetItem(str(equipment.get("name", "")))
+        item.setIcon(self._load_equipment_icon(str(equipment.get("image_path") or "")))
+        item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        return item
 
-        name_label = QLabel(str(equipment.get("name", "")))
-        name_label.setObjectName("equipment_name_label")
-        name_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        name_label.setWordWrap(False)
-
-        icon_label = QLabel()
-        icon_label.setObjectName("equipment_icon_label")
-        icon_label.setFixedSize(self.icon_size, self.icon_size)
-        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon_label.setPixmap(self._load_equipment_icon(str(equipment.get("image_path") or "")))
-
-        layout.addWidget(name_label, stretch=1)
-        layout.addWidget(icon_label, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        return cell
-
-    def _load_equipment_icon(self, image_path: str) -> QPixmap:
+    def _load_equipment_icon(self, image_path: str) -> QIcon:
         """
         加载并缩放装备图标；缺失时返回透明空白图标。
         输入：
             image_path: equipment_images.csv 中记录的相对路径或绝对路径。
         输出：
-            QPixmap: 固定最大尺寸的小图标。
+            QIcon: 固定最大尺寸的小图标。
         使用示例：
-            pixmap = self._load_equipment_icon("resources/equipment/S1-001.png")
+            icon = self._load_equipment_icon("resources/equipment/S1-001.png")
         """
+        cache_key = image_path.strip()
+        if cache_key in self._icon_cache:
+            return self._icon_cache[cache_key]
         blank = QPixmap(self.icon_size, self.icon_size)
         blank.fill(Qt.GlobalColor.transparent)
         resolved_path = self._resolve_equipment_image_path(image_path)
         if resolved_path is None:
-            return blank
+            icon = QIcon(blank)
+            self._icon_cache[cache_key] = icon
+            return icon
 
         pixmap = QPixmap(str(resolved_path))
         if pixmap.isNull():
-            return blank
-        return pixmap.scaled(
+            icon = QIcon(blank)
+            self._icon_cache[cache_key] = icon
+            return icon
+        scaled = pixmap.scaled(
             self.icon_size,
             self.icon_size,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
+        icon = QIcon(scaled)
+        self._icon_cache[cache_key] = icon
+        return icon
 
     @staticmethod
     def _resolve_equipment_image_path(image_path: str) -> Optional[Path]:
@@ -1128,6 +1849,8 @@ class UserDataPage(BasePage):
     def _phase_from_public_data(equipment_id: str) -> str:
         """从内部 ID 推断科研期，只展示给用户可理解的期数名称。"""
         phase_number = UserDataPage._phase_number_from_id(equipment_id)
+        if phase_number == 0:
+            return "科研通用装备"
         return f"科研 {phase_number} 期" if phase_number is not None else "通用"
 
     @staticmethod
@@ -1160,6 +1883,9 @@ class ResearchProgressPage(BasePage):
         self.ui_config_manager = get_ui_config_manager()
         self.ui_config = self.ui_config_manager.get_research_progress_config()
         self.secretary_lines_config = self.ui_config_manager.get_secretary_lines_config()
+        self.equipment_manager = get_equipment_manager()
+        self.icon_size = 32
+        self._icon_cache: Dict[str, QIcon] = {}
         self._secretary_line_cursor = 0
         self._last_target_comment = ""
         self._last_target_context = "target_changed"
@@ -1168,24 +1894,11 @@ class ResearchProgressPage(BasePage):
         self._secretary_dialog_timer = QTimer(self)
         self._secretary_dialog_timer.setSingleShot(True)
         self._secretary_dialog_timer.timeout.connect(self._reset_secretary_dialog)
-        phases = get_visible_research_phases()
-        latest_phase = self.progress_analyzer.get_latest_phase_number()
-        visible_phase_numbers = [int(phase.get("phase_number", 0)) for phase in phases]
-        selected_phase = latest_phase if latest_phase in visible_phase_numbers else (visible_phase_numbers[-1] if visible_phase_numbers else 0)
-
         top = QHBoxLayout()
         top.setSpacing(10)
         self.phase_combo = QComboBox()
         self.phase_combo.setFixedWidth(180)
-        for phase in phases:
-            phase_number = int(phase.get("phase_number", 0))
-            suffix = "（最新）" if phase_number == latest_phase else "（历史期）"
-            self.phase_combo.addItem(f"科研 {phase_number} 期 {suffix}", phase_number)
-        if self.phase_combo.count() == 0:
-            self.phase_combo.addItem("科研数据待加载", 0)
-        latest_index = self.phase_combo.findData(selected_phase)
-        if latest_index >= 0:
-            self.phase_combo.setCurrentIndex(latest_index)
+        self._populate_research_phase_combo(preserve_current=False)
         self.phase_combo.currentIndexChanged.connect(lambda _index=0: self._on_phase_changed())
         self.notice_label = QLabel("")
         self.notice_label.setObjectName("research_notice")
@@ -1280,12 +1993,11 @@ class ResearchProgressPage(BasePage):
         summary_grid.setColumnStretch(1, 3)
 
         self.progress_table = QTableWidget(0, 5)
-        self.progress_table.setHorizontalHeaderLabels(["位置", "装备", "稀有度", "当前图纸", "整装"])
+        self.progress_table.setHorizontalHeaderLabels(["装备", "稀有度", "当前图纸", "整装", "总碎片"])
         self.progress_table.setMinimumHeight(156)
-        self.progress_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.progress_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        self.progress_table.setColumnWidth(0, 88)
-        for column in (2, 3, 4):
+        self.progress_table.setIconSize(QPixmap(self.icon_size, self.icon_size).size())
+        self.progress_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for column in (1, 2, 3, 4):
             self.progress_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
             self.progress_table.setColumnWidth(column, 90)
         polish_data_table(self.progress_table, 38)
@@ -1305,6 +2017,7 @@ class ResearchProgressPage(BasePage):
             page.apply_theme_tokens(window.theme_tokens)
         """
         self.theme_tokens = tokens
+        apply_calendar_theme(self.start_date_edit, tokens)
         self._apply_progress_bar_style(float(self.overall_progress_bar.value()) / 100.0)
         self._apply_luck_badge_style(self.luck_value_label.text())
 
@@ -1326,6 +2039,36 @@ class ResearchProgressPage(BasePage):
         layout.addWidget(caption_label)
         return card
 
+    def _populate_research_phase_combo(self, preserve_current: bool = True) -> bool:
+        """
+        重新装载科研进度页的期数下拉框。
+        输入：
+            preserve_current: 是否优先保留用户当前选择。
+        输出：
+            bool: True 表示至少有一个有效科研期；False 表示只能显示占位项。
+        使用示例：
+            page._populate_research_phase_combo()
+        """
+        current_phase = int(self.phase_combo.currentData() or 0) if preserve_current else 0
+        phases = get_selectable_research_progress_phases()
+        phase_numbers = [int(phase.get("phase_number", 0) or 0) for phase in phases]
+        latest_selectable_phase = max(phase_numbers, default=0)
+        selected_phase = current_phase if current_phase in phase_numbers else latest_selectable_phase
+
+        self.phase_combo.blockSignals(True)
+        self.phase_combo.clear()
+        for phase in sorted(phases, key=lambda item: int(item.get("phase_number", 0) or 0), reverse=True):
+            phase_number = int(phase.get("phase_number", 0) or 0)
+            suffix = "（最新可用）" if phase_number == latest_selectable_phase else "（历史期）"
+            self.phase_combo.addItem(f"科研 {phase_number} 期 {suffix}", phase_number)
+        if self.phase_combo.count() == 0:
+            self.phase_combo.addItem("科研数据异常，请更新", 0)
+        selected_index = self.phase_combo.findData(selected_phase)
+        if selected_index >= 0:
+            self.phase_combo.setCurrentIndex(selected_index)
+        self.phase_combo.blockSignals(False)
+        return bool(phases)
+
     def refresh_progress(self) -> None:
         """
         刷新当前科研期进度展示。
@@ -1336,6 +2079,19 @@ class ResearchProgressPage(BasePage):
         使用示例：
             page.refresh_progress()
         """
+        if int(self.phase_combo.currentData() or 0) <= 0:
+            self._populate_research_phase_combo(preserve_current=False)
+        if int(self.phase_combo.currentData() or 0) <= 0:
+            progress = self.progress_analyzer.get_phase_progress(
+                0,
+                rainbow_target_count=int(self.target_combo.currentData() or 2),
+            )
+            self._update_summary(progress)
+            self._update_research_day()
+            self._update_table([])
+            self.notice_label.setText("科研期数或装备稀有度数据异常，请先在装备表中执行“更新装备表”，再刷新页面。")
+            self.notice_label.setVisible(True)
+            return
         phase_number = self.phase_combo.currentData()
         progress = self.progress_analyzer.get_phase_progress(
             int(phase_number or 0),
@@ -1411,12 +2167,10 @@ class ResearchProgressPage(BasePage):
         phase_number = self._selected_phase_number()
         phase_setting = self.ui_config_manager.get_phase_setting(phase_number) if phase_number > 0 else {}
         phase_dates = self.ui_config.get("phase_start_dates", {})
-        official_dates = self.ui_config.get("official_start_dates", {})
         date_text = str(
             phase_setting.get("start_date")
             or phase_dates.get(str(phase_number))
-            or official_dates.get(str(phase_number))
-            or self.ui_config.get("official_fallback_start_date")
+            or self.ui_config_manager.get_official_research_start_date(phase_number)
             or self.ui_config.get("fallback_start_date")
             or QDate.currentDate().toString("yyyy-MM-dd")
         )
@@ -1432,14 +2186,8 @@ class ResearchProgressPage(BasePage):
         self._update_research_day()
 
     def _official_start_date(self, phase_number: int) -> QDate:
-        """从 UI 配置读取某一期科研官方开始时间。"""
-        official_dates = self.ui_config.get("official_start_dates", {})
-        date_text = str(
-            official_dates.get(str(phase_number))
-            or self.ui_config.get("official_fallback_start_date")
-            or self.ui_config.get("fallback_start_date")
-            or QDate.currentDate().toString("yyyy-MM-dd")
-        )
+        """从固定官方日期 JSON 读取某一期科研开始时间。"""
+        date_text = self.ui_config_manager.get_official_research_start_date(phase_number)
         date = QDate.fromString(date_text, "yyyy-MM-dd")
         today = QDate.currentDate()
         if not date.isValid() or date > today:
@@ -1502,7 +2250,11 @@ class ResearchProgressPage(BasePage):
             self.notice_label.setText(message)
             self.notice_label.setVisible(True)
             return
-        if progress.get("is_latest"):
+        latest_selectable_phase = max(
+            (int(self.phase_combo.itemData(index) or 0) for index in range(self.phase_combo.count())),
+            default=0,
+        )
+        if int(progress.get("phase_number", 0) or 0) == latest_selectable_phase and latest_selectable_phase > 0:
             self.notice_label.setText("当前展示最新科研期进度。")
         else:
             self.notice_label.setText("当前展示历史科研期，并非最新科研进度。")
@@ -1518,11 +2270,16 @@ class ResearchProgressPage(BasePage):
         self.progress_detail_label.setText(
             f"彩装碎片 {progress.get('rainbow_total', 0)} / {progress.get('rainbow_target_fragments', 0)}"
         )
-        self.completed_value_label.setText(
-            f"完成装备 {progress.get('completed_count', 0)} / {progress.get('equipment_total', 0)}"
-        )
         target_count = int(progress.get("rainbow_target_count", self.target_combo.currentData() or 2))
-        is_latest = bool(progress.get("is_latest"))
+        completed_target_count = min(target_count, int(progress.get("rainbow_total", 0) or 0) // 50)
+        self.completed_value_label.setText(
+            f"完成装备 {completed_target_count} / {target_count}"
+        )
+        latest_selectable_phase = max(
+            (int(self.phase_combo.itemData(index) or 0) for index in range(self.phase_combo.count())),
+            default=0,
+        )
+        is_latest = int(progress.get("phase_number", 0) or 0) == latest_selectable_phase and latest_selectable_phase > 0
         self._last_target_context = self._target_dialog_key(target_count, overall, is_latest)
         self._last_target_comment = self._target_comment(target_count, overall, is_latest)
         ratio = progress.get("gold_rainbow_ratio")
@@ -1542,18 +2299,88 @@ class ResearchProgressPage(BasePage):
         slot_rows = self._build_research_equipment_slots(rows)
         self.progress_table.setRowCount(len(slot_rows))
         for row_index, row in enumerate(slot_rows):
+            name_item = self._build_progress_equipment_item(row)
+            self.progress_table.setItem(row_index, 0, name_item)
             values = [
-                row.get("slot_name", ""),
-                row.get("equipment_name", ""),
                 row.get("rarity_name", ""),
                 row.get("fragment_count", "—"),
                 row.get("equipment_count", "—"),
+                row.get("total_fragment_count", "—"),
             ]
-            for column, value in enumerate(values):
+            for column, value in enumerate(values, start=1):
                 item = QTableWidgetItem(str(value))
-                if column in {0, 2, 3, 4}:
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.progress_table.setItem(row_index, column, item)
+
+    def _build_progress_equipment_item(self, row: Dict[str, object]) -> QTableWidgetItem:
+        """
+        构建科研进度表的 icon + 装备名称单元格。
+        输入：
+            row: 科研进度装备行。
+        输出：
+            QTableWidgetItem: 装备列单元格。
+        使用示例：
+            item = self._build_progress_equipment_item(row)
+        """
+        item = QTableWidgetItem(str(row.get("equipment_name", "")))
+        image_path = str(row.get("image_path") or "")
+        item.setIcon(self._load_progress_equipment_icon(image_path))
+        item.setToolTip(str(row.get("slot_name", "")))
+        item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        return item
+
+    def _load_progress_equipment_icon(self, image_path: str) -> QIcon:
+        """
+        加载科研进度表装备图标，缺失时返回透明占位。
+        输入：
+            image_path: equipment_images.csv 中记录的图片路径。
+        输出：
+            QIcon: 适合表格行高的小图标。
+        使用示例：
+            icon = self._load_progress_equipment_icon("data/images/super_rare/S7-001.jpg")
+        """
+        cache_key = image_path.strip()
+        if cache_key in self._icon_cache:
+            return self._icon_cache[cache_key]
+        blank = QPixmap(self.icon_size, self.icon_size)
+        blank.fill(Qt.GlobalColor.transparent)
+        resolved_path = UserDataPage._resolve_equipment_image_path(image_path)
+        if resolved_path is None:
+            icon = QIcon(blank)
+            self._icon_cache[cache_key] = icon
+            return icon
+        pixmap = QPixmap(str(resolved_path))
+        if pixmap.isNull():
+            icon = QIcon(blank)
+            self._icon_cache[cache_key] = icon
+            return icon
+        icon = QIcon(pixmap.scaled(
+            self.icon_size,
+            self.icon_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        ))
+        self._icon_cache[cache_key] = icon
+        return icon
+
+    @staticmethod
+    def _calculate_total_fragment_count(row: Dict[str, object]) -> object:
+        """
+        计算科研装备总碎片数，等于整装折算 + 当前图纸。
+        输入：
+            row: 包含 equipment_count、fragment_count、equivalent 的进度行。
+        输出：
+            object: 可展示的整数；无等值公式时返回 "—"。
+        使用示例：
+            total = ResearchProgressPage._calculate_total_fragment_count(row)
+        """
+        equivalent = row.get("equivalent")
+        if equivalent is None:
+            return "—"
+        try:
+            return int(row.get("equipment_count", 0) or 0) * int(equivalent) + int(row.get("fragment_count", 0) or 0)
+        except (TypeError, ValueError):
+            return "—"
 
     def _build_research_equipment_slots(self, rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
         """
@@ -1581,6 +2408,9 @@ class ResearchProgressPage(BasePage):
                 row = dict(rarity_rows[row_index])
                 used_index_by_rarity[rarity_id] = row_index + 1
                 row["slot_name"] = slot_name
+                equipment_id = str(row.get("equipment_id", ""))
+                row["image_path"] = self.equipment_manager.get_image_path(equipment_id) or ""
+                row["total_fragment_count"] = self._calculate_total_fragment_count(row)
                 slots.append(row)
                 continue
             slots.append({
@@ -1589,6 +2419,8 @@ class ResearchProgressPage(BasePage):
                 "rarity_name": rarity_name,
                 "fragment_count": "—",
                 "equipment_count": "—",
+                "image_path": "",
+                "total_fragment_count": "—",
             })
         return slots
 
@@ -2028,6 +2860,7 @@ class TrendPage(BasePage):
         self.research_manager = get_research_manager()
         self._equipment_search_results: List[Dict[str, object]] = []
         self._selected_equipment_lines: Dict[str, str] = {}
+        self._syncing_trend_dates = False
 
         self.start_date = QDateEdit()
         self.end_date = QDateEdit()
@@ -2035,9 +2868,12 @@ class TrendPage(BasePage):
         self.end_date.setCalendarPopup(True)
         self.start_date.setDisplayFormat("yyyy-MM-dd")
         self.end_date.setDisplayFormat("yyyy-MM-dd")
+        today = QDate.currentDate()
+        self.start_date.setMaximumDate(today)
+        self.end_date.setMaximumDate(today)
         self._apply_available_date_range()
-        self.start_date.dateChanged.connect(lambda _date=None: self.refresh_trend_preview())
-        self.end_date.dateChanged.connect(lambda _date=None: self.refresh_trend_preview())
+        self.start_date.dateChanged.connect(lambda _date=None: self._on_start_date_changed())
+        self.end_date.dateChanged.connect(lambda _date=None: self._on_end_date_changed())
 
         self.chart_palette_combo = QComboBox()
         self.chart_palette_combo.setObjectName("chart_palette_combo")
@@ -2046,14 +2882,13 @@ class TrendPage(BasePage):
         self.chart_palette_combo.addItem("高对比线色", "contrast")
         self.chart_palette_combo.currentIndexChanged.connect(lambda _index=0: self.refresh_trend_preview())
 
-        common_panel = QFrame()
-        common_panel.setObjectName("content_panel")
-        common_controls = QHBoxLayout(common_panel)
+        self.common_trend_panel = QFrame()
+        self.common_trend_panel.setObjectName("content_panel")
+        common_controls = QHBoxLayout(self.common_trend_panel)
         common_controls.setContentsMargins(16, 12, 16, 12)
         common_controls.setSpacing(10)
         self._build_common_trend_controls(common_controls)
         common_controls.addStretch(1)
-        self.root.addWidget(common_panel)
 
         self.trend_tabs = QTabWidget()
         self.trend_tabs.setObjectName("trend_mode_tabs")
@@ -2070,6 +2905,7 @@ class TrendPage(BasePage):
             "选择上方功能标签后，这里只展示当前功能对应的一张折线图。",
         )
         self.trend_panel.setObjectName("single_trend_panel")
+        self.root.addWidget(self.common_trend_panel)
         self.root.addWidget(self.trend_panel, stretch=4)
 
         self.search_equipment_options()
@@ -2133,10 +2969,15 @@ class TrendPage(BasePage):
         polish_data_table(self.phase_drawer_table, 34)
         self.phase_drawer_table.setVisible(False)
         self.phase_checks: Dict[int, QCheckBox] = {}
-        for row, phase in enumerate(get_visible_research_phases()):
+        phases = sorted(
+            get_visible_research_phases(),
+            key=lambda item: int(item.get("phase_number", 0) or 0),
+            reverse=True,
+        )
+        for row, phase in enumerate(phases):
             phase_number = int(phase.get("phase_number", 0))
             checkbox = QCheckBox(f"PR{phase_number}")
-            checkbox.setChecked(True)
+            checkbox.setChecked(False)
             checkbox.stateChanged.connect(lambda _state=0: self._on_phase_selection_changed())
             self.phase_checks[phase_number] = checkbox
             self.phase_drawer_table.insertRow(row)
@@ -2154,7 +2995,7 @@ class TrendPage(BasePage):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(8)
-        intro = QLabel("功能说明：先输入装备名称进行查询，再把结果添加到右侧列表；列表中的多件装备会同时绘制碎片趋势线。")
+        intro = QLabel("功能说明：可在这里按名称查询后添加折线，也可以到用户数据的装备库表中右键装备，选择添加到历史趋势。列表中的多件装备会同时绘制碎片趋势线。")
         intro.setObjectName("card_caption")
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -2236,6 +3077,40 @@ class TrendPage(BasePage):
         self._sync_trend_tab_height()
         self.refresh_trend_preview()
 
+    def _on_start_date_changed(self) -> None:
+        """开始日期变化时校验日期范围并刷新趋势图。"""
+        if self._syncing_trend_dates:
+            return
+        self._syncing_trend_dates = True
+        try:
+            today = QDate.currentDate()
+            if self.start_date.date() > today:
+                self.start_date.setDate(today)
+                self.trend_panel.status_label.setText("开始日期不能晚于今天，已自动切回今天。")
+            if self.start_date.date() > self.end_date.date():
+                self.end_date.setDate(self.start_date.date())
+                self.trend_panel.status_label.setText("开始日期不能晚于结束日期，已自动拉齐结束日期。")
+        finally:
+            self._syncing_trend_dates = False
+        self.refresh_trend_preview()
+
+    def _on_end_date_changed(self) -> None:
+        """结束日期变化时校验日期范围并刷新趋势图。"""
+        if self._syncing_trend_dates:
+            return
+        self._syncing_trend_dates = True
+        try:
+            today = QDate.currentDate()
+            if self.end_date.date() > today:
+                self.end_date.setDate(today)
+                self.trend_panel.status_label.setText("结束日期不能晚于今天，已自动切回今天。")
+            if self.end_date.date() < self.start_date.date():
+                self.start_date.setDate(self.end_date.date())
+                self.trend_panel.status_label.setText("结束日期不能早于开始日期，已自动拉齐开始日期。")
+        finally:
+            self._syncing_trend_dates = False
+        self.refresh_trend_preview()
+
     def _sync_trend_tab_height(self) -> None:
         """
         按当前趋势功能调节上方控制区高度。
@@ -2299,7 +3174,7 @@ class TrendPage(BasePage):
             return
         checked = [phase for phase, checkbox in self.phase_checks.items() if checkbox.isChecked()]
         if not checked:
-            self.phase_selection_summary_label.setText("未勾选时默认绘制全部可选科研期")
+            self.phase_selection_summary_label.setText("未选择科研期，图表暂不绘制折线")
             return
         display = "、".join(f"PR{phase}" for phase in checked)
         self.phase_selection_summary_label.setText(f"已选择：{display}")
@@ -2316,6 +3191,8 @@ class TrendPage(BasePage):
         """
         self.theme_tokens = tokens
         self.trend_panel.apply_theme_tokens(tokens)
+        apply_calendar_theme(self.start_date, tokens)
+        apply_calendar_theme(self.end_date, tokens)
 
     def refresh_trend_preview(self) -> None:
         """
@@ -2409,9 +3286,27 @@ class TrendPage(BasePage):
         equipment_id = self.equipment_select_combo.currentData()
         if not equipment_id:
             return
-        self._selected_equipment_lines[str(equipment_id)] = self.equipment_select_combo.currentText()
+        self.add_equipment_line(str(equipment_id), self.equipment_select_combo.currentText())
+
+    def add_equipment_line(self, equipment_id: str, equipment_name: str) -> None:
+        """
+        添加一条装备碎片趋势折线，可由本页查询或装备库右键菜单调用。
+        输入：
+            equipment_id: 装备内部 ID。
+            equipment_name: 用户可见装备名称。
+        输出：
+            None。
+        使用示例：
+            trend_page.add_equipment_line("S8-001", "试作型装备")
+        """
+        if not equipment_id:
+            return
+        self._selected_equipment_lines[str(equipment_id)] = equipment_name
         self._refresh_selected_equipment_list()
+        if self.trend_tabs.currentIndex() != 1:
+            self.trend_tabs.setCurrentIndex(1)
         self.refresh_equipment_fragment_chart()
+        self.trend_panel.status_label.setText(f"已添加“{equipment_name}”到装备碎片趋势。")
 
     def _remove_selected_equipment_line(self) -> None:
         """从右侧划线列表移除当前选中的装备。"""
@@ -2460,9 +3355,8 @@ class TrendPage(BasePage):
         return exact + fuzzy
 
     def _selected_phase_numbers(self) -> List[int]:
-        """返回当前勾选的科研期；未勾选时回退为全部期数。"""
-        selected = [phase for phase, checkbox in self.phase_checks.items() if checkbox.isChecked()]
-        return selected or list(self.phase_checks)
+        """返回当前勾选的科研期；未勾选时返回空列表。"""
+        return [phase for phase, checkbox in self.phase_checks.items() if checkbox.isChecked()]
 
     def _build_phase_ratio_series_map(self) -> Dict[str, List[Dict[str, object]]]:
         """
@@ -2538,10 +3432,18 @@ class TrendPage(BasePage):
         """按已有历史记录设置日期选择器默认值；没有记录时使用当天。"""
         date_range = self.trend_analyzer.get_available_date_range()
         today = QDate.currentDate()
+        self.start_date.setMaximumDate(today)
+        self.end_date.setMaximumDate(today)
         start = QDate.fromString(str(date_range.get("start") or today.toString("yyyy-MM-dd")), "yyyy-MM-dd")
         end = QDate.fromString(str(date_range.get("end") or today.toString("yyyy-MM-dd")), "yyyy-MM-dd")
-        self.start_date.setDate(start if start.isValid() else today)
-        self.end_date.setDate(end if end.isValid() else today)
+        if not start.isValid() or start > today:
+            start = today
+        if not end.isValid() or end > today:
+            end = today
+        if start > end:
+            start = end
+        self.start_date.setDate(start)
+        self.end_date.setDate(end)
 
 
 class AutomationLabPage(BasePage):
@@ -2562,6 +3464,8 @@ class AutomationLabPage(BasePage):
         super().__init__("自动化实验室", "检查模拟器连接、截图采集、OCR 识别和关键环境，帮助判断程序是否能正常运行。", parent)
         self.registry = registry
         self.automation_bridge = get_automation_bridge()
+        self._crawler_thread: Optional[QThread] = None
+        self._crawler_worker: Optional[CrawlerUpdateWorker] = None
         grid = QGridLayout()
         grid.setSpacing(12)
         self.root.addLayout(grid, stretch=1)
@@ -2573,7 +3477,7 @@ class AutomationLabPage(BasePage):
         ]):
             grid.addWidget(BasePage.build_card(title, body), index // 2, index % 2)
 
-        self.crawler_status_label = QLabel("待命：资料爬取模块将在 v0.6.0 合并后接入真实执行。")
+        self.crawler_status_label = QLabel("待命：资料爬取入口已接入，可从这里更新装备表、图片表和科研期数表。")
         self.crawler_status_label.setObjectName("panel_body")
         self.crawler_status_label.setWordWrap(True)
         self.root.addWidget(self._build_crawler_update_panel())
@@ -2593,6 +3497,7 @@ class AutomationLabPage(BasePage):
                 button.clicked.connect(lambda _checked=False, key=feature.key: self.featureRequested.emit(key))
                 feature_layout.addWidget(button)
         self.root.addWidget(feature_panel)
+        self.busy_overlay = BusyOverlay(self)
 
     def _build_crawler_update_panel(self) -> QFrame:
         """
@@ -2614,7 +3519,7 @@ class AutomationLabPage(BasePage):
         title = QLabel("资料爬取与更新")
         title.setObjectName("panel_title")
         self.crawler_update_button = QPushButton("检查并更新资料")
-        self.crawler_update_button.setToolTip("后续会调用爬虫模块，更新装备、图片路径和科研基础资料。")
+        self.crawler_update_button.setToolTip("调用 core.data.crawler_update.run_update()，更新装备、图片路径和科研基础资料。")
         self.crawler_update_button.clicked.connect(self._on_crawler_update_clicked)
         title_row.addWidget(title)
         title_row.addStretch(1)
@@ -2631,9 +3536,36 @@ class AutomationLabPage(BasePage):
 
     def _on_crawler_update_clicked(self) -> None:
         """触发资料爬取安全桥接入口，并给出友好状态。"""
-        result = self.automation_bridge.run_crawler_update()
-        self.crawler_status_label.setText(result.message)
+        if self._crawler_thread is not None and self._crawler_thread.isRunning():
+            self.crawler_status_label.setText("资料更新还在进行中，港区通讯中请稍候。")
+            return
+        self.crawler_update_button.setEnabled(False)
+        self.busy_overlay.show_busy("正在向资料库远征，装备与科研情报更新中。")
+        thread = QThread(self)
+        worker = CrawlerUpdateWorker(self.automation_bridge)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_crawler_update_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_crawler_worker)
+        self._crawler_thread = thread
+        self._crawler_worker = worker
+        thread.start()
         self.featureRequested.emit("crawler_update")
+
+    def _clear_crawler_worker(self) -> None:
+        """清理资料更新后台线程引用。"""
+        self._crawler_thread = None
+        self._crawler_worker = None
+
+    def _on_crawler_update_finished(self, result: AutomationBridgeResult) -> None:
+        """资料更新完成后回到主线程刷新 UI。"""
+        self.busy_overlay.hide_busy()
+        self.crawler_update_button.setEnabled(True)
+        detail = f"\n{result.detail}" if result.detail and result.success else ""
+        self.crawler_status_label.setText(f"{result.message}{detail}")
 
     def _build_secretary_pack_panel(self) -> QFrame:
         """
@@ -3135,7 +4067,9 @@ class MainWindow(QMainWindow):
             page.quickActionRequested.connect(self.switch_to_page)
             return page
         if item.key == "user_data":
-            return UserDataPage()
+            page = UserDataPage()
+            page.equipmentTrendRequested.connect(self.add_equipment_to_trend)
+            return page
         if item.key == "research_progress":
             return ResearchProgressPage()
         if item.key == "trend":
@@ -3259,6 +4193,24 @@ class MainWindow(QMainWindow):
         status = QStatusBar()
         status.showMessage("港区系统待命，P1 GUI 页面骨架已加载")
         self.setStatusBar(status)
+
+    def add_equipment_to_trend(self, equipment_id: str, equipment_name: str) -> None:
+        """
+        接收装备库右键请求，把装备添加到历史趋势页的装备碎片折线。
+        输入：
+            equipment_id: 装备内部 ID。
+            equipment_name: 用户可见装备名称。
+        输出：
+            None。
+        使用示例：
+            window.add_equipment_to_trend("S8-001", "试作型装备")
+        """
+        trend_page = self.pages.get("trend")
+        if not isinstance(trend_page, TrendPage):
+            return
+        trend_page.add_equipment_line(equipment_id, equipment_name)
+        self.switch_to_page("trend")
+        self.statusBar().showMessage(f"已添加装备趋势折线：{equipment_name}")
 
     @staticmethod
     def _build_navigation_items() -> List[NavigationItem]:

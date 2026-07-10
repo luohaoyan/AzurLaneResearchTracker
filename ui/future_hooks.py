@@ -172,7 +172,7 @@ class FeatureHookRegistry:
                 title="资料爬取与更新",
                 summary="从项目支持的数据源更新装备、图片路径和科研基础资料；网页结构变化导致失败时，引导用户前往 GitHub 下载新版本。",
                 status="planned",
-                entry_point="core.data.equipment_crawler",
+                entry_point="core.data.crawler_update",
             ),
             FutureFeatureSpec(
                 key="anime_motion_assets",

@@ -315,6 +315,13 @@ def _sanitize_text(value: str) -> str:
     return cleaned
 
 
+def _clean_equipment_name(value: str) -> str:
+    cleaned = _sanitize_text(value)
+    cleaned = re.sub(r"^[\s,，。;；:：、{}【】\[\]（）()<>《》]+", "", cleaned)
+    cleaned = re.sub(r"[\s,，。;；:：、{}【】\[\]（）()<>《》]+$", "", cleaned)
+    return cleaned
+
+
 def _pick_best_srcset_url(srcset: str) -> Optional[str]:
     """从 srcset 中挑出分辨率最高的图片地址。"""
     candidates: List[Tuple[float, str]] = []
@@ -378,11 +385,12 @@ def extract_equipment_cards(html: str, settings: CrawlerSettings) -> List[Equipm
         if any(keyword and keyword in raw_text for keyword in settings.exclude_keywords):
             continue
 
-        anchor = container.find("a", href=True)
+        anchors = container.find_all("a", href=True)
         image_tag = container.find("img")
-        if anchor is None or image_tag is None:
+        if not anchors or image_tag is None:
             continue
 
+        anchor = anchors[0]
         source_url = urljoin(settings.source_url, anchor.get("href", ""))
         if not source_url or source_url in seen_urls:
             continue
@@ -392,8 +400,21 @@ def extract_equipment_cards(html: str, settings: CrawlerSettings) -> List[Equipm
         if not image_url:
             continue
 
-        title_text = _sanitize_text(anchor.get("title", ""))
-        name_text = title_text or _sanitize_text(anchor.get_text(" ", strip=True))
+        title_text = ""
+        name_text = ""
+        for candidate in anchors:
+            candidate_title = _clean_equipment_name(candidate.get("title", ""))
+            if candidate_title:
+                title_text = candidate_title
+                break
+        if not title_text:
+            for candidate in anchors:
+                candidate_text = _clean_equipment_name(candidate.get_text(" ", strip=True))
+                if candidate_text:
+                    name_text = candidate_text
+                    break
+        else:
+            name_text = title_text
         if not name_text:
             continue
 

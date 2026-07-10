@@ -57,7 +57,16 @@ def test_automation_bridge_returns_missing_when_crawler_module_absent(monkeypatc
 def test_automation_bridge_calls_fake_crawler_successfully(monkeypatch: pytest.MonkeyPatch) -> None:
     """模块存在且提供 run_update 时，应调用入口并返回成功。"""
     module = ModuleType("fake_crawler_success")
-    module.run_update = lambda: {"message": "fake crawler done"}
+    module.run_update = lambda: {
+        "message": "fake crawler done",
+        "equipment_count": 754,
+        "image_count": 752,
+        "phase_count": 10,
+        "equipment_library_path": "data/equipment_library.csv",
+        "equipment_images_path": "data/equipment_images.csv",
+        "research_phases_path": "data/research_phases.csv",
+        "warnings": [],
+    }
     monkeypatch.setitem(sys.modules, "fake_crawler_success", module)
     monkeypatch.setattr(AutomationBridge, "CRAWLER_MODULE_CANDIDATES", ("fake_crawler_success",))
     bridge = AutomationBridge()
@@ -67,6 +76,11 @@ def test_automation_bridge_calls_fake_crawler_successfully(monkeypatch: pytest.M
     assert result.success is True
     assert result.status == "success"
     assert result.message == "fake crawler done"
+    assert result.payload is not None
+    assert result.payload["equipment_count"] == 754
+    assert "装备: 754" in result.detail
+    assert "装备表: data/equipment_library.csv" in result.detail
+    assert "告警: 0" in result.detail
     assert get_runtime_state_manager().get_full_state()["task"]["kind"] == "idle"
 
 

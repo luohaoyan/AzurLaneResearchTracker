@@ -63,6 +63,20 @@ def build_sample_html() -> str:
     """
 
 
+def build_fallback_name_html() -> str:
+    """鏋勯€犱竴涓彧鑳芥崟鑾峰埌鏂囨湰鍚嶇О鐨勮澶囬〉鐗囨銆?"""
+    return """
+    <html>
+      <body>
+        <div class="divsort" data-param0="0" data-param1="战列炮" data-param2=",战巡,战列" data-param3="彩色" data-param4="白鹰">
+          <a href="/blhx/problem"><img src="https://example.com/problem.jpg" /></a>
+          <a href="/blhx/problem"><span class="AF">试作型三联装419mm主炮MK.IT0 }</span></a>
+        </div>
+      </body>
+    </html>
+    """
+
+
 def read_csv_rows(path: Path) -> List[Dict[str, str]]:
     """读取阶段性 CSV，便于检查输出内容。"""
     with open(path, "r", encoding="utf-8-sig", newline="") as handle:
@@ -112,6 +126,16 @@ def test_extract_equipment_cards_filters_special_equipment_and_maps_rarity() -> 
     assert all(card.crawl_id == "" for card in cards)
     assert all(card.source_url.startswith("https://wiki.biligame.com/blhx/") for card in cards)
     assert cards[0].image_url == "https://example.com/white_a_115.jpg"
+
+
+def test_extract_equipment_cards_cleans_fallback_text_names() -> None:
+    """褰撴爣棰樼己澶辨椂锛屽簲浠庢枃鏈閫夊悕绉帮紝涓嶈鎶婂彸鑺辨嫹绛夋潅瀛楃甯﹀叆銆?"""
+    settings = CrawlerSettings.from_mapping(build_default_crawler_config())
+    cards = extract_equipment_cards(build_fallback_name_html(), settings)
+
+    assert len(cards) == 1
+    assert cards[0].name == "试作型三联装419mm主炮MK.IT0"
+    assert "}" not in cards[0].name
 
 
 def test_select_sample_cards_respects_per_rarity_limit() -> None:

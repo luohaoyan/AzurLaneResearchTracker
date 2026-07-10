@@ -24,12 +24,19 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QAbstractItemView, QFrame, QLabel, QScrollArea, QSizePolicy
+from PySide6.QtWidgets import QApplication, QAbstractItemView, QFrame, QLabel, QMessageBox, QScrollArea, QSizePolicy
 from matplotlib.colors import to_hex
 
 from core.state.runtime_state import TaskStateKind, get_runtime_state_manager
+from ui.automation_bridge import AutomationBridgeResult
 from ui.future_hooks import FeatureHookRegistry, FutureFeatureSpec, get_feature_hook_registry
-from ui.main_window import AnimatedMascotPanel, FutureDockPage, MainWindow, get_gui_version
+from ui.main_window import (
+    AnimatedMascotPanel,
+    FutureDockPage,
+    MainWindow,
+    get_gui_version,
+    get_selectable_research_progress_phases,
+)
 from ui.theme import ThemeTokens, build_stylesheet, get_theme_skin, list_theme_skins
 from ui.ui_config import get_ui_config_manager
 
@@ -162,20 +169,30 @@ def test_research_progress_page_shows_real_progress_widgets(qapp: QApplication) 
     assert [
         page.progress_table.horizontalHeaderItem(index).text()
         for index in range(page.progress_table.columnCount())
-    ] == ["位置", "装备", "稀有度", "当前图纸", "整装"]
-    assert "需求图纸" not in [
+    ] == ["装备", "稀有度", "当前图纸", "整装", "总碎片"]
+    assert "位置" not in [
         page.progress_table.horizontalHeaderItem(index).text()
         for index in range(page.progress_table.columnCount())
     ]
     assert page.progress_table.rowCount() == 6
-    assert page.progress_table.item(0, 0).text() == "彩装位"
-    assert [
-        page.progress_table.item(index, 0).text()
-        for index in range(1, page.progress_table.rowCount())
-    ] == [f"金装位 {index}" for index in range(1, 6)]
+    assert page.progress_table.item(0, 0).icon().isNull() is False
+    assert page.progress_table.item(0, 0).toolTip() == "彩装位"
     assert "最新科研期" in page.notice_label.text()
     assert page.score_value_label.text() != ""
     assert page.luck_value_label.objectName() == "luck_badge"
+
+    selectable_phase_numbers = {
+        int(phase.get("phase_number", 0))
+        for phase in get_selectable_research_progress_phases()
+    }
+    combo_phase_numbers = {
+        int(page.phase_combo.itemData(index) or 0)
+        for index in range(page.phase_combo.count())
+    }
+    assert combo_phase_numbers == selectable_phase_numbers
+    assert int(page.phase_combo.currentData() or 0) == max(selectable_phase_numbers)
+    assert "待加载" not in page.phase_combo.currentText()
+    assert "异常" not in page.phase_combo.currentText()
 
     assert page.phase_combo.findData(1) == -1
     history_index = page.phase_combo.findData(2)
@@ -196,22 +213,61 @@ def test_research_progress_equipment_table_uses_fixed_rainbow_gold_slots(qapp: Q
     window = MainWindow()
     page = window.pages["research_progress"]
     rows = [
-        {"equipment_name": "金装 B", "rarity_id": 4, "rarity_name": "超稀有", "fragment_count": 12, "equipment_count": 0},
-        {"equipment_name": "彩装 A", "rarity_id": 5, "rarity_name": "海上传奇", "fragment_count": 35, "equipment_count": 1},
-        {"equipment_name": "金装 A", "rarity_id": 4, "rarity_name": "超稀有", "fragment_count": 7, "equipment_count": 0},
+        {"equipment_id": "S2-002", "equipment_name": "金装 B", "rarity_id": 4, "rarity_name": "超稀有", "fragment_count": 12, "equipment_count": 0, "equivalent": 25},
+        {"equipment_id": "S2-001", "equipment_name": "彩装 A", "rarity_id": 5, "rarity_name": "海上传奇", "fragment_count": 35, "equipment_count": 1, "equivalent": 50},
+        {"equipment_id": "S2-003", "equipment_name": "金装 A", "rarity_id": 4, "rarity_name": "超稀有", "fragment_count": 7, "equipment_count": 0, "equivalent": 25},
     ]
 
     page._update_table(rows)
 
     assert page.progress_table.rowCount() == 6
-    assert page.progress_table.item(0, 0).text() == "彩装位"
-    assert page.progress_table.item(0, 1).text() == "彩装 A"
-    assert page.progress_table.item(1, 0).text() == "金装位 1"
-    assert page.progress_table.item(1, 1).text() == "金装 A"
-    assert page.progress_table.item(2, 0).text() == "金装位 2"
-    assert page.progress_table.item(2, 1).text() == "金装 B"
-    assert page.progress_table.item(3, 1).text() == "待资料同步"
+    assert page.progress_table.item(0, 0).toolTip() == "彩装位"
+    assert page.progress_table.item(0, 0).text() == "彩装 A"
+    assert page.progress_table.item(0, 0).icon().isNull() is False
+    assert page.progress_table.item(0, 4).text() == "85"
+    assert page.progress_table.item(1, 0).toolTip() == "金装位 1"
+    assert page.progress_table.item(1, 0).text() == "金装 A"
+    assert page.progress_table.item(1, 4).text() == "7"
+    assert page.progress_table.item(2, 0).toolTip() == "金装位 2"
+    assert page.progress_table.item(2, 0).text() == "金装 B"
+    assert page.progress_table.item(3, 0).text() == "待资料同步"
     assert page.progress_table.item(3, 3).text() == "—"
+
+    window.close()
+
+
+def test_research_progress_completed_count_follows_target_selection(qapp: QApplication) -> None:
+    """目标彩装数量改变后，完成装备的分母应跟随用户选择，而不是固定为 6 个装备槽。"""
+    window = MainWindow()
+    page = window.pages["research_progress"]
+
+    for target_count in (1, 3, 8):
+        target_index = page.target_combo.findData(target_count)
+        assert target_index >= 0
+        page.target_combo.setCurrentIndex(target_index)
+        page.refresh_progress()
+
+        assert page.completed_value_label.text().endswith(f"/ {target_count}")
+
+    window.close()
+
+
+def test_research_progress_prompts_update_when_all_phases_invalid(
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """如果所有科研期都不符合 1 彩 + 5 金结构，页面应提示用户重新更新数据。"""
+    import ui.main_window as main_window_module
+
+    monkeypatch.setattr(main_window_module, "get_selectable_research_progress_phases", lambda: [])
+    window = MainWindow()
+    page = window.pages["research_progress"]
+
+    page.refresh_progress()
+
+    assert page.phase_combo.currentData() == 0
+    assert "异常" in page.phase_combo.currentText()
+    assert "更新装备表" in page.notice_label.text()
 
     window.close()
 
@@ -289,7 +345,7 @@ def test_research_progress_duration_and_dialog_use_ui_config(qapp: QApplication)
 
     assert page.secretary_dialog_frame.isHidden() is False
     assert page.secretary_dialog_frame.property("quiet") is False
-    assert page.target_comment_label.text() in page._secretary_lines("target_changed")
+    assert page.target_comment_label.text() in page._secretary_lines(page._last_target_context)
 
     page._reset_secretary_dialog()
 
@@ -340,6 +396,8 @@ def test_research_progress_rejects_future_start_date_and_resets_official(qapp: Q
         assert "时间选择有误" in page.notice_label.text()
 
         official_date = page._official_start_date(phase_number)
+        if phase_number == 9:
+            assert official_date == QDate(2026, 7, 9)
         page.start_date_edit.setDate(today.addDays(-1))
         page._reset_start_date_to_official()
 
@@ -410,10 +468,52 @@ def test_user_data_table_hides_internal_equipment_id(qapp: QApplication) -> None
     assert "装备编号" not in headers
     assert "类型" not in headers
     assert headers == ["装备名称", "稀有度", "科研期", "装备数", "碎片数"]
-    assert page.table.cellWidget(0, 0) is not None
-    assert page.table.cellWidget(0, 0).findChild(QLabel, "equipment_icon_label") is not None
+    assert page.table.cellWidget(0, 0) is None
+    assert page.table.item(0, 0) is not None
+    assert page.table.item(0, 0).icon().isNull() is False
+    assert page.table.item(0, 0).data(Qt.ItemDataRole.UserRole)
     assert page.table.item(0, 3) is not None
     assert page.table.item(0, 4) is not None
+    assert page.refresh_user_table_button.text() == "刷新表"
+    assert page.table.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
+
+    window.close()
+
+
+def test_user_data_main_table_refreshes_from_local_sources(
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """用户数据主表应能主动重新读取本地装备表和今日用户记录。"""
+    window = MainWindow()
+    page = window.pages["user_data"]
+    reload_calls: list[str] = []
+
+    refreshed_rows = [
+        {
+            "equipment_id": "S8-901",
+            "name": "刷新测试装备",
+            "rarity_id": 5,
+            "rarity_name": "海上传奇",
+            "image_path": "",
+        }
+    ]
+
+    monkeypatch.setattr(page.equipment_manager, "reload", lambda: reload_calls.append("equipment"))
+    monkeypatch.setattr(page.research_manager, "reload", lambda: reload_calls.append("research"))
+    monkeypatch.setattr(page.equipment_manager, "get_equipment_with_image", lambda: refreshed_rows)
+
+    page.refresh_user_table_button.click()
+    QTest.qWait(120)
+
+    assert reload_calls == ["equipment", "research"]
+    assert page.table.rowCount() == 1
+    assert page.table.item(0, 0).text() == "刷新测试装备"
+    assert page.table.item(0, 0).data(Qt.ItemDataRole.UserRole) == "S8-901"
+    assert page.table.item(0, 3).text() == "0"
+    assert page.table.item(0, 4).text() == "0"
+    assert page.refresh_user_table_button.isEnabled() is True
+    assert "已刷新用户数据表" in page.user_data_status_label.text()
 
     window.close()
 
@@ -434,12 +534,16 @@ def test_user_data_can_open_downloaded_equipment_library_view(qapp: QApplication
     assert "equipment_id" not in headers
     assert "装备数" not in headers
     assert "碎片数" not in headers
-    assert page.library_table.cellWidget(0, 0).findChild(QLabel, "equipment_icon_label") is not None
+    assert page.library_table.cellWidget(0, 0) is None
+    assert page.library_table.item(0, 0) is not None
+    assert page.library_table.item(0, 0).icon().isNull() is False
     assert "equipment_library" not in page.open_library_button.toolTip()
+    assert page.refresh_library_button.text() == "刷新装备表"
+    assert page.update_library_button.text() == "更新装备表"
 
     page.library_search_input.setText("457")
     assert page.library_table.rowCount() >= 1
-    assert all("457" in page.library_table.cellWidget(row, 0).findChild(QLabel, "equipment_name_label").text() for row in range(page.library_table.rowCount()))
+    assert all("457" in page.library_table.item(row, 0).text() for row in range(page.library_table.rowCount()))
 
     page.library_search_input.setText("")
     page.library_rarity_combo.setCurrentIndex(page.library_rarity_combo.findData(5))
@@ -454,6 +558,38 @@ def test_user_data_can_open_downloaded_equipment_library_view(qapp: QApplication
     window.close()
 
 
+def test_user_data_displays_s0_as_research_common_equipment(qapp: QApplication) -> None:
+    """S0 科研通用装备不应显示成“科研 0 期”。"""
+    window = MainWindow()
+    page = window.pages["user_data"]
+
+    assert page._phase_from_public_data("S0-001") == "科研通用装备"
+    assert page.phase_combo.findText("科研 0 期") == -1
+    assert page.library_phase_combo.findText("科研 0 期") == -1
+    assert page.phase_combo.itemText(0) == "全部"
+    assert page.phase_combo.itemText(1) == "科研通用装备"
+    assert page.library_phase_combo.itemText(0) == "全部"
+    assert page.library_phase_combo.itemText(1) == "科研通用装备"
+    assert page.phase_combo.findText("科研通用装备") >= 0
+    assert page.library_phase_combo.findText("科研通用装备") >= 0
+    phase_values = [
+        int(page.phase_combo.itemData(index))
+        for index in range(2, page.phase_combo.count())
+    ]
+    assert phase_values == sorted(phase_values, reverse=True)
+    rarity_values = [
+        int(page.rarity_combo.itemData(index))
+        for index in range(1, page.rarity_combo.count())
+    ]
+    assert rarity_values == sorted(rarity_values, reverse=True)
+
+    page.phase_combo.setCurrentIndex(page.phase_combo.findData(0))
+    assert page.table.rowCount() >= 1
+    assert all(page.table.item(row, 2).text() == "科研通用装备" for row in range(page.table.rowCount()))
+
+    window.close()
+
+
 def test_user_data_filters_by_name_rarity_and_phase(qapp: QApplication) -> None:
     """用户数据页应支持名称、稀有度和科研期三种基础筛选。"""
     window = MainWindow()
@@ -461,7 +597,7 @@ def test_user_data_filters_by_name_rarity_and_phase(qapp: QApplication) -> None:
 
     page.search_input.setText("406")
     assert page.table.rowCount() >= 1
-    assert all("406" in page.table.cellWidget(row, 0).findChild(QLabel, "equipment_name_label").text() for row in range(page.table.rowCount()))
+    assert all("406" in page.table.item(row, 0).text() for row in range(page.table.rowCount()))
 
     page.search_input.setText("")
     rarity_index = page.rarity_combo.findData(5)
@@ -469,10 +605,58 @@ def test_user_data_filters_by_name_rarity_and_phase(qapp: QApplication) -> None:
     assert page.table.rowCount() >= 1
     assert all(page.table.item(row, 1).text() == "海上传奇" for row in range(page.table.rowCount()))
 
-    phase_index = page.phase_combo.findData(1)
+    first_research_phase = next(
+        page._phase_number_from_id(str(row.get("equipment_id", "")))
+        for row in page.all_equipment_rows
+        if page._phase_number_from_id(str(row.get("equipment_id", ""))) not in (None, 0)
+    )
+    page.rarity_combo.setCurrentIndex(0)
+    phase_index = page.phase_combo.findData(first_research_phase)
     page.phase_combo.setCurrentIndex(phase_index)
     assert page.table.rowCount() >= 1
-    assert all(page.table.item(row, 2).text() == "科研 1 期" for row in range(page.table.rowCount()))
+    assert all(page.table.item(row, 2).text() == f"科研 {first_research_phase} 期" for row in range(page.table.rowCount()))
+
+    window.close()
+
+
+def test_user_data_table_merges_today_user_records_for_fragments(qapp: QApplication) -> None:
+    """用户数据主表应展示当天 user_records 中的装备数和碎片数，而不是装备库默认 0 值。"""
+    window = MainWindow()
+    page = window.pages["user_data"]
+
+    s8_rows = [
+        row for row in page.all_equipment_rows
+        if str(row.get("equipment_id", "")).startswith("S8-")
+    ]
+    assert len(s8_rows) >= 2
+    first_equipment = s8_rows[0]
+    second_equipment = s8_rows[1]
+
+    class DummyUserDataManager:
+        """给 GUI 测试注入固定的当天用户记录。"""
+
+        def get_today_data(self) -> dict[str, dict[str, int]]:
+            return {
+                str(first_equipment["equipment_id"]): {"equipment_count": 0, "fragment_count": 3},
+                str(second_equipment["equipment_id"]): {"equipment_count": 2, "fragment_count": 10},
+            }
+
+    page.user_data_manager = DummyUserDataManager()
+    page.search_input.setText("")
+    page.rarity_combo.setCurrentIndex(0)
+    page.phase_combo.setCurrentIndex(page.phase_combo.findData(8))
+    page.refresh_equipment_table()
+
+    displayed = {
+        page.table.item(row, 0).text(): (
+            page.table.item(row, 3).text(),
+            page.table.item(row, 4).text(),
+        )
+        for row in range(page.table.rowCount())
+    }
+
+    assert displayed[str(first_equipment["name"])] == ("0", "3")
+    assert displayed[str(second_equipment["name"])] == ("2", "10")
 
     window.close()
 
@@ -482,11 +666,116 @@ def test_user_data_missing_equipment_icon_uses_blank_pixmap(qapp: QApplication) 
     window = MainWindow()
     page = window.pages["user_data"]
 
-    pixmap = page._load_equipment_icon("")
+    icon = page._load_equipment_icon("")
 
-    assert pixmap.isNull() is False
+    assert icon.isNull() is False
+    pixmap = icon.pixmap(page.icon_size, page.icon_size)
     assert pixmap.width() == page.icon_size
     assert pixmap.height() == page.icon_size
+
+    window.close()
+
+
+def test_user_data_equipment_library_buttons_use_separate_update_steps(qapp: QApplication) -> None:
+    """装备库子页应区分“本地刷新 UI”和“爬虫更新正式表”两个动作。"""
+    class FakeBridge:
+        def __init__(self) -> None:
+            self.called = False
+
+        def run_crawler_update(self) -> AutomationBridgeResult:
+            self.called = True
+            return AutomationBridgeResult(
+                True,
+                "success",
+                "资料更新完成",
+                "装备: 2；图片表: data/equipment_images.csv；告警: 0",
+                {"equipment_count": 2, "warnings": []},
+            )
+
+    window = MainWindow()
+    page = window.pages["user_data"]
+    fake_bridge = FakeBridge()
+    page.automation_bridge = fake_bridge
+    page.open_library_button.click()
+
+    page.update_library_button.click()
+    for _ in range(30):
+        if "资料更新完成" in page.library_status_label.text():
+            break
+        QTest.qWait(100)
+
+    assert fake_bridge.called is True
+    assert "资料更新完成" in page.library_status_label.text()
+    assert "刷新装备表" in page.library_status_label.text()
+
+    page.refresh_library_button.click()
+    QTest.qWait(100)
+
+    assert "已从正式装备表载入" in page.library_status_label.text()
+    assert page.library_table.rowCount() == len(page._filtered_library_rows())
+
+    window.close()
+
+
+def test_user_data_library_can_add_equipment_to_trend_lines(
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """装备库表应能通过右键确认流程把装备加入历史趋势的划线列表。"""
+    window = MainWindow()
+    user_page = window.pages["user_data"]
+    trend_page = window.pages["trend"]
+
+    user_page.open_library_button.click()
+    assert user_page.library_table.rowCount() >= 1
+    item = user_page.library_table.item(0, 0)
+    assert item is not None
+    equipment_id = str(item.data(Qt.ItemDataRole.UserRole))
+    equipment_name = item.text()
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+    user_page._confirm_add_equipment_to_trend(equipment_id, equipment_name)
+
+    assert trend_page.trend_tabs.currentIndex() == 1
+    assert trend_page._selected_equipment_lines[equipment_id] == equipment_name
+    assert trend_page.selected_equipment_list.count() >= 1
+    assert window.page_stack.currentWidget() is trend_page
+
+    window.close()
+
+
+def test_user_data_main_table_can_add_equipment_to_trend_lines(
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """用户数据主表也应能把当前装备加入历史趋势折线。"""
+    window = MainWindow()
+    user_page = window.pages["user_data"]
+    trend_page = window.pages["trend"]
+
+    assert user_page.table.rowCount() >= 1
+    item = user_page.table.item(0, 0)
+    assert item is not None
+    equipment_id = str(item.data(Qt.ItemDataRole.UserRole))
+    equipment_name = item.text()
+    assert equipment_id
+    assert equipment_id not in equipment_name
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+    user_page._confirm_add_equipment_to_trend(equipment_id, equipment_name)
+
+    assert trend_page.trend_tabs.currentIndex() == 1
+    assert trend_page._selected_equipment_lines[equipment_id] == equipment_name
+    assert trend_page.selected_equipment_list.count() >= 1
+    assert window.page_stack.currentWidget() is trend_page
 
     window.close()
 
@@ -510,6 +799,11 @@ def test_trend_page_builds_single_matplotlib_panel_with_function_tabs(qapp: QApp
     assert trend_page.phase_checks
     assert 1 not in trend_page.phase_checks
     assert 2 in trend_page.phase_checks
+    phase_order = list(trend_page.phase_checks)
+    assert phase_order == sorted(phase_order, reverse=True)
+    assert all(not checkbox.isChecked() for checkbox in trend_page.phase_checks.values())
+    assert trend_page._selected_phase_numbers() == []
+    assert "未选择科研期" in trend_page.phase_selection_summary_label.text()
     assert trend_page.phase_drawer_table.objectName() == "phase_drawer_table"
     assert trend_page.phase_drawer_table.isHidden() is True
     assert trend_page.phase_drawer_table.rowCount() == len(trend_page.phase_checks)
@@ -518,6 +812,8 @@ def test_trend_page_builds_single_matplotlib_panel_with_function_tabs(qapp: QApp
     assert trend_page.phase_drawer_button.text() == "收起科研期"
     assert trend_page.trend_tabs.maximumHeight() >= 300
     assert trend_page.import_history_button.objectName() == "import_history_button"
+    assert trend_page.root.indexOf(trend_page.trend_tabs) < trend_page.root.indexOf(trend_page.common_trend_panel)
+    assert trend_page.root.indexOf(trend_page.common_trend_panel) < trend_page.root.indexOf(trend_page.trend_panel)
 
     window.close()
 
@@ -622,6 +918,29 @@ def test_trend_page_builds_phase_ratio_and_equipment_fragment_series(qapp: QAppl
     window.close()
 
 
+def test_trend_date_range_is_clamped_to_today_and_ordered(qapp: QApplication) -> None:
+    """历史趋势日期不能超过今天，且开始日期不能晚于结束日期。"""
+    window = MainWindow()
+    trend_page = window.pages["trend"]
+    today = QDate.currentDate()
+
+    trend_page.start_date.setMaximumDate(today.addDays(3))
+    trend_page.end_date.setMaximumDate(today.addDays(3))
+    trend_page.start_date.setDate(today.addDays(1))
+    qapp.processEvents()
+
+    assert trend_page.start_date.date() == today
+
+    trend_page.start_date.setDate(today)
+    trend_page.end_date.setDate(today.addDays(-2))
+    qapp.processEvents()
+
+    assert trend_page.start_date.date() == trend_page.end_date.date()
+    assert trend_page.start_date.date() <= trend_page.end_date.date()
+
+    window.close()
+
+
 def test_trend_page_searches_equipment_and_draws_lines(qapp: QApplication) -> None:
     """趋势页装备碎片图应只能从查询结果中选择装备，并能绘制折线。"""
     window = MainWindow()
@@ -634,6 +953,9 @@ def test_trend_page_searches_equipment_and_draws_lines(qapp: QApplication) -> No
                 {"date": "2026-07-02", "equipment_count": 1, "fragment_count": 35},
             ]
 
+        def list_available_dates(self) -> list[str]:
+            return ["2026-07-01", "2026-07-02"]
+
     trend_page.user_data_manager = FakeUserDataManager()
     trend_page.start_date.setDate(QDate(2026, 7, 1))
     trend_page.end_date.setDate(QDate(2026, 7, 2))
@@ -644,7 +966,7 @@ def test_trend_page_searches_equipment_and_draws_lines(qapp: QApplication) -> No
 
     assert trend_page.equipment_select_combo.count() >= 1
     assert "406" in trend_page.equipment_select_combo.itemText(0)
-    assert str(trend_page.equipment_select_combo.itemData(0)).startswith("S1-")
+    assert str(trend_page.equipment_select_combo.itemData(0)).startswith("S")
     trend_page._add_selected_equipment_line()
 
     trend_page.equipment_search_input.setText("457")
@@ -676,6 +998,25 @@ def test_trend_page_chart_colors_follow_selected_skin(qapp: QApplication) -> Non
     finally:
         manager.config_loader.save_config("ui", "appearance", original_config)
         window.close()
+
+
+def test_trend_chart_uses_sparse_x_ticks_and_y_padding(qapp: QApplication) -> None:
+    """趋势图应抽样显示长日期范围的 X 轴，并给 Y 轴留出可读空间。"""
+    window = MainWindow()
+    trend_page = window.pages["trend"]
+    points = [
+        {"date": f"2026-07-{day:02d}", "value": float(day), "detail": ""}
+        for day in range(1, 16)
+    ]
+
+    trend_page.trend_panel.plot_series({"测试线": points}, "碎片数量", "暂无数据")
+
+    assert len(trend_page.trend_panel.axes.get_xticks()) < len(points)
+    y_min, y_max = trend_page.trend_panel.axes.get_ylim()
+    assert y_min < 1
+    assert y_max > 15
+
+    window.close()
 
 
 def test_dashboard_reflects_runtime_task_state(qapp: QApplication) -> None:
@@ -731,9 +1072,41 @@ def test_theme_stylesheet_and_animation_slot(qapp: QApplication) -> None:
     assert "QPlainTextEdit#log_text" in stylesheet
     assert "alternate-background-color" in stylesheet
     assert "QTableWidget::item:selected" in stylesheet
+    assert "QCalendarWidget" in stylesheet
     assert panel.load_animation("resources/animations/not_exist.gif") is False
 
     panel.close()
+
+
+def test_date_calendar_popup_uses_active_skin_tokens(qapp: QApplication) -> None:
+    """日期选择弹层应跟随当前皮肤，避免出现 Qt 默认白底日历。"""
+    manager = get_ui_config_manager()
+    original_config = manager.get_appearance_config()
+    window = MainWindow()
+
+    try:
+        window.apply_theme_skin("iron_blood")
+        skin = get_theme_skin("iron_blood")
+        research_page = window.pages["research_progress"]
+        trend_page = window.pages["trend"]
+
+        research_calendar_style = research_page.start_date_edit.calendarWidget().styleSheet()
+        trend_calendar_style = trend_page.start_date.calendarWidget().styleSheet()
+        trend_calendar = trend_page.start_date.calendarWidget()
+        today = QDate.currentDate()
+        trend_calendar.setCurrentPage(today.year(), today.month())
+        future_format = trend_calendar.dateTextFormat(today.addDays(1))
+        adjacent_format = trend_calendar.dateTextFormat(QDate(today.year(), today.month(), 1).addDays(-1))
+
+        assert skin.tokens.surface in research_calendar_style
+        assert skin.tokens.table_row in research_calendar_style
+        assert skin.tokens.azure in trend_calendar_style
+        assert future_format.foreground().color().name().lower() == skin.tokens.line.lower()
+        assert adjacent_format.foreground().color().name().lower() == skin.tokens.text_muted.lower()
+        assert "#FFFFFF" not in research_calendar_style.upper()
+    finally:
+        manager.config_loader.save_config("ui", "appearance", original_config)
+        window.close()
 
 
 def test_theme_skin_registry_has_multiple_named_skins() -> None:
@@ -924,19 +1297,25 @@ def test_data_tables_use_readable_row_selection_behavior(qapp: QApplication) -> 
 
 def test_automation_lab_has_crawler_update_entry(qapp: QApplication) -> None:
     """自动化实验室应提供资料爬取与更新入口，并用 crawler_update 作为后续执行接口。"""
+    class FakeBridge:
+        def run_crawler_update(self) -> AutomationBridgeResult:
+            return AutomationBridgeResult(True, "success", "formal sync done", "装备: 2；告警: 0", {"equipment_count": 2})
+
     manager = get_runtime_state_manager()
     manager.reset()
     window = MainWindow()
     page = window.pages["automation_lab"]
+    page.automation_bridge = FakeBridge()
     emitted_keys: list[str] = []
     page.featureRequested.connect(emitted_keys.append)
 
     page.crawler_update_button.click()
+    QTest.qWait(600)
 
     assert emitted_keys[-1] == "crawler_update"
-    assert "尚未接入" in page.crawler_status_label.text()
+    assert "formal sync done" in page.crawler_status_label.text()
+    assert "装备: 2" in page.crawler_status_label.text()
     assert "GitHub" in page.crawler_notice_label.text()
-    assert manager.get_full_state()["task"]["kind"] == "error"
 
     window.close()
     manager.reset()

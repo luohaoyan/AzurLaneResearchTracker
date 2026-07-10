@@ -179,6 +179,7 @@ class ResearchProgressAnalyzer:
         score = item.get("score")
         progress = self._calculate_item_progress(equipment_count, fragment_count, equivalent)
         return {
+            "equipment_id": item.get("equipment_id", ""),
             "equipment_name": item.get("equipment_name", "未知装备"),
             "rarity_name": item.get("rarity_name", "未知"),
             "rarity_id": item.get("rarity_id"),
