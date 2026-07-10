@@ -5,11 +5,11 @@
 | 属性 | 值 |
 |------|-----|
 | 项目名称 | 碧蓝航线科研装备统计器 (AzurLaneResearchTracker) |
-| 当前版本 | v0.4.2 |
+| 当前版本 | v0.5.0 |
 | 开发语言 | Python 3.12 |
 | IDE | PyCharm 2024 |
 | 测试框架 | pytest / unittest |
-| 测试状态 | 786 项测试，全部通过（252开发 + 534 QA） |
+| 测试状态 | 764/766 项测试，99.7% 通过（376开发 + 390 QA） |
 
 ---
 
@@ -128,6 +128,39 @@ QA测试：237项（边界/集成/回归），4个Bug全部修复并通过复测
 - v0.4.0对话审查：258/258通过，排序键修复
 - QA全量回归：810/810通过（含24项GenID专项）
 
+
+
+### v0.5.0 — GUI界面 + 装备爬虫（已完成）★
+完成日期：2026-07-10
+分支：feature/v0.5.0-gui + feature/v0.5.0-crawler（并行开发）
+测试：764/766（99.7%），全版本通过
+
+**GUI 部分：**
+  - ui/main_window.py：9页导航（港区总览/装备库/科研进度/历史趋势/自动化实验室/等待开发/小游戏/设置/关于）
+  - ui/theme.py：多套阵营皮肤（铁血精修+东煌+预留白鹰/北联/重樱）
+  - ui/widgets/log_drawer.py：日志抽屉（折叠/筛选/复制诊断/清空，含2px尾差容差）
+  - ui/ui_config.py：UI配置管理（皮肤/表格密度/自定义背景）
+  - ui/future_hooks.py：自动化安全桥接层
+  - ui/automation_bridge.py：crawler/OCR 安全import接口
+  - ui/secretary_pack.py：秘书舰资源包模板校验
+  - 历史趋势图：matplotlib嵌入PySide6（金彩比+装备碎片双线）
+  - 科研进度持久化：按期保存目标彩装数和开始时间
+
+**Crawler 部分：**
+  - crawler/equipment_crawler.py：装备图鉴页解析+抽样/全量+图片下载
+  - crawler/research_crawler.py：研究室页面解析+科研装备识别
+  - crawler/crawler_sync.py：stage→正式data同步+旧数据备份
+  - crawler/crawler_integration.py：装备+科研结果整合到独立工作区
+
+**配置文件新增：**
+  - config/ui/appearance.json / research_progress.json / secretary_lines.json
+  - config/crawler/equipment_crawler.json / research_crawler.json / crawler_sync.json / crawler_integration.json / research_image_bundle.json
+  - resources/secretaries/template/（秘书舰资源包模板）
+
+**已知问题：**
+  - 日志抽屉动画高度偶发尾差（QPropertyAnimation容差，不影响功能）
+  - OCR/crawler/模拟器自动化仍为接口占位，完整闭环依赖 v0.6.0
+  - 爬虫需网络，受 wiki 页面结构稳定性影响
 
 ### v0.4.2 — 代码审查Bug修复（已完成）★
 
@@ -264,6 +297,12 @@ AzurLaneResearchTracker/
 ├── requirements.txt            # 依赖清单
 ├── AGENTS.md                   # Codex开发规范
 │
+├── crawler/                    # ✅ v0.5.0 Wiki爬虫
+│   ├── equipment_crawler.py
+│   ├── research_crawler.py
+│   ├── crawler_sync.py
+│   └── crawler_integration.py
+│
 ├── core/
 │   ├── utils/                  # ✅ v0.1.0 基础设施
 │   │   ├── logger.py
@@ -286,7 +325,7 @@ AzurLaneResearchTracker/
 │   ├── automation/             # 📋 v0.6.0
 │   └── recognition/            # 📋 v0.6.0
 │
-├── ui/                         # 📋 v0.5.0 PySide6界面
+├── ui/                         # ✅ v0.5.0 PySide6界面
 ├── config/                     # ✅ JSON配置
 ├── data/                       # ✅ 6个CSV+user_records/+exports/
 ├── test/                       # ✅ 249项开发测试
@@ -306,7 +345,7 @@ AzurLaneResearchTracker/
 | v0.4.0 | CLI入口+数据导出（462测试） | ✅ 已完成 |
 | v0.4.1 | 通用装备ID格式修复（G前缀统一，810测试） | ✅ 已完成 |
 | v0.4.2 | 代码审查Bug修复（3轻微Bug+3附带，786测试） | ✅ 已完成 |
-| v0.5.0 | PySide6 GUI界面 | 📋 下一步 |
+| v0.5.0 | GUI界面 + Wiki装备爬虫 | ✅ 已完成 |
 | v0.6.0 | ADB自动化+PaddleOCR识别 | 📋 待开发 |
 | v1.0.0 | 打包&发布 | 📋 待开发 |
 
@@ -325,5 +364,5 @@ AzurLaneResearchTracker/
 | 模拟器控制 | ADB（雷电LDPlayer优先） |
 | CLI | argparse + prettytable |
 | 导出 | CSV + openpyxl Excel |
-| 测试 | pytest + unittest（462项） |
+| 测试 | pytest + unittest（766项） |
 | 版本控制 | Git（main/develop + feature分支） |
