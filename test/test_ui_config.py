@@ -20,6 +20,7 @@ from pathlib import Path
 
 from ui.ui_config import (
     DEFAULT_APPEARANCE_UI_CONFIG,
+    DEFAULT_RESEARCH_OFFICIAL_START_DATES_CONFIG,
     DEFAULT_RESEARCH_PROGRESS_UI_CONFIG,
     DEFAULT_SECRETARY_LINES_UI_CONFIG,
     UiConfigManager,
@@ -45,11 +46,22 @@ def test_ui_config_manager_loads_research_progress_json() -> None:
     assert "phase_settings" in config
     assert "phase_start_dates" in config
     assert "phase_targets" in config
-    assert "official_start_dates" in config
     assert "duration_messages" in config
     assert "secretary" in config
     assert "target_dialogs" in config
     assert "target_8_plus" in config["target_dialogs"]
+
+
+def test_ui_config_manager_loads_fixed_official_research_start_dates() -> None:
+    """科研官方开始时间应来自独立固定 JSON，而不是用户进度配置。"""
+    manager = get_ui_config_manager()
+    config = manager.get_research_official_start_dates_config()
+
+    assert config["phase_start_dates"] == DEFAULT_RESEARCH_OFFICIAL_START_DATES_CONFIG["phase_start_dates"]
+    assert manager.get_official_research_start_date(1) == "2018-04-26"
+    assert manager.get_official_research_start_date(8) == "2025-07-10"
+    assert manager.get_official_research_start_date(9) == "2026-07-09"
+    assert manager.get_official_research_start_date(99) == "2026-07-09"
 
 
 def test_ui_config_manager_merges_missing_nested_defaults() -> None:
@@ -67,7 +79,6 @@ def test_ui_config_manager_merges_missing_nested_defaults() -> None:
     )
 
     assert merged["secretary"]["name"] == "测试秘书舰"
-    assert "official_start_dates" in merged
     assert merged["secretary"]["dialog_duration_ms"] == 3600
     assert merged["target_dialogs"]["target_1"] == "测试目标 1"
     assert merged["target_dialogs"]["target_2_4"] == DEFAULT_RESEARCH_PROGRESS_UI_CONFIG["target_dialogs"]["target_2_4"]

@@ -1,25 +1,25 @@
 {
-    "app": {
-        "name": "碧蓝航线科研装备统计器",
-        "version": "0.5.0",
-        "author": "Your Name"
-    },
-    "current_simulator": "mumu",
-    "current_game": "azur_lane",
-    "data_storage": {
-        "format": "csv",
-        "backup_enabled": true,
-        "backup_interval_days": 7
-    },
-    "automation": {
-        "enabled": true,
-        "default_delay": 1.0,
-        "retry_count": 3,
-        "screenshot_quality": "high"
-    },
-    "ui": {
-        "theme": "dark",
-        "language": "zh_CN",
-        "auto_save_layout": true
-    }
+  "app": {
+    "name": "碧蓝航线科研装备统计器",
+    "version": "0.5.0",
+    "author": "Your Name"
+  },
+  "current_simulator": "mumu",
+  "current_game": "azur_lane",
+  "data_storage": {
+    "format": "csv",
+    "backup_enabled": true,
+    "backup_interval_days": 7
+  },
+  "automation": {
+    "enabled": true,
+    "default_delay": 1.0,
+    "retry_count": 3,
+    "screenshot_quality": "high"
+  },
+  "ui": {
+    "theme": "dark",
+    "language": "zh_CN",
+    "auto_save_layout": true
+  }
 }

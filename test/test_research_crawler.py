@@ -52,6 +52,22 @@ def build_sample_html() -> str:
     """
 
 
+def build_issue_html() -> str:
+    """鏋勯€犱竴涓甫鏈夌涔濇湡鍒嗗彿鏉傚瓧绗︾殑绉戠爺椤甸瑙嗗浘銆?"""
+    return """
+    <html>
+      <body>
+        <div class="mw-parser-output">
+          <h3>科研装备设计图</h3>
+          <h4>第九期</h4>
+          <p>驱逐炮：试作型双联装127mm主炮Mle1948T0 }、试作型双联装127mm高平两用炮Mk16T0</p>
+          <h3>其他装备设计图</h3>
+        </div>
+      </body>
+    </html>
+    """
+
+
 def read_csv_rows(path: Path) -> List[Dict[str, str]]:
     """读取 stage CSV，方便断言行内容。"""
     with open(path, "r", encoding="utf-8-sig", newline="") as handle:
@@ -121,6 +137,20 @@ def test_assign_ids_gives_common_priority_over_phase_items() -> None:
     assert [item.equipment_ids for item in phase_records] == [
         ["S1-001", "S1-002", "S1-003"],
         ["S2-001", "S2-002", "S2-003"],
+    ]
+
+
+def test_parse_page_cleans_trailing_brace_in_phase_nine_items() -> None:
+    """第九期若混入右花括号，解析后也应自动清掉，避免影响后续同步。"""
+    crawler = ResearchCrawler(config_data=build_default_crawler_config())
+    common_names, phase_items, warnings = crawler._parse_page(build_issue_html())
+
+    assert warnings == []
+    assert common_names == []
+    assert [item[0] for item in phase_items] == [9]
+    assert phase_items[0][2] == [
+        "试作型双联装127mm主炮Mle1948T0",
+        "试作型双联装127mm高平两用炮Mk16T0",
     ]
 
 

@@ -530,36 +530,40 @@ def command_export(kind: Optional[str] = None, output: Optional[str] = None, dat
         console.print("[red]没有选择导出类型。[/red]")
         return
 
-    resolved = _export_kind_to_method(kind)
-    if resolved == "equipment":
-        path = export_mgr.export_equipment_library(export_target)
-        console.print(f"[green]已导出装备库：{path}[/green]")
-        return
-    if resolved == "research":
-        path = export_mgr.export_research_phases(export_target)
-        console.print(f"[green]已导出科研期数：{path}[/green]")
-        return
-    if resolved == "today":
-        target_date = date_str or date.today().isoformat()
-        path = export_mgr.export_user_records(target_date, export_target)
-        console.print(f"[green]已导出 {target_date} 记录：{path}[/green]")
-        return
-    if resolved == "all":
-        path = export_mgr.export_all_user_records(export_target)
-        console.print(f"[green]已导出全部历史记录：{path}[/green]")
-        return
-    if resolved == "luck":
-        path = export_mgr.export_luck_summary(export_target)
-        console.print(f"[green]已导出欧非汇总：{path}[/green]")
-        return
-    if resolved == "full":
-        result = export_mgr.export_full_report(export_target)
-        console.print("[green]已导出完整报告：[/green]")
-        for key, value in result.items():
-            console.print(f"  - {key}: {value}")
-        return
+    try:
+        resolved = _export_kind_to_method(kind)
+        if resolved == "equipment":
+            path = export_mgr.export_equipment_library(export_target)
+            console.print(f"[green]已导出装备库：{path}[/green]")
+            return
+        if resolved == "research":
+            path = export_mgr.export_research_phases(export_target)
+            console.print(f"[green]已导出科研期数：{path}[/green]")
+            return
+        if resolved == "today":
+            target_date = date_str or date.today().isoformat()
+            path = export_mgr.export_user_records(target_date, export_target)
+            console.print(f"[green]已导出 {target_date} 记录：{path}[/green]")
+            return
+        if resolved == "all":
+            path = export_mgr.export_all_user_records(export_target)
+            console.print(f"[green]已导出全部历史记录：{path}[/green]")
+            return
+        if resolved == "luck":
+            path = export_mgr.export_luck_summary(export_target)
+            console.print(f"[green]已导出欧非汇总：{path}[/green]")
+            return
+        if resolved == "full":
+            result = export_mgr.export_full_report(export_target)
+            console.print("[green]已导出完整报告：[/green]")
+            for key, value in result.items():
+                console.print(f"  - {key}: {value}")
+            return
 
-    console.print("[red]未知的导出类型。[/red]")
+        console.print("[red]未知的导出类型。[/red]")
+    finally:
+        if not export_target:
+            export_mgr.cleanup_exports()
 
 
 def _show_menu() -> None:

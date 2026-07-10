@@ -99,6 +99,21 @@ class EquipmentManager:
         except Exception as e:
             self.logger.error(f"加载图片映射失败:{e}")
 
+    def reload(self) -> None:
+        """
+        重新从正式 CSV 载入装备库和图片映射。
+        输入:
+            无。
+        输出:
+            None，内部缓存会替换为当前 data/ 下的正式表内容。
+        使用示例:
+            get_equipment_manager().reload()
+        """
+        self._ensure_csv_exists()
+        self._load_data()
+        self._load_images()
+        self.logger.info("装备库缓存已从正式 CSV 重新载入")
+
     def _save_data(self):
         """将内存中的装备数据写回 CSV 文件"""
         with open(self.csv_path, "w", newline="", encoding="utf-8-sig") as f:

@@ -75,6 +75,20 @@ class ResearchManager:
         except Exception as e:
             self.logger.error(f"加载科研期数失败:{e}")
 
+    def reload(self) -> None:
+        """
+        重新从正式 CSV 载入科研期数。
+        输入:
+            无。
+        输出:
+            None，内部缓存会替换为当前 data/research_phases.csv 内容。
+        使用示例:
+            get_research_manager().reload()
+        """
+        self._ensure_csv()
+        self._load()
+        self.logger.info("科研期数缓存已从正式 CSV 重新载入")
+
     def _save(self):
         """将内存期数数据写回 CSV"""
         with open(self.csv_path, "w", newline="", encoding="utf-8-sig") as f:

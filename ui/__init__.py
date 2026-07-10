@@ -15,7 +15,7 @@ from __future__ import annotations
 # 📦 第一部分：导入依赖
 # ============================================================
 
-from ui.main_window import MainWindow, run_gui
+from typing import Any
 
 
 # ============================================================
@@ -23,3 +23,21 @@ from ui.main_window import MainWindow, run_gui
 # ============================================================
 
 __all__ = ["MainWindow", "run_gui"]
+
+
+def __getattr__(name: str) -> Any:
+    """
+    延迟暴露主窗口对象，避免 python -m ui.main_window 时提前导入自身。
+    输入：
+        name: 外部访问的导出名称。
+    输出：
+        MainWindow 类或 run_gui 函数。
+    使用示例：
+        from ui import MainWindow
+    """
+    if name in __all__:
+        from ui.main_window import MainWindow, run_gui
+
+        exports = {"MainWindow": MainWindow, "run_gui": run_gui}
+        return exports[name]
+    raise AttributeError(f"module 'ui' has no attribute {name!r}")

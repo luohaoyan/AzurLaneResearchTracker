@@ -34,3 +34,6 @@ qa_tests/
 
 # 导出文件目录（运行时生成，不纳入版本控制）
 data/exports/
+
+# Crawler workdir
+workdir/

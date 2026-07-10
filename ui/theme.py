@@ -592,6 +592,80 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
         padding: 7px 10px;
     }}
 
+    QCalendarWidget {{
+        background: {t.surface};
+        color: {t.text};
+        border: 1px solid {t.line};
+        border-radius: {t.radius}px;
+    }}
+
+    QCalendarWidget QWidget#qt_calendar_navigationbar {{
+        background: {t.surface_soft};
+        border: none;
+        border-bottom: 1px solid {t.line};
+        min-height: 34px;
+    }}
+
+    QCalendarWidget QToolButton {{
+        background: transparent;
+        color: {t.text};
+        border: none;
+        border-radius: {max(3, t.radius - 2)}px;
+        margin: 3px;
+        padding: 5px 8px;
+        font-weight: 700;
+    }}
+
+    QCalendarWidget QToolButton:hover {{
+        background: {t.surface_glow};
+        color: {t.text};
+    }}
+
+    QCalendarWidget QToolButton#qt_calendar_prevmonth,
+    QCalendarWidget QToolButton#qt_calendar_nextmonth {{
+        qproperty-icon: none;
+        color: {t.azure};
+        min-width: 28px;
+        max-width: 28px;
+    }}
+
+    QCalendarWidget QMenu {{
+        background: {t.surface};
+        color: {t.text};
+        border: 1px solid {t.line};
+    }}
+
+    QCalendarWidget QSpinBox {{
+        background: {t.surface};
+        color: {t.text};
+        border: 1px solid {t.line};
+        border-radius: {max(3, t.radius - 2)}px;
+        padding: 4px 8px;
+        selection-background-color: {t.table_selection};
+        selection-color: {t.table_selection_text};
+    }}
+
+    QCalendarWidget QAbstractItemView {{
+        background: {t.table_row};
+        alternate-background-color: {t.table_row_alt};
+        color: {t.text};
+        selection-background-color: {t.azure};
+        selection-color: {t.background};
+        border: none;
+        outline: none;
+        gridline-color: {t.table_grid};
+    }}
+
+    QCalendarWidget QAbstractItemView:disabled {{
+        background: {t.table_row};
+        color: {t.line};
+    }}
+
+    QCalendarWidget QAbstractItemView::item:disabled {{
+        background: {t.table_row};
+        color: {t.line};
+    }}
+
     QTableWidget {{
         background: {t.table_row};
         alternate-background-color: {t.table_row_alt};

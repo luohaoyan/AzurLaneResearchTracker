@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 ╔══════════════════════════════════════════════════════════════════╗
@@ -19,6 +19,8 @@ import os
 import sys
 from pathlib import Path
 from typing import Dict, List
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -166,8 +168,8 @@ def test_sync_latest_merges_equipment_research_and_special_rows(tmp_path: Path) 
 
     assert result.backup_dir.exists()
     assert result.workspace_dir.exists()
-    assert [row["equipment_id"] for row in library_rows] == ["S0-001", "S1-001", "G0001", "G0002", "G0005"]
-    assert [row["equipment_id"] for row in image_rows] == ["S0-001", "S1-001", "G0005"]
+    assert [row["equipment_id"] for row in library_rows] == ["S0-001", "S1-001", "G0001", "G0002", "G0005", "G0099"]
+    assert [row["equipment_id"] for row in image_rows] == ["S0-001", "S1-001", "G0005", "G0099"]
     assert phase_rows[0]["equipment_list"] == "S0-001"
     assert phase_rows[1]["equipment_list"] == "S1-001,S1-002"
     assert result.copied_image_paths and len(result.copied_image_paths) == 3
@@ -179,6 +181,379 @@ def test_sync_latest_merges_equipment_research_and_special_rows(tmp_path: Path) 
 
     manifest_path = result.workspace_dir / "crawler_sync_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["equipment_count"] == 5
+    assert manifest["equipment_count"] == 6
+    assert manifest["image_count"] == 4
     assert manifest["phase_count"] == 2
     assert manifest["copied_image_count"] == 3
+
+
+def test_sync_normalizes_brace_noise_before_matching_research_ids(tmp_path: Path) -> None:
+    """科研名称里即使带着右花括号，归一化后也应能正确对齐到 S 期数 ID。"""
+    project_root = tmp_path / "project"
+    data_root = project_root / "data"
+    workdir_root = project_root / "workdir"
+    equipment_run_dir = workdir_root / "crawler" / "runs" / "20260710_060000"
+    research_run_dir = workdir_root / "crawler" / "research" / "runs" / "20260710_070000"
+
+    _write_csv(
+        data_root / "equipment_library.csv",
+        ["equipment_id", "name", "rarity_id", "type"],
+        [
+            {"equipment_id": "G0047", "name": "试作型双联装127mm主炮Mle1948#T0", "rarity_id": "4", "type": "驱逐炮"},
+        ],
+    )
+    _write_csv(
+        data_root / "equipment_images.csv",
+        ["equipment_id", "image_path"],
+        [
+            {"equipment_id": "G0047", "image_path": "images/elite/G0047.jpg"},
+        ],
+    )
+
+    _write_csv(
+        equipment_run_dir / "manifests" / "equipment_library_stage.csv",
+        ["equipment_id", "name", "rarity_id", "type"],
+        [
+            {"equipment_id": "G0047", "name": "试作型双联装127mm主炮Mle1948#T0", "rarity_id": "4", "type": "驱逐炮"},
+        ],
+    )
+    _write_csv(
+        equipment_run_dir / "manifests" / "equipment_images_stage.csv",
+        ["equipment_id", "image_path"],
+        [
+            {"equipment_id": "G0047", "image_path": str((equipment_run_dir / "images" / "elite" / "G0047.jpg").as_posix())},
+        ],
+    )
+    _write_bytes(equipment_run_dir / "images" / "elite" / "G0047.jpg", b"img-47")
+
+    _write_csv(
+        research_run_dir / "manifests" / "research_phases_stage.csv",
+        ["phase_number", "name", "equipment_list"],
+        [
+            {"phase_number": "9", "name": "第九期", "equipment_list": "S9-003"},
+        ],
+    )
+    _write_csv(
+        research_run_dir / "manifests" / "research_equipment_stage.csv",
+        ["equipment_id", "name", "phase_number", "phase_name", "source_scope", "order_index"],
+        [
+            {"equipment_id": "S9-003", "name": "试作型双联装127mm主炮Mle1948T0 }", "phase_number": "9", "phase_name": "第九期", "source_scope": "phase", "order_index": "1"},
+        ],
+    )
+
+    synchronizer = CrawlerDataSynchronizer(
+        config_data={
+            "source": {
+                "equipment_run_dir": str(equipment_run_dir),
+                "research_run_dir": str(research_run_dir),
+            },
+            "output": {
+                "workdir_base_dir": "workdir/crawler/sync",
+                "backup_dir_name": "backups",
+                "output_dir_name": "latest",
+                "data_images_dir_name": "images",
+                "crawler_images_dir_name": "images",
+            },
+        },
+        project_root=project_root,
+        data_root=data_root,
+        workdir_root=workdir_root,
+    )
+
+    result = synchronizer.sync(workspace_name="20260710_080000")
+    library_rows = _read_rows(result.equipment_library_path)
+    image_rows = _read_rows(result.equipment_images_path)
+
+    assert [row["equipment_id"] for row in library_rows] == ["S9-003"]
+    assert [row["equipment_id"] for row in image_rows] == ["S9-003"]
+    assert library_rows[0]["name"] == "试作型双联装127mm主炮Mle1948#T0"
+    assert image_rows[0]["image_path"].replace("\\", "/").endswith("data/images/super_rare/S9-003.jpg")
+
+
+def test_sync_atomic_write_keeps_formal_tables_when_replace_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """原子写入失败时，正式 data 表应保持原样，不留下半成品。"""
+    project_root = tmp_path / "project"
+    data_root = project_root / "data"
+    workdir_root = project_root / "workdir"
+    equipment_run_dir = workdir_root / "crawler" / "runs" / "20260710_040000"
+    research_run_dir = workdir_root / "crawler" / "research" / "runs" / "20260710_050000"
+
+    _write_csv(
+        data_root / "equipment_library.csv",
+        ["equipment_id", "name", "rarity_id", "type"],
+        [
+            {"equipment_id": "G0099", "name": "旧装备", "rarity_id": "1", "type": "测试"},
+        ],
+    )
+    _write_csv(
+        data_root / "equipment_images.csv",
+        ["equipment_id", "image_path"],
+        [
+            {"equipment_id": "G0099", "image_path": "images/common/G0099.jpg"},
+        ],
+    )
+    _write_csv(
+        data_root / "research_phases.csv",
+        ["phase_number", "name", "equipment_list"],
+        [
+            {"phase_number": "1", "name": "旧科研", "equipment_list": "S1-001"},
+        ],
+    )
+
+    _write_csv(
+        equipment_run_dir / "manifests" / "equipment_library_stage.csv",
+        ["equipment_id", "name", "rarity_id", "type"],
+        [
+            {"equipment_id": "G0003", "name": "新装备", "rarity_id": "5", "type": "测试"},
+        ],
+    )
+    _write_csv(
+        equipment_run_dir / "manifests" / "equipment_images_stage.csv",
+        ["equipment_id", "image_path"],
+        [
+            {"equipment_id": "G0003", "image_path": str((equipment_run_dir / "images" / "ultra_rare" / "G0003.jpg").as_posix())},
+        ],
+    )
+    _write_bytes(equipment_run_dir / "images" / "ultra_rare" / "G0003.jpg", b"img-3")
+
+    _write_csv(
+        research_run_dir / "manifests" / "research_phases_stage.csv",
+        ["phase_number", "name", "equipment_list"],
+        [
+            {"phase_number": "1", "name": "第一期", "equipment_list": "S1-001"},
+        ],
+    )
+    _write_csv(
+        research_run_dir / "manifests" / "research_equipment_stage.csv",
+        ["equipment_id", "name", "phase_number", "phase_name", "source_scope", "order_index"],
+        [
+            {"equipment_id": "S1-001", "name": "一期装备", "phase_number": "1", "phase_name": "第一期", "source_scope": "phase", "order_index": "1"},
+        ],
+    )
+
+    synchronizer = CrawlerDataSynchronizer(
+        config_data={
+            "source": {
+                "equipment_run_dir": str(equipment_run_dir),
+                "research_run_dir": str(research_run_dir),
+            },
+            "output": {
+                "workdir_base_dir": "workdir/crawler/sync",
+                "backup_dir_name": "backups",
+                "output_dir_name": "latest",
+                "data_images_dir_name": "images",
+                "crawler_images_dir_name": "images",
+            },
+        },
+        project_root=project_root,
+        data_root=data_root,
+        workdir_root=workdir_root,
+    )
+
+    def _raise_replace(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("replace failed")
+
+    monkeypatch.setattr("core.data.crawler_sync.os.replace", _raise_replace)
+
+    with pytest.raises(RuntimeError, match="replace failed"):
+        synchronizer.sync(workspace_name="20260710_060000")
+
+    assert _read_rows(data_root / "equipment_library.csv") == [
+        {"equipment_id": "G0099", "name": "旧装备", "rarity_id": "1", "type": "测试"},
+    ]
+    assert _read_rows(data_root / "equipment_images.csv") == [
+        {"equipment_id": "G0099", "image_path": "images/common/G0099.jpg"},
+    ]
+    assert _read_rows(data_root / "research_phases.csv") == [
+        {"phase_number": "1", "name": "旧科研", "equipment_list": "S1-001"},
+    ]
+    assert not list(data_root.glob("*.tmp"))
+
+
+def test_sync_preserves_missing_formal_rows_from_existing_tables(tmp_path: Path) -> None:
+    """stage 缺少旧行时，同步器应把正式表中的遗漏项补回去。"""
+    project_root = tmp_path / "project"
+    data_root = project_root / "data"
+    workdir_root = project_root / "workdir"
+    equipment_run_dir = workdir_root / "crawler" / "runs" / "20260710_070000"
+    research_run_dir = workdir_root / "crawler" / "research" / "runs" / "20260710_080000"
+
+    _write_csv(
+        data_root / "equipment_library.csv",
+        ["equipment_id", "name", "rarity_id", "type"],
+        [
+            {"equipment_id": "G0099", "name": "旧装备", "rarity_id": "1", "type": "测试"},
+        ],
+    )
+    _write_csv(
+        data_root / "equipment_images.csv",
+        ["equipment_id", "image_path"],
+        [
+            {"equipment_id": "G0099", "image_path": "images/common/G0099.jpg"},
+        ],
+    )
+    _write_csv(
+        data_root / "research_phases.csv",
+        ["phase_number", "name", "equipment_list"],
+        [
+            {"phase_number": "1", "name": "旧科研", "equipment_list": "S1-001"},
+        ],
+    )
+
+    _write_csv(
+        equipment_run_dir / "manifests" / "equipment_library_stage.csv",
+        ["equipment_id", "name", "rarity_id", "type"],
+        [
+            {"equipment_id": "G0003", "name": "新装备", "rarity_id": "5", "type": "测试"},
+        ],
+    )
+    _write_csv(
+        equipment_run_dir / "manifests" / "equipment_images_stage.csv",
+        ["equipment_id", "image_path"],
+        [
+            {"equipment_id": "G0003", "image_path": str((equipment_run_dir / "images" / "ultra_rare" / "G0003.jpg").as_posix())},
+        ],
+    )
+    _write_bytes(equipment_run_dir / "images" / "ultra_rare" / "G0003.jpg", b"img-3")
+
+    _write_csv(
+        research_run_dir / "manifests" / "research_phases_stage.csv",
+        ["phase_number", "name", "equipment_list"],
+        [
+            {"phase_number": "1", "name": "第一期", "equipment_list": "S1-001"},
+        ],
+    )
+    _write_csv(
+        research_run_dir / "manifests" / "research_equipment_stage.csv",
+        ["equipment_id", "name", "phase_number", "phase_name", "source_scope", "order_index"],
+        [
+            {"equipment_id": "S1-001", "name": "一期装备", "phase_number": "1", "phase_name": "第一期", "source_scope": "phase", "order_index": "1"},
+        ],
+    )
+
+    synchronizer = CrawlerDataSynchronizer(
+        config_data={
+            "source": {
+                "equipment_run_dir": str(equipment_run_dir),
+                "research_run_dir": str(research_run_dir),
+            },
+            "output": {
+                "workdir_base_dir": "workdir/crawler/sync",
+                "backup_dir_name": "backups",
+                "output_dir_name": "latest",
+                "data_images_dir_name": "images",
+                "crawler_images_dir_name": "images",
+            },
+        },
+        project_root=project_root,
+        data_root=data_root,
+        workdir_root=workdir_root,
+    )
+
+    result = synchronizer.sync(workspace_name="20260710_090000")
+
+    library_rows = _read_rows(result.equipment_library_path)
+    image_rows = _read_rows(result.equipment_images_path)
+    warnings = result.warnings
+
+    assert [row["equipment_id"] for row in library_rows] == ["G0003", "G0099"]
+    assert [row["equipment_id"] for row in image_rows] == ["G0003", "G0099"]
+    assert any("G0099" in item and "保留" in item for item in warnings)
+
+
+def test_sync_updates_special_equipment_ids_by_name_after_basic_tables(tmp_path: Path) -> None:
+    """基础表写回后，特殊装备表应按名称把 equipment_id 对齐到最新 ID。"""
+    project_root = tmp_path / "project"
+    data_root = project_root / "data"
+    workdir_root = project_root / "workdir"
+    equipment_run_dir = workdir_root / "crawler" / "runs" / "20260710_100000"
+    research_run_dir = workdir_root / "crawler" / "research" / "runs" / "20260710_110000"
+
+    _write_csv(
+        data_root / "equipment_library.csv",
+        ["equipment_id", "name", "rarity_id", "type"],
+        [
+            {"equipment_id": "G0099", "name": "旧装备", "rarity_id": "1", "type": "测试"},
+        ],
+    )
+    _write_csv(
+        data_root / "equipment_images.csv",
+        ["equipment_id", "image_path"],
+        [
+            {"equipment_id": "G0099", "image_path": "images/common/G0099.jpg"},
+        ],
+    )
+    _write_csv(
+        data_root / "research_phases.csv",
+        ["phase_number", "name", "equipment_list"],
+        [
+            {"phase_number": "1", "name": "旧科研", "equipment_list": "S1-001"},
+        ],
+    )
+    _write_csv(
+        data_root / "special_equipment.csv",
+        ["equipment_id", "equipment_name", "notes"],
+        [
+            {"equipment_id": "G0001", "equipment_name": "BR.810 剑鱼(810中队)", "notes": "special"},
+            {"equipment_id": "G0002", "equipment_name": "B-13", "notes": "special"},
+        ],
+    )
+
+    _write_csv(
+        equipment_run_dir / "manifests" / "equipment_library_stage.csv",
+        ["equipment_id", "name", "rarity_id", "type"],
+        [
+            {"equipment_id": "G0003", "name": "BR.810 剑鱼(810中队)", "rarity_id": "4", "type": "战斗机"},
+            {"equipment_id": "G0004", "name": "B-13", "rarity_id": "4", "type": "轻巡炮"},
+        ],
+    )
+    _write_csv(
+        equipment_run_dir / "manifests" / "equipment_images_stage.csv",
+        ["equipment_id", "image_path"],
+        [
+            {"equipment_id": "G0003", "image_path": str((equipment_run_dir / "images" / "super_rare" / "G0003.jpg").as_posix())},
+            {"equipment_id": "G0004", "image_path": str((equipment_run_dir / "images" / "super_rare" / "G0004.jpg").as_posix())},
+        ],
+    )
+    _write_bytes(equipment_run_dir / "images" / "super_rare" / "G0003.jpg", b"img-3")
+    _write_bytes(equipment_run_dir / "images" / "super_rare" / "G0004.jpg", b"img-4")
+
+    _write_csv(
+        research_run_dir / "manifests" / "research_phases_stage.csv",
+        ["phase_number", "name", "equipment_list"],
+        [
+            {"phase_number": "1", "name": "第一期", "equipment_list": "S1-001"},
+        ],
+    )
+    _write_csv(
+        research_run_dir / "manifests" / "research_equipment_stage.csv",
+        ["equipment_id", "name", "phase_number", "phase_name", "source_scope", "order_index"],
+        [
+            {"equipment_id": "S1-001", "name": "一期装备", "phase_number": "1", "phase_name": "第一期", "source_scope": "phase", "order_index": "1"},
+        ],
+    )
+
+    synchronizer = CrawlerDataSynchronizer(
+        config_data={
+            "source": {
+                "equipment_run_dir": str(equipment_run_dir),
+                "research_run_dir": str(research_run_dir),
+            },
+            "output": {
+                "workdir_base_dir": "workdir/crawler/sync",
+                "backup_dir_name": "backups",
+                "output_dir_name": "latest",
+                "data_images_dir_name": "images",
+                "crawler_images_dir_name": "images",
+            },
+        },
+        project_root=project_root,
+        data_root=data_root,
+        workdir_root=workdir_root,
+    )
+
+    synchronizer.sync(workspace_name="20260710_120000")
+
+    special_rows = _read_rows(data_root / "special_equipment.csv")
+    assert [row["equipment_id"] for row in special_rows] == ["G0003", "G0004"]
+    assert [row["equipment_name"] for row in special_rows] == ["BR.810 剑鱼(810中队)", "B-13"]

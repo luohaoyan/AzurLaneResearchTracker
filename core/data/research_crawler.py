@@ -301,6 +301,13 @@ def _sanitize_text(value: str) -> str:
     return cleaned.replace("\u3000", " ")
 
 
+def _clean_equipment_name(value: str) -> str:
+    cleaned = _sanitize_text(value)
+    cleaned = re.sub(r"^[\s,，。;；:：、{}【】\[\]（）()<>《》]+", "", cleaned)
+    cleaned = re.sub(r"[\s,，。;；:：、{}【】\[\]（）()<>《》]+$", "", cleaned)
+    return cleaned
+
+
 def _chinese_numeral_to_int(token: str) -> Optional[int]:
     """把中文数字转换为整数。"""
     token = token.strip()
@@ -334,7 +341,7 @@ def _split_equipment_items(segment: str) -> List[str]:
     """把一个类别段拆分为若干装备名。"""
     items: List[str] = []
     for raw_item in ITEM_SPLIT_RE.split(segment):
-        item = _sanitize_text(raw_item)
+        item = _clean_equipment_name(raw_item)
         if item:
             items.append(item)
     return items
@@ -349,6 +356,9 @@ def _extract_items_from_text(text: str) -> List[str]:
         cleaned = cleaned[len(COMMON_PREFIX) :].strip()
 
     label_matches = list(re.finditer(r"(?P<label>[^\s：:、，,;；]{1,20})[：:]", cleaned))
+    if not label_matches:
+        return _split_equipment_items(cleaned)
+
     items: List[str] = []
     for index, match in enumerate(label_matches):
         start = match.end()
