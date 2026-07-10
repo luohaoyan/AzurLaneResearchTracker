@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import csv
+import shutil
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -428,6 +429,40 @@ class ExportManager:
 # ──────────────────────────────────────────────────────────────
 #  全局访问函数
 # ──────────────────────────────────────────────────────────────
+
+    def cleanup_exports(self, max_single_csv: int = 10, max_full_reports: int = 5) -> int:
+        removed = 0
+        report_dirs = sorted(
+            [d for d in self.export_dir.iterdir()
+             if d.is_dir() and d.name.startswith("full_report_")],
+            key=lambda d: d.name,
+        )
+        if len(report_dirs) > max_full_reports:
+            for old_dir in report_dirs[:-max_full_reports]:
+                shutil.rmtree(old_dir)
+                self.logger.info("已清理过期导出目录: %s", old_dir.name)
+                removed += 1
+        csv_prefixes = [
+            "equipment_library_",
+            "research_phases_",
+            "today_",
+            "all_records_",
+            "luck_summary_",
+        ]
+        for prefix in csv_prefixes:
+            files = sorted(
+                [f for f in self.export_dir.iterdir()
+                 if f.is_file() and f.name.startswith(prefix)],
+                key=lambda f: f.name,
+            )
+            if len(files) > max_single_csv:
+                for old_file in files[:-max_single_csv]:
+                    old_file.unlink()
+                    self.logger.info("已清理过期导出文件: %s", old_file.name)
+                    removed += 1
+        return removed
+
+
 
 _instance_cache: Optional[ExportManager] = None
 

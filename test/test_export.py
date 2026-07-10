@@ -125,3 +125,82 @@ def test_export_user_records_rejects_invalid_date(export_manager: ExportManager,
     """ExportManager 应拒绝非法日期，避免后续 GUI 绕过 CLI 校验。"""
     with pytest.raises(ValueError, match="YYYY-MM-DD"):
         export_manager.export_user_records("2026-99-99", str(tmp_path / "bad_date.csv"))
+
+
+def test_cleanup_exports_removes_old_files(export_manager: ExportManager, tmp_path: Path) -> None:
+    original_dir = export_manager.export_dir
+    try:
+        import_monkey = __import__("core.data.export_manager", fromlist=["ExportManager"])
+        export_manager.export_dir = tmp_path / "exports"
+        export_manager.export_dir.mkdir(parents=True, exist_ok=True)
+
+        for i in range(15):
+            f = export_manager.export_dir / f"equipment_library_20260701_{i:06d}.csv"
+            f.write_text("test", encoding="utf-8")
+
+        removed = export_manager.cleanup_exports(max_single_csv=10, max_full_reports=5)
+        assert removed == 5
+
+        remaining = sorted(export_manager.export_dir.iterdir())
+        assert len(remaining) == 10
+        assert remaining[0].name == "equipment_library_20260701_000005.csv"
+        assert remaining[-1].name == "equipment_library_20260701_000014.csv"
+    finally:
+        export_manager.export_dir = original_dir
+
+
+def test_cleanup_exports_removes_old_full_reports(export_manager: ExportManager, tmp_path: Path) -> None:
+    original_dir = export_manager.export_dir
+    try:
+        export_manager.export_dir = tmp_path / "exports"
+        export_manager.export_dir.mkdir(parents=True, exist_ok=True)
+
+        for i in range(8):
+            d = export_manager.export_dir / f"full_report_20260701_{i:06d}"
+            d.mkdir()
+            (d / "dummy.csv").write_text("x", encoding="utf-8")
+
+        removed = export_manager.cleanup_exports(max_single_csv=10, max_full_reports=5)
+        assert removed == 3
+
+        remaining = sorted(
+            d for d in export_manager.export_dir.iterdir() if d.is_dir()
+        )
+        assert len(remaining) == 5
+        assert remaining[0].name == "full_report_20260701_000003"
+        assert remaining[-1].name == "full_report_20260701_000007"
+    finally:
+        export_manager.export_dir = original_dir
+
+
+def test_cleanup_exports_never_touches_other_dirs(export_manager: ExportManager, tmp_path: Path) -> None:
+    original_dir = export_manager.export_dir
+    try:
+        export_manager.export_dir = tmp_path / "exports"
+        export_manager.export_dir.mkdir(parents=True, exist_ok=True)
+
+        for i in range(15):
+            (export_manager.export_dir / f"today_2026070{i}.csv").write_text("x", encoding="utf-8")
+
+        safe_file = export_manager.export_dir / "my_notes.txt"
+        safe_file.write_text("keep me", encoding="utf-8")
+
+        removed = export_manager.cleanup_exports(max_single_csv=10, max_full_reports=5)
+        assert removed == 5
+
+        assert safe_file.exists()
+    finally:
+        export_manager.export_dir = original_dir
+
+
+def test_cleanup_exports_handles_empty_dir(export_manager: ExportManager, tmp_path: Path) -> None:
+    original_dir = export_manager.export_dir
+    try:
+        export_manager.export_dir = tmp_path / "empty_exports"
+        export_manager.export_dir.mkdir(parents=True, exist_ok=True)
+
+        removed = export_manager.cleanup_exports()
+        assert removed == 0
+    finally:
+        export_manager.export_dir = original_dir
+

@@ -6,6 +6,7 @@
 import json
 import os
 import shutil
+import time
 from typing import Any, Dict, List, Optional
 from .logger import get_logger
 from .path_manager import PathManager
@@ -283,7 +284,7 @@ class ConfigLoader:
                 f.flush()
                 os.fsync(f.fileno())
 
-            os.replace(temp_path, config_path)
+            self._replace_with_retry(temp_path, config_path)
 
             # 写后重新读取校验。只有磁盘内容确认成功后才更新缓存。
             with open(config_path, 'r', encoding='utf-8') as f:
@@ -307,6 +308,26 @@ class ConfigLoader:
             if isinstance(e, ConfigSaveError):
                 raise
             raise ConfigSaveError(f"保存配置失败 {cache_key}: {e}") from e
+
+    @staticmethod
+    def _replace_with_retry(temp_path: str, config_path: str, retries: int = 5, delay_seconds: float = 0.05) -> None:
+        """
+        用短重试完成配置文件原子替换，规避 Windows 下短暂文件锁。
+
+        Args:
+            temp_path: 已写入完成的临时配置文件。
+            config_path: 目标正式配置文件。
+            retries: 发生 PermissionError 后的重试次数。
+            delay_seconds: 每次重试前等待秒数。
+        """
+        for attempt in range(retries + 1):
+            try:
+                os.replace(temp_path, config_path)
+                return
+            except PermissionError:
+                if attempt >= retries:
+                    raise
+                time.sleep(delay_seconds)
 
     def get_simulator_config(self, simulator_name: str = None) -> Dict[str, Any]:
         """
