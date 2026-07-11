@@ -1,13 +1,93 @@
 {
+    "version": "0.6.0",
+    "base_resolution": {
+        "width": 1280,
+        "height": 720
+    },
+    "defaults": {
+        "step_delay": 0.2,
+        "timeout_seconds": 8.0,
+        "max_retries": 2
+    },
+    "sequences": {
+        "go_harbor": {
+            "target_scene": "harbor",
+            "timeout_seconds": 6.0,
+            "steps": [
+                {
+                    "action": "keyevent",
+                    "keycode": "KEYCODE_HOME",
+                    "delay": 0.5
+                },
+                {
+                    "action": "keyevent",
+                    "keycode": "KEYCODE_BACK",
+                    "delay": 0.3
+                }
+            ]
+        },
+        "return_home": {
+            "target_scene": "harbor",
+            "timeout_seconds": 6.0,
+            "steps": [
+                {
+                    "action": "keyevent",
+                    "keycode": "KEYCODE_BACK",
+                    "delay": 0.4
+                },
+                {
+                    "action": "keyevent",
+                    "keycode": "KEYCODE_BACK",
+                    "delay": 0.4
+                }
+            ]
+        },
+        "enter_research": {
+            "target_scene": "research",
+            "timeout_seconds": 10.0,
+            "steps": [
+                {
+                    "action": "tap",
+                    "x": 1110,
+                    "y": 617,
+                    "delay": 0.8
+                },
+                {
+                    "action": "tap",
+                    "x": 980,
+                    "y": 407,
+                    "delay": 0.8
+                }
+            ]
+        },
+        "enter_equipment": {
+            "target_scene": "equipment_list",
+            "timeout_seconds": 10.0,
+            "steps": [
+                {
+                    "action": "tap",
+                    "x": 1110,
+                    "y": 617,
+                    "delay": 0.6
+                },
+                {
+                    "action": "tap",
+                    "x": 773,
+                    "y": 313,
+                    "delay": 0.8
+                }
+            ]
+        }
+    },
     "login": [
         {
-            "action": "click",
+            "action": "tap",
             "x": 100,
             "y": 200,
             "delay": 2.0
         },
         {
-            "action": "click",
+            "action": "tap",
             "x": 300,
             "y": 400,
             "delay": 1.0
@@ -15,7 +95,7 @@
     ],
     "equipment": [
         {
-            "action": "click",
+            "action": "tap",
             "x": 500,
             "y": 600,
             "delay": 1.5

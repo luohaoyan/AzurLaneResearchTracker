@@ -7,12 +7,19 @@
     "adb": {
         "path": "D:/MuMuPlayer-12.0/shell/adb.exe",
         "port": 7555,
-        "connect_timeout": 10
+        "connect_timeout": 10,
+        "reconnect_on_failure": true,
+        "base_resolution": {
+            "width": 1280,
+            "height": 720
+        }
     },
     "screen": {
-        "width": 1920,
-        "height": 1080,
-        "dpi": 320
+        "width": 1280,
+        "height": 720,
+        "dpi": 240,
+        "mode": "tablet",
+        "recommended_for_ocr": true
     },
     "performance": {
         "click_delay": 0.5,

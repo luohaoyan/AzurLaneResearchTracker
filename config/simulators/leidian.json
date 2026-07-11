@@ -7,12 +7,18 @@
     "adb": {
         "path": "C:/LDPlayer/LDPlayer4.0/adb.exe",
         "port": 5555,
-        "connect_timeout": 10
+        "connect_timeout": 10,
+        "reconnect_on_failure": true,
+        "base_resolution": {
+            "width": 1280,
+            "height": 720
+        }
     },
     "screen": {
-        "width": 1600,
-        "height": 900,
-        "dpi": 240
+        "width": 1280,
+        "height": 720,
+        "dpi": 240,
+        "recommended_for_ocr": true
     },
     "performance": {
         "click_delay": 0.5,
