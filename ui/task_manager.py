@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from PySide6.QtCore import QObject, QProcess, QThread, Signal, Slot
 
+from core.contracts import CancellationToken, TaskCancelledError, TaskExecutionContext
 from core.state.runtime_state import TaskStateKind, get_runtime_state_manager
 from core.utils.logger import get_logger
 
@@ -95,7 +96,8 @@ class BackgroundTaskWorker(QObject):
     通用后台任务执行器。
     输入：
         task_id: 任务 ID。
-        runner: 在线程中执行的无参函数。
+        runner: 在线程中执行的函数，可接收 task_context 或进度回调。
+        task_context: 进度和协作式取消的共享上下文。
     输出：
         finished 信号携带任务 ID 与执行结果。
     使用示例：
@@ -108,13 +110,13 @@ class BackgroundTaskWorker(QObject):
         self,
         task_id: str,
         runner: Callable[..., Any],
-        progress_reporter: Callable[[int, str, str], bool],
+        task_context: TaskExecutionContext,
     ) -> None:
-        """保存任务 ID 和执行函数。"""
+        """保存任务 ID、执行函数和可取消任务上下文。"""
         super().__init__()
         self.task_id = task_id
         self.runner = runner
-        self.progress_reporter = progress_reporter
+        self.task_context = task_context
 
     @Slot()
     def run(self) -> None:
@@ -129,10 +131,14 @@ class BackgroundTaskWorker(QObject):
         """
         result: Any
         try:
-            if self._runner_accepts_progress_reporter():
-                result = self.runner(self.progress_reporter)
-            else:
-                result = self.runner()
+            result = self._call_runner()
+        except TaskCancelledError as exc:
+            result = {
+                "success": False,
+                "status": "cancelled",
+                "message": str(exc) or "任务已在安全点取消。",
+                "detail": "cancelled at safe point",
+            }
         except Exception as exc:
             result = {
                 "success": False,
@@ -142,19 +148,40 @@ class BackgroundTaskWorker(QObject):
             }
         self.finished.emit(self.task_id, result)
 
-    def _runner_accepts_progress_reporter(self) -> bool:
-        """判断任务函数是否能接收一个进度回调参数。"""
+    def _call_runner(self) -> Any:
+        """
+        按参数名称向 runner 注入任务上下文或旧版进度回调。
+        输入：
+            无，读取 runner 的函数签名。
+        输出：
+            Any: runner 的原始返回值。
+        使用示例：
+            result = self._call_runner()
+        """
         try:
             signature = inspect.signature(self.runner)
         except (TypeError, ValueError):
-            return False
+            return self.runner()
+
+        parameters = signature.parameters
+        context_parameter = parameters.get("task_context")
+        if context_parameter is not None:
+            if context_parameter.kind == inspect.Parameter.POSITIONAL_ONLY:
+                return self.runner(self.task_context)
+            return self.runner(task_context=self.task_context)
+
         progress_names = {"progress_reporter", "progress_callback"}
-        for parameter in signature.parameters.values():
-            if parameter.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
-                return True
+        for parameter in parameters.values():
             if parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD):
-                return parameter.name in progress_names
-        return False
+                if parameter.name in progress_names:
+                    return self.runner(self.task_context.progress_reporter)
+                break
+
+        if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+            return self.runner(task_context=self.task_context)
+        if any(parameter.kind == inspect.Parameter.VAR_POSITIONAL for parameter in parameters.values()):
+            return self.runner(self.task_context.progress_reporter)
+        return self.runner()
 
 
 class GuiTaskManager(QObject):
@@ -187,6 +214,7 @@ class GuiTaskManager(QObject):
         self.logger = get_logger()
         self.runtime_manager = get_runtime_state_manager()
         self._active_task_id: Optional[str] = None
+        self._cancellation_token: Optional[CancellationToken] = None
         self._thread: Optional[QThread] = None
         self._worker: Optional[BackgroundTaskWorker] = None
         self._process: Optional[QProcess] = None
@@ -235,7 +263,9 @@ class GuiTaskManager(QObject):
         self.runtime_manager.set_task_state(spec.kind, 1, spec.start_message, spec.title)
 
         thread = QThread()
-        worker = BackgroundTaskWorker(spec.task_id, runner, self.report_current_task_progress)
+        cancellation_token = CancellationToken()
+        task_context = TaskExecutionContext(self.report_current_task_progress, cancellation_token)
+        worker = BackgroundTaskWorker(spec.task_id, runner, task_context)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.finished.connect(self._finish_task)
@@ -248,6 +278,7 @@ class GuiTaskManager(QObject):
 
         self._thread = thread
         self._worker = worker
+        self._cancellation_token = cancellation_token
         self.taskChanged.emit()
         thread.start()
         self.logger.info(f"后台任务已启动：{spec.title}")
@@ -277,6 +308,7 @@ class GuiTaskManager(QObject):
             return False
 
         self._active_task_id = spec.task_id
+        self._cancellation_token = None
         snapshot = TaskSnapshot(
             task_id=spec.task_id,
             title=spec.title,
@@ -324,6 +356,8 @@ class GuiTaskManager(QObject):
             return False
         snapshot.cancel_requested = True
         snapshot.message = "已收到取消请求，任务将在安全点结束。"
+        if self._cancellation_token is not None:
+            self._cancellation_token.request_cancel()
         if self._process is not None and self._process.state() != QProcess.ProcessState.NotRunning:
             self._process.terminate()
         self.taskChanged.emit()
@@ -423,6 +457,7 @@ class GuiTaskManager(QObject):
             return
         self._tasks.clear()
         self._active_task_id = None
+        self._cancellation_token = None
         self._thread = None
         self._worker = None
         self._process = None
@@ -445,6 +480,13 @@ class GuiTaskManager(QObject):
             snapshot.message = f"已执行：{result_message}" if success else result_message
             snapshot.detail = self._result_value(result, "detail", "")
             snapshot.finished_at = datetime.now()
+            if snapshot.status == "cancelled":
+                self.runtime_manager.set_task_state(
+                    TaskStateKind.IDLE,
+                    snapshot.progress,
+                    snapshot.message,
+                    snapshot.title,
+                )
         finished_handler = self._finished_handlers.pop(task_id, None)
         if finished_handler is not None:
             finished_handler(result)
@@ -492,6 +534,7 @@ class GuiTaskManager(QObject):
     def _clear_thread_refs(self) -> None:
         """清理线程和 worker 引用，避免下一次任务被误判占用。"""
         self._active_task_id = None
+        self._cancellation_token = None
         self._thread = None
         self._worker = None
         self.taskChanged.emit()
@@ -563,6 +606,7 @@ class GuiTaskManager(QObject):
         """清理进程引用，释放下一次长任务锁。"""
         process = self._process
         self._active_task_id = None
+        self._cancellation_token = None
         self._process = None
         self._process_output = {}
         self._process_error = ""

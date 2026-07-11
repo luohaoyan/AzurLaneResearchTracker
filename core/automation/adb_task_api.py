@@ -17,10 +17,10 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from core.contracts import RecognitionScene, StructuredTaskResult, TaskExecutionContext
 from core.utils.config_loader import get_config_loader
 from core.utils.logger import get_logger
 from core.utils.path_manager import PathManager
@@ -30,8 +30,7 @@ from core.utils.path_manager import PathManager
 # 🏗️ 第二部分：核心类
 # ============================================================
 
-@dataclass(frozen=True)
-class AdbTaskResult:
+class AdbTaskResult(StructuredTaskResult):
     """
     ADB 自动化任务执行结果。
     输入：
@@ -40,18 +39,12 @@ class AdbTaskResult:
         message: 用户可见说明。
         detail: 给测试或开发者看的补充信息。
         payload: 结构化结果，后续真实实现继续沿用。
+        warnings: 不阻塞任务完成的警告列表。
     输出：
         不可变结果对象，可被 AutomationBridge 转成 GUI 结果。
     使用示例：
         result = get_adb_task_api().check_connection()
     """
-
-    success: bool
-    status: str
-    message: str
-    detail: str = ""
-    payload: Optional[Dict[str, Any]] = None
-
 
 class AdbTaskApi:
     """
@@ -81,16 +74,18 @@ class AdbTaskApi:
         self.config_loader = get_config_loader()
         self._initialized = True
 
-    def check_connection(self) -> AdbTaskResult:
+    def check_connection(self, task_context: Optional[TaskExecutionContext] = None) -> AdbTaskResult:
         """
         检查 ADB 连接配置。
         输入：
-            无。
+            task_context: 可选任务上下文，用于在安全点响应取消。
         输出：
             AdbTaskResult: 当前仅校验配置和 adb 路径，不连接真实设备。
         使用示例：
             result = api.check_connection()
         """
+        if task_context is not None:
+            task_context.raise_if_cancelled("ADB 连接检查已取消。")
         simulator = self._get_simulator_context()
         adb_path = str(simulator["adb"].get("path", "")).strip()
         adb_path_exists = self._adb_path_exists(adb_path)
@@ -111,22 +106,32 @@ class AdbTaskApi:
         self.logger.info(message)
         return AdbTaskResult(True, "reserved", message, detail, payload)
 
-    def capture_screenshot(self) -> AdbTaskResult:
+    def capture_screenshot(
+        self,
+        scene: RecognitionScene | str = RecognitionScene.HARBOR,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> AdbTaskResult:
         """
         预检截图采集工作目录。
         输入：
-            无。
+            scene: 截图所属的稳定游戏场景。
+            task_context: 可选任务上下文，用于在安全点响应取消。
         输出：
             AdbTaskResult: 返回未来截图输出目录和命名规则。
         使用示例：
             result = api.capture_screenshot()
         """
+        if task_context is not None:
+            task_context.raise_if_cancelled("ADB 截图任务已取消。")
+        normalized_scene = RecognitionScene.normalize(scene)
         screenshot_dir = PathManager.get_work_dir() / "automation" / "screenshots"
         screenshot_dir.mkdir(parents=True, exist_ok=True)
         simulator = self._get_simulator_context()
         payload = {
             "screenshot_dir": str(screenshot_dir),
             "filename_pattern": "azurlane_{timestamp}.png",
+            "screenshot_path": None,
+            "scene": normalized_scene.value,
             "device_serial": simulator["device_serial"],
             "real_capture_enabled": False,
         }
@@ -135,16 +140,18 @@ class AdbTaskApi:
         self.logger.info(message)
         return AdbTaskResult(True, "reserved", message, detail, payload)
 
-    def run_environment_check(self) -> AdbTaskResult:
+    def run_environment_check(self, task_context: Optional[TaskExecutionContext] = None) -> AdbTaskResult:
         """
         检查自动化和识别相关环境。
         输入：
-            无。
+            task_context: 可选任务上下文，用于在安全点响应取消。
         输出：
             AdbTaskResult: 汇总配置、目录和可选依赖状态。
         使用示例：
             result = api.run_environment_check()
         """
+        if task_context is not None:
+            task_context.raise_if_cancelled("自动化环境检查已取消。")
         simulator = self._get_simulator_context()
         game_config = self.config_loader.get_game_config()
         work_dir = PathManager.get_work_dir()

@@ -19,11 +19,11 @@ import importlib
 import importlib.util
 import inspect
 import sys
-from dataclasses import dataclass
 from types import ModuleType
 from typing import Any, Callable, Dict, Iterable, Optional
 
 from core.automation.adb_task_api import AdbTaskResult, get_adb_task_api
+from core.contracts import StructuredTaskResult, TaskCancelledError, TaskExecutionContext
 from core.recognition.ocr_task_api import OcrTaskResult, get_ocr_task_api
 from core.state.runtime_state import TaskStateKind, get_runtime_state_manager
 from core.utils.logger import get_logger
@@ -33,8 +33,7 @@ from core.utils.logger import get_logger
 # 🏗️ 第二部分：核心类
 # ============================================================
 
-@dataclass(frozen=True)
-class AutomationBridgeResult:
+class AutomationBridgeResult(StructuredTaskResult):
     """
     自动化桥接执行结果。
     输入：
@@ -42,18 +41,12 @@ class AutomationBridgeResult:
         status: missing / unavailable / success / error。
         message: 用户可见说明。
         detail: 开发者可参考的细节。
+        payload/warnings: 核心层透传的结构化数据和非阻塞警告。
     输出：
         不可变结果对象，供 UI 展示和测试断言。
     使用示例：
         result = bridge.run_crawler_update()
     """
-
-    success: bool
-    status: str
-    message: str
-    detail: str = ""
-    payload: Optional[Dict[str, Any]] = None
-
 
 class AutomationBridge:
     """
@@ -159,11 +152,13 @@ class AutomationBridge:
     def run_adb_connection_check(
         self,
         progress_reporter: Optional[Callable[[int, str, str], object]] = None,
+        task_context: Optional[TaskExecutionContext] = None,
     ) -> AutomationBridgeResult:
         """
         安全执行 ADB 连接预检。
         输入：
-            无。
+            progress_reporter: 兼容旧任务的进度回调。
+            task_context: v0.6.0 可取消任务上下文。
         输出：
             AutomationBridgeResult: 配置、路径和设备串号预检结果。
         使用示例：
@@ -175,16 +170,19 @@ class AutomationBridge:
             "正在检查模拟器 ADB 配置。",
             get_adb_task_api().check_connection,
             progress_reporter,
+            task_context,
         )
 
     def run_adb_screenshot_capture(
         self,
         progress_reporter: Optional[Callable[[int, str, str], object]] = None,
+        task_context: Optional[TaskExecutionContext] = None,
     ) -> AutomationBridgeResult:
         """
         安全执行 ADB 截图预检。
         输入：
-            无。
+            progress_reporter: 兼容旧任务的进度回调。
+            task_context: v0.6.0 可取消任务上下文。
         输出：
             AutomationBridgeResult: 截图目录和命名规则预检结果。
         使用示例：
@@ -196,16 +194,19 @@ class AutomationBridge:
             "正在准备截图采集目录。",
             get_adb_task_api().capture_screenshot,
             progress_reporter,
+            task_context,
         )
 
     def run_ocr_equipment_scan(
         self,
         progress_reporter: Optional[Callable[[int, str, str], object]] = None,
+        task_context: Optional[TaskExecutionContext] = None,
     ) -> AutomationBridgeResult:
         """
         安全执行装备 OCR 预检。
         输入：
-            无。
+            progress_reporter: 兼容旧任务的进度回调。
+            task_context: v0.6.0 可取消任务上下文。
         输出：
             AutomationBridgeResult: 装备数量与碎片识别结构。
         使用示例：
@@ -217,16 +218,19 @@ class AutomationBridge:
             "正在检查装备 OCR 结果结构。",
             get_ocr_task_api().scan_equipment_counts,
             progress_reporter,
+            task_context,
         )
 
     def run_ocr_resource_scan(
         self,
         progress_reporter: Optional[Callable[[int, str, str], object]] = None,
+        task_context: Optional[TaskExecutionContext] = None,
     ) -> AutomationBridgeResult:
         """
         安全执行资源 OCR 预检。
         输入：
-            无。
+            progress_reporter: 兼容旧任务的进度回调。
+            task_context: v0.6.0 可取消任务上下文。
         输出：
             AutomationBridgeResult: 玩家资源识别结构。
         使用示例：
@@ -238,16 +242,19 @@ class AutomationBridge:
             "正在检查玩家资源 OCR 结构。",
             get_ocr_task_api().scan_resource_status,
             progress_reporter,
+            task_context,
         )
 
     def run_automation_environment_check(
         self,
         progress_reporter: Optional[Callable[[int, str, str], object]] = None,
+        task_context: Optional[TaskExecutionContext] = None,
     ) -> AutomationBridgeResult:
         """
         安全执行自动化环境预检。
         输入：
-            无。
+            progress_reporter: 兼容旧任务的进度回调。
+            task_context: v0.6.0 可取消任务上下文。
         输出：
             AutomationBridgeResult: 配置、目录和可选依赖状态。
         使用示例：
@@ -259,6 +266,7 @@ class AutomationBridge:
             "正在检查自动化与 OCR 基础环境。",
             get_adb_task_api().run_environment_check,
             progress_reporter,
+            task_context,
         )
 
     def _run_safe_api(
@@ -266,8 +274,9 @@ class AutomationBridge:
         kind: TaskStateKind,
         task_name: str,
         start_message: str,
-        api_call: Callable[[], AdbTaskResult | OcrTaskResult],
+        api_call: Callable[..., AdbTaskResult | OcrTaskResult],
         progress_reporter: Optional[Callable[[int, str, str], object]] = None,
+        task_context: Optional[TaskExecutionContext] = None,
     ) -> AutomationBridgeResult:
         """
         统一执行 ADB/OCR 预检 API。
@@ -275,28 +284,39 @@ class AutomationBridge:
             kind: 运行期任务类型。
             task_name: 用户可见任务名。
             start_message: 启动提示。
-            api_call: 无参核心 API 函数。
+            api_call: 支持 task_context 关键字的核心 API 函数。
+            progress_reporter: 兼容旧任务的进度回调。
+            task_context: v0.6.0 可取消任务上下文。
         输出：
             AutomationBridgeResult: GUI 可直接展示的结果。
         使用示例：
             self._run_safe_api(TaskStateKind.AUTO_TESTING, "环境预检", "...", api.run_environment_check)
         """
+        reporter = task_context.progress_reporter if task_context is not None else progress_reporter
         self.runtime_manager.set_task_state(kind, 10, start_message, task_name)
-        if progress_reporter is not None:
-            progress_reporter(10, start_message, "")
+        if reporter is not None:
+            reporter(10, start_message, "")
         try:
-            raw_result = api_call()
+            if task_context is not None:
+                task_context.raise_if_cancelled(f"{task_name}已取消。")
+            raw_result = api_call(task_context=task_context)
+        except TaskCancelledError as exc:
+            message = str(exc) or f"{task_name}已取消。"
+            self.runtime_manager.set_task_state(TaskStateKind.IDLE, 0, message, task_name)
+            if reporter is not None:
+                reporter(0, message, "cancelled at safe point")
+            return AutomationBridgeResult(False, "cancelled", message, "cancelled at safe point")
         except Exception as exc:
             message = f"{task_name}执行失败，请复制运行日志给开发者。"
             detail = f"{type(exc).__name__}: {exc}"
             self.runtime_manager.set_task_state(TaskStateKind.ERROR, 0, message, task_name, detail)
-            if progress_reporter is not None:
-                progress_reporter(0, message, detail)
+            if reporter is not None:
+                reporter(0, message, detail)
             self.logger.exception(message)
             return AutomationBridgeResult(False, "error", message, detail)
 
         result = self._convert_task_result(raw_result)
-        final_kind = TaskStateKind.IDLE if result.success else TaskStateKind.ERROR
+        final_kind = TaskStateKind.IDLE if result.success or result.status == "cancelled" else TaskStateKind.ERROR
         self.runtime_manager.set_task_state(
             final_kind,
             100 if result.success else 0,
@@ -304,8 +324,8 @@ class AutomationBridge:
             task_name,
             "" if result.success else result.detail,
         )
-        if progress_reporter is not None:
-            progress_reporter(100 if result.success else 0, result.message, result.detail)
+        if reporter is not None:
+            reporter(100 if result.success else 0, result.message, result.detail)
         return result
 
     def _find_first_module(self, candidates: Iterable[str]) -> Optional[ModuleType]:
@@ -433,6 +453,7 @@ class AutomationBridge:
             str(raw_result.message),
             str(raw_result.detail),
             raw_result.payload,
+            tuple(raw_result.warnings),
         )
 
 

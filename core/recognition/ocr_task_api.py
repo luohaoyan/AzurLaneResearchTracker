@@ -16,9 +16,9 @@ from __future__ import annotations
 # ============================================================
 
 import importlib.util
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from core.contracts import RecognitionScene, StructuredTaskResult, TaskExecutionContext
 from core.utils.config_loader import get_config_loader
 from core.utils.logger import get_logger
 
@@ -27,8 +27,7 @@ from core.utils.logger import get_logger
 # 🏗️ 第二部分：核心类
 # ============================================================
 
-@dataclass(frozen=True)
-class OcrTaskResult:
+class OcrTaskResult(StructuredTaskResult):
     """
     OCR 任务执行结果。
     输入：
@@ -37,18 +36,12 @@ class OcrTaskResult:
         message: 用户可见说明。
         detail: 给测试或开发者看的补充信息。
         payload: 后续真实 OCR 继续沿用的结构化数据。
+        warnings: 不阻塞任务完成的识别警告列表。
     输出：
         不可变结果对象，可被 AutomationBridge 转成 GUI 结果。
     使用示例：
         result = get_ocr_task_api().scan_equipment_counts()
     """
-
-    success: bool
-    status: str
-    message: str
-    detail: str = ""
-    payload: Optional[Dict[str, Any]] = None
-
 
 class OcrTaskApi:
     """
@@ -78,46 +71,74 @@ class OcrTaskApi:
         self.config_loader = get_config_loader()
         self._initialized = True
 
-    def scan_equipment_counts(self, screenshot_path: Optional[str] = None) -> OcrTaskResult:
+    def scan_equipment_counts(
+        self,
+        screenshot_path: Optional[str] = None,
+        scene: RecognitionScene | str = RecognitionScene.EQUIPMENT_LIST,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> OcrTaskResult:
         """
         预检装备数量与碎片数量识别入口。
         输入：
             screenshot_path: 可选截图路径；当前阶段仅记录，不读取图片。
+            scene: 截图所属的稳定游戏场景。
+            task_context: 可选任务上下文，用于在安全点响应取消。
         输出：
             OcrTaskResult: 标准装备识别结果结构。
         使用示例：
             result = api.scan_equipment_counts("workdir/automation/screenshots/a.png")
         """
+        if task_context is not None:
+            task_context.raise_if_cancelled("装备 OCR 任务已取消。")
+        normalized_scene = RecognitionScene.normalize(scene)
         recognition = self._recognition_config()
         payload = {
             "target": "equipment_counts",
+            "scene": normalized_scene.value,
             "screenshot_path": screenshot_path,
             "regions": {
                 "equipment_region": recognition.get("equipment_region", []),
                 "fragment_region": recognition.get("fragment_region", []),
             },
             "result_schema": self._equipment_result_schema(),
+            "detections": [],
+            "equipment_records": [],
+            "warnings": [],
             "real_ocr_enabled": False,
         }
-        detail = "字段=equipment_id, owned_quantity, fragment_quantity；真实 OCR=未启用"
+        detail = "字段=equipment_id, equipment_count, fragment_count；真实 OCR=未启用"
         message = "装备 OCR 接口预检完成：已固定结果结构，等待 v0.6.0 接入截图识别。"
         self.logger.info(message)
         return OcrTaskResult(True, "reserved", message, detail, payload)
 
-    def scan_resource_status(self, screenshot_path: Optional[str] = None) -> OcrTaskResult:
+    def scan_resource_status(
+        self,
+        screenshot_path: Optional[str] = None,
+        scene: RecognitionScene | str = RecognitionScene.HARBOR,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> OcrTaskResult:
         """
         预检玩家资源识别入口。
         输入：
             screenshot_path: 可选截图路径；当前阶段仅记录，不读取图片。
+            scene: 截图所属的稳定游戏场景。
+            task_context: 可选任务上下文，用于在安全点响应取消。
         输出：
             OcrTaskResult: 标准玩家资源识别结果结构。
         使用示例：
             result = api.scan_resource_status()
         """
+        if task_context is not None:
+            task_context.raise_if_cancelled("资源 OCR 任务已取消。")
+        normalized_scene = RecognitionScene.normalize(scene)
         payload = {
             "target": "resource_status",
+            "scene": normalized_scene.value,
             "screenshot_path": screenshot_path,
             "result_schema": self._resource_result_schema(),
+            "detections": [],
+            "resource_status": None,
+            "warnings": [],
             "real_ocr_enabled": False,
         }
         detail = "字段=player_name, oil, coins, gems；真实 OCR=未启用"
@@ -125,16 +146,18 @@ class OcrTaskApi:
         self.logger.info(message)
         return OcrTaskResult(True, "reserved", message, detail, payload)
 
-    def check_engine(self) -> OcrTaskResult:
+    def check_engine(self, task_context: Optional[TaskExecutionContext] = None) -> OcrTaskResult:
         """
         检查 OCR 引擎依赖状态。
         输入：
-            无。
+            task_context: 可选任务上下文，用于在安全点响应取消。
         输出：
             OcrTaskResult: OpenCV/PaddleOCR 依赖是否可发现。
         使用示例：
             result = api.check_engine()
         """
+        if task_context is not None:
+            task_context.raise_if_cancelled("OCR 引擎检查已取消。")
         recognition = self._recognition_config()
         dependencies = {
             "opencv_cv2": importlib.util.find_spec("cv2") is not None,
@@ -171,8 +194,8 @@ class OcrTaskApi:
         """返回装备识别结果的字段契约。"""
         return [
             {"name": "equipment_id", "type": "str", "description": "装备 ID，如 S9-001 或 G0001"},
-            {"name": "owned_quantity", "type": "int", "description": "当前已拥有整装数量"},
-            {"name": "fragment_quantity", "type": "int", "description": "当前装备碎片数量"},
+            {"name": "equipment_count", "type": "int", "description": "当前已拥有整装数量"},
+            {"name": "fragment_count", "type": "int", "description": "当前装备碎片数量"},
             {"name": "confidence", "type": "float", "description": "OCR 或模板匹配置信度"},
         ]
 
