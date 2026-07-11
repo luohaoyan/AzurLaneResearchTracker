@@ -789,6 +789,52 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
         font-size: 12px;
     }}
 
+    QWidget#task_drawer {{
+        background: transparent;
+    }}
+
+    QFrame#task_drawer_panel {{
+        background: {t.surface_soft};
+        border-left: 1px solid {t.line};
+    }}
+
+    QLabel#task_drawer_title {{
+        color: {t.text};
+        font-size: 15px;
+        font-weight: 700;
+    }}
+
+    QPushButton#task_drawer_toggle_button {{
+        background: {t.surface};
+        color: {t.azure};
+        border: 1px solid {t.line};
+        border-radius: {t.radius}px;
+        font-weight: 700;
+    }}
+
+    QPushButton#task_drawer_toggle_button:hover {{
+        border-color: {t.azure};
+        color: {t.text};
+    }}
+
+    QListWidget#task_list {{
+        background: {t.table_row};
+        color: {t.text};
+        border: 1px solid {t.line};
+        border-radius: {t.radius}px;
+        padding: 4px;
+    }}
+
+    QListWidget#task_list::item {{
+        padding: 6px 8px;
+        border-bottom: 1px solid {t.line};
+    }}
+
+    QListWidget#task_list::item:selected {{
+        background: {t.surface_soft};
+        color: {t.text};
+    }}
+
     QStatusBar {{
         background: {t.surface};
         color: {t.text_muted};

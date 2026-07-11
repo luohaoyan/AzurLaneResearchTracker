@@ -17,11 +17,14 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import inspect
 import sys
 from dataclasses import dataclass
 from types import ModuleType
 from typing import Any, Callable, Dict, Iterable, Optional
 
+from core.automation.adb_task_api import AdbTaskResult, get_adb_task_api
+from core.recognition.ocr_task_api import OcrTaskResult, get_ocr_task_api
 from core.state.runtime_state import TaskStateKind, get_runtime_state_manager
 from core.utils.logger import get_logger
 
@@ -80,7 +83,10 @@ class AutomationBridge:
         self.logger = get_logger()
         self.runtime_manager = get_runtime_state_manager()
 
-    def run_crawler_update(self) -> AutomationBridgeResult:
+    def run_crawler_update(
+        self,
+        progress_reporter: Optional[Callable[[int, str, str], object]] = None,
+    ) -> AutomationBridgeResult:
         """
         安全执行资料爬取更新入口。
         输入：
@@ -90,12 +96,20 @@ class AutomationBridge:
         使用示例：
             result = bridge.run_crawler_update()
         """
-        self.runtime_manager.set_task_state(
-            TaskStateKind.EQUIPMENT_UPDATING,
-            5,
-            "正在检查资料爬取模块。",
-            "资料爬取与更新",
-        )
+        def report(progress: int, message: str, detail: str = "") -> None:
+            """同时更新运行期状态和 GUI 任务清单。"""
+            safe_progress = max(0, min(100, int(progress)))
+            self.runtime_manager.set_task_state(
+                TaskStateKind.EQUIPMENT_UPDATING,
+                safe_progress,
+                message,
+                "资料爬取与更新",
+                detail,
+            )
+            if progress_reporter is not None:
+                progress_reporter(safe_progress, message, detail)
+
+        report(5, "正在检查资料爬取模块。")
         module = self._find_first_module(self.CRAWLER_MODULE_CANDIDATES)
         if module is None:
             message = "资料爬取模块尚未接入当前 GUI 分支；请等待 crawler 分支合并或前往 GitHub 下载新版本。"
@@ -106,6 +120,8 @@ class AutomationBridge:
                 "资料爬取与更新",
                 "crawler module not found",
             )
+            if progress_reporter is not None:
+                progress_reporter(0, message, "crawler module not found")
             self.logger.warning(message)
             return AutomationBridgeResult(False, "missing", message, "crawler module not found")
 
@@ -114,25 +130,183 @@ class AutomationBridge:
             message = "已找到资料爬取模块，但没有发现 GUI 约定的更新入口。"
             detail = f"module={module.__name__}, expected={','.join(self.CRAWLER_ENTRY_CANDIDATES)}"
             self.runtime_manager.set_task_state(TaskStateKind.ERROR, 0, message, "资料爬取与更新", detail)
+            if progress_reporter is not None:
+                progress_reporter(0, message, detail)
             self.logger.warning(f"{message} {detail}")
             return AutomationBridgeResult(False, "unavailable", message, detail)
 
         try:
-            self.runtime_manager.set_task_state(TaskStateKind.EQUIPMENT_UPDATING, 35, "正在执行资料更新。", "资料爬取与更新")
-            raw_result = entry()
+            report(8, "正在执行资料更新。")
+            raw_result = self._call_crawler_entry(entry, report)
         except Exception as exc:
             message = "资料更新执行失败，可能是网页结构变化或 crawler 模块异常；请复制运行日志给开发者。"
             detail = f"{type(exc).__name__}: {exc}"
             self.runtime_manager.set_task_state(TaskStateKind.ERROR, 0, message, "资料爬取与更新", detail)
+            if progress_reporter is not None:
+                progress_reporter(0, message, detail)
             self.logger.exception("资料爬取更新失败")
             return AutomationBridgeResult(False, "error", message, detail)
 
         message = self._success_message(raw_result)
         self.runtime_manager.set_task_state(TaskStateKind.IDLE, 100, message, "资料爬取与更新")
+        if progress_reporter is not None:
+            progress_reporter(100, message, self._success_detail(raw_result))
         self.logger.info(message)
         payload = raw_result if isinstance(raw_result, dict) else None
         detail = self._success_detail(raw_result)
         return AutomationBridgeResult(True, "success", message, detail, payload)
+
+    def run_adb_connection_check(
+        self,
+        progress_reporter: Optional[Callable[[int, str, str], object]] = None,
+    ) -> AutomationBridgeResult:
+        """
+        安全执行 ADB 连接预检。
+        输入：
+            无。
+        输出：
+            AutomationBridgeResult: 配置、路径和设备串号预检结果。
+        使用示例：
+            result = bridge.run_adb_connection_check()
+        """
+        return self._run_safe_api(
+            TaskStateKind.AUTO_TESTING,
+            "ADB 连接预检",
+            "正在检查模拟器 ADB 配置。",
+            get_adb_task_api().check_connection,
+            progress_reporter,
+        )
+
+    def run_adb_screenshot_capture(
+        self,
+        progress_reporter: Optional[Callable[[int, str, str], object]] = None,
+    ) -> AutomationBridgeResult:
+        """
+        安全执行 ADB 截图预检。
+        输入：
+            无。
+        输出：
+            AutomationBridgeResult: 截图目录和命名规则预检结果。
+        使用示例：
+            result = bridge.run_adb_screenshot_capture()
+        """
+        return self._run_safe_api(
+            TaskStateKind.SCREENSHOT_CAPTURING,
+            "ADB 截图预检",
+            "正在准备截图采集目录。",
+            get_adb_task_api().capture_screenshot,
+            progress_reporter,
+        )
+
+    def run_ocr_equipment_scan(
+        self,
+        progress_reporter: Optional[Callable[[int, str, str], object]] = None,
+    ) -> AutomationBridgeResult:
+        """
+        安全执行装备 OCR 预检。
+        输入：
+            无。
+        输出：
+            AutomationBridgeResult: 装备数量与碎片识别结构。
+        使用示例：
+            result = bridge.run_ocr_equipment_scan()
+        """
+        return self._run_safe_api(
+            TaskStateKind.OCR_PROCESSING,
+            "装备 OCR 预检",
+            "正在检查装备 OCR 结果结构。",
+            get_ocr_task_api().scan_equipment_counts,
+            progress_reporter,
+        )
+
+    def run_ocr_resource_scan(
+        self,
+        progress_reporter: Optional[Callable[[int, str, str], object]] = None,
+    ) -> AutomationBridgeResult:
+        """
+        安全执行资源 OCR 预检。
+        输入：
+            无。
+        输出：
+            AutomationBridgeResult: 玩家资源识别结构。
+        使用示例：
+            result = bridge.run_ocr_resource_scan()
+        """
+        return self._run_safe_api(
+            TaskStateKind.OCR_PROCESSING,
+            "资源 OCR 预检",
+            "正在检查玩家资源 OCR 结构。",
+            get_ocr_task_api().scan_resource_status,
+            progress_reporter,
+        )
+
+    def run_automation_environment_check(
+        self,
+        progress_reporter: Optional[Callable[[int, str, str], object]] = None,
+    ) -> AutomationBridgeResult:
+        """
+        安全执行自动化环境预检。
+        输入：
+            无。
+        输出：
+            AutomationBridgeResult: 配置、目录和可选依赖状态。
+        使用示例：
+            result = bridge.run_automation_environment_check()
+        """
+        return self._run_safe_api(
+            TaskStateKind.AUTO_TESTING,
+            "自动化环境预检",
+            "正在检查自动化与 OCR 基础环境。",
+            get_adb_task_api().run_environment_check,
+            progress_reporter,
+        )
+
+    def _run_safe_api(
+        self,
+        kind: TaskStateKind,
+        task_name: str,
+        start_message: str,
+        api_call: Callable[[], AdbTaskResult | OcrTaskResult],
+        progress_reporter: Optional[Callable[[int, str, str], object]] = None,
+    ) -> AutomationBridgeResult:
+        """
+        统一执行 ADB/OCR 预检 API。
+        输入：
+            kind: 运行期任务类型。
+            task_name: 用户可见任务名。
+            start_message: 启动提示。
+            api_call: 无参核心 API 函数。
+        输出：
+            AutomationBridgeResult: GUI 可直接展示的结果。
+        使用示例：
+            self._run_safe_api(TaskStateKind.AUTO_TESTING, "环境预检", "...", api.run_environment_check)
+        """
+        self.runtime_manager.set_task_state(kind, 10, start_message, task_name)
+        if progress_reporter is not None:
+            progress_reporter(10, start_message, "")
+        try:
+            raw_result = api_call()
+        except Exception as exc:
+            message = f"{task_name}执行失败，请复制运行日志给开发者。"
+            detail = f"{type(exc).__name__}: {exc}"
+            self.runtime_manager.set_task_state(TaskStateKind.ERROR, 0, message, task_name, detail)
+            if progress_reporter is not None:
+                progress_reporter(0, message, detail)
+            self.logger.exception(message)
+            return AutomationBridgeResult(False, "error", message, detail)
+
+        result = self._convert_task_result(raw_result)
+        final_kind = TaskStateKind.IDLE if result.success else TaskStateKind.ERROR
+        self.runtime_manager.set_task_state(
+            final_kind,
+            100 if result.success else 0,
+            result.message,
+            task_name,
+            "" if result.success else result.detail,
+        )
+        if progress_reporter is not None:
+            progress_reporter(100 if result.success else 0, result.message, result.detail)
+        return result
 
     def _find_first_module(self, candidates: Iterable[str]) -> Optional[ModuleType]:
         """
@@ -171,6 +345,32 @@ class AutomationBridge:
             if callable(entry):
                 return entry
         return None
+
+    @staticmethod
+    def _call_crawler_entry(
+        entry: Callable[..., Any],
+        progress_callback: Callable[[int, str, str], object],
+    ) -> Any:
+        """
+        调用 crawler 入口，并在入口支持时传入进度回调。
+        输入：
+            entry: crawler 更新函数。
+            progress_callback: GUI 进度回调。
+        输出：
+            Any: crawler 原始返回值。
+        使用示例：
+            raw = AutomationBridge._call_crawler_entry(run_update, reporter)
+        """
+        try:
+            signature = inspect.signature(entry)
+        except (TypeError, ValueError):
+            return entry()
+        parameters = signature.parameters.values()
+        accepts_progress = any(parameter.name == "progress_callback" for parameter in parameters)
+        accepts_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters)
+        if accepts_progress or accepts_kwargs:
+            return entry(progress_callback=progress_callback)
+        return entry()
 
     @staticmethod
     def _success_message(raw_result: Any) -> str:
@@ -215,6 +415,25 @@ class AutomationBridge:
         warnings = raw_result.get("warnings") or []
         warning_text = f"告警: {len(warnings)}"
         return "；".join(["，".join(count_parts), "；".join(path_parts), warning_text]).strip("；")
+
+    @staticmethod
+    def _convert_task_result(raw_result: AdbTaskResult | OcrTaskResult) -> AutomationBridgeResult:
+        """
+        将核心层任务结果转换为 GUI 桥接结果。
+        输入：
+            raw_result: ADB 或 OCR API 返回值。
+        输出：
+            AutomationBridgeResult。
+        使用示例：
+            result = AutomationBridge._convert_task_result(raw)
+        """
+        return AutomationBridgeResult(
+            bool(raw_result.success),
+            str(raw_result.status),
+            str(raw_result.message),
+            str(raw_result.detail),
+            raw_result.payload,
+        )
 
 
 # ============================================================

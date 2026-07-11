@@ -66,6 +66,7 @@ def test_main_window_creates_navigation_and_pages(qapp: QApplication) -> None:
     assert "v0.5.0" in window.windowTitle()
     assert window.navigation_list.count() == 9
     assert window.page_stack.count() == 9
+    assert window.task_drawer.width() == window.task_drawer.collapsed_width
     assert set(window.pages) == {
         "dashboard",
         "user_data",
@@ -78,6 +79,36 @@ def test_main_window_creates_navigation_and_pages(qapp: QApplication) -> None:
         "about",
     }
     assert window.log_drawer.toggle_button.text() == "展开日志"
+
+    window.close()
+
+
+def test_main_window_task_drawer_overlays_without_layout_shift(qapp: QApplication) -> None:
+    """右侧任务抽屉展开时应覆盖在主界面上，不改变导航栏和页面栈布局。"""
+    window = MainWindow()
+    window.resize(1280, 820)
+    window.show()
+    qapp.processEvents()
+
+    original_page_geometry = window.page_stack.geometry()
+    original_navigation_width = window.navigation_panel.width()
+    central_right = window.centralWidget().rect().right()
+
+    window.task_drawer.set_expanded(True, animate=False)
+    qapp.processEvents()
+
+    assert window.page_stack.geometry() == original_page_geometry
+    assert window.navigation_panel.width() == original_navigation_width
+    assert window.task_drawer.geometry().right() == central_right
+    assert window.task_drawer.width() == window.task_drawer.expanded_width
+
+    window.task_drawer.set_expanded(False, animate=False)
+    qapp.processEvents()
+
+    assert window.page_stack.geometry() == original_page_geometry
+    assert window.task_drawer.geometry().right() == central_right
+    assert window.task_drawer.width() == window.task_drawer.collapsed_width
+    assert window.task_drawer.height() == window.task_drawer.collapsed_height
 
     window.close()
 

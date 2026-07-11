@@ -208,6 +208,7 @@ class RuntimeStateManager:
         self.logger = get_logger()
         self.player_status = RuntimePlayerStatus()
         self.task_state = TaskState()
+        self._last_logged_task_state: Optional[TaskState] = None
         self._initialized = True
 
     def update_player_from_ocr(self, data: Dict[str, Any]) -> None:
@@ -257,7 +258,7 @@ class RuntimeStateManager:
             manager.set_task_state(TaskStateKind.EXPORTING, 80, "正在导出")
         """
         safe_progress = max(0, min(100, int(progress)))
-        self.task_state = TaskState(
+        next_task_state = TaskState(
             kind=kind,
             current_task=current_task or self._default_task_name(kind),
             progress=safe_progress,
@@ -266,7 +267,10 @@ class RuntimeStateManager:
             user_message=message or self._default_message(kind),
             last_error=last_error or "无",
         )
-        self.logger.info(f"运行状态更新：{self.task_state.display_name()} {safe_progress}%")
+        self.task_state = next_task_state
+        if self._should_log_task_state(next_task_state):
+            self.logger.info(f"运行状态更新：{next_task_state.display_name()} {safe_progress}%")
+            self._last_logged_task_state = next_task_state
 
     def get_full_state(self) -> Dict[str, Any]:
         """
@@ -295,7 +299,31 @@ class RuntimeStateManager:
         """
         self.player_status = RuntimePlayerStatus()
         self.task_state = TaskState()
+        self._last_logged_task_state = None
         self.logger.info("运行期状态已重置")
+
+    def _should_log_task_state(self, next_task_state: TaskState) -> bool:
+        """
+        判断当前任务状态是否值得写入日志。
+        输入：
+            next_task_state: 本次即将展示给 GUI 的任务状态。
+        输出：
+            bool: True 表示写入 INFO 日志；False 表示只刷新内存状态。
+        使用示例：
+            if self._should_log_task_state(state): ...
+        """
+        previous_logged_state = self._last_logged_task_state
+        if previous_logged_state is None:
+            return True
+        if next_task_state.kind == TaskStateKind.ERROR:
+            return True
+        if next_task_state.kind != previous_logged_state.kind:
+            return True
+        if next_task_state.current_task != previous_logged_state.current_task:
+            return True
+        if next_task_state.progress in (0, 100) and next_task_state.progress != previous_logged_state.progress:
+            return True
+        return abs(next_task_state.progress - previous_logged_state.progress) >= 10
 
     @staticmethod
     def _default_task_name(kind: TaskStateKind) -> str:
