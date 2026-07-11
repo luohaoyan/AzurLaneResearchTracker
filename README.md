@@ -39,7 +39,7 @@
 
 ## 当前版本：v0.5.1
 
-已完成 GUI 界面 + Wiki 装备爬虫，764/766 项测试通过（99.7%）。
+已完成 GUI 界面 + Wiki 装备爬虫，543/546 项测试通过（99.5%）。
 
 下一步：v0.6.0 ADB 自动化 + PaddleOCR 识别。
 
@@ -60,7 +60,7 @@
 | `core/recognition/` | — | 📋 | OpenCV + PaddleOCR 识别（v0.6.0） |
 | `config/` | games / simulators / ui / crawler | ✅ | 全局 + UI + 爬虫配置 |
 | `data/` | CSV + user_records + exports | ✅ | 装备库 + 用户记录 + 导出 |
-| `test/` + `qa_tests/` | 764/766 项测试 | ✅ | 99.7% 通过率 |
+| `test/` + `qa_tests/` | 543/546 项测试 | ✅ | 99.5% 通过率 |
 
 ## 快速开始
 
