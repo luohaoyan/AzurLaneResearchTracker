@@ -27,6 +27,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from core.state.runtime_state import TaskStateKind, get_runtime_state_manager
+from ui.task_manager import get_gui_task_manager
 from ui.widgets.log_drawer import LogDrawer
 
 
@@ -57,9 +58,11 @@ def qapp() -> Generator[QApplication, None, None]:
 @pytest.fixture()
 def log_drawer(qapp: QApplication) -> Generator[LogDrawer, None, None]:
     """创建单个日志抽屉，并在测试结束后关闭窗口释放 Qt 对象。"""
+    get_gui_task_manager().reset_for_tests()
     drawer = LogDrawer()
     yield drawer
     drawer.close()
+    get_gui_task_manager().reset_for_tests()
 
 
 # ============================================================
@@ -137,3 +140,4 @@ def test_log_drawer_copy_diagnostic_info(log_drawer: LogDrawer) -> None:
     assert "当前任务: 自动化测试中" in copied
     assert "任务进度: 40%" in copied
     assert "自动化检测开始" in copied
+    assert "后台任务清单" in copied

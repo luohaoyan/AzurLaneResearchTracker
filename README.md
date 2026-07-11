@@ -4,84 +4,80 @@
 
 ## 功能特点
 
-- **PySide6 GUI 界面**（9 页导航 + 阵营皮肤系统 + 日志抽屉 + 趋势图）
-  - 港区总览 / 装备库 / 科研进度 / 历史趋势 / 自动化实验室 / 小游戏 / 设置 / 关于
-  - 铁血/东煌等多套阵营皮肤 + 可折叠日志抽屉（筛选/复制诊断）
-- **Wiki 装备爬虫**（装备图鉴 + 研究室双线解析 + 自动同步 + 备份机制）
-- 安卓模拟器自动化操作（雷电 / MuMu，接口就绪）
-- OpenCV + PaddleOCR 图像识别（v0.6.0）（接口就绪）
-- 装备库管理（增删改查 / 批量导入 / 图片映射）
-- 科研期数管理（跨管理器关联查询）
+- PySide6 桌面 GUI（9 页面 + 6 套阵营皮肤 + matplotlib 趋势图 + 日志抽屉 + 秘书舰）
+- Wiki 装备爬虫（757 件装备 + 754 张图片 + 9 期科研，自动同步至正式表）
+- 装备库管理（增删改查 / 批量导入 / 图片映射 / 稀有度筛选 / 科研期筛选）
+- 科研进度追踪（按期保存目标彩装数 + 开始时间 + 官方日期 PR1-PR9 + 金彩比 + 欧非评价）
+- 历史趋势分析（matplotlib 折线图 / 金彩比趋势 / 装备碎片趋势 / 多装备叠加 / 悬停提示）
 - 碎片等值自动计算（8 种装备类别，int 整数运算）
 - 欧非值计算（按期汇总 + 期数范围均值 + 历史趋势，Decimal 精确 3 位小数）
-- 用户数据按日管理 + ASCII 折线图展示
+- 用户数据按日管理 + 日期范围查询
 - 特殊装备独立管理
 - 公式可配置化（等值映射 + 欧非阈值，修改后持久化）
 - CLI 命令行交互（交互菜单 + 子命令模式）
 - CSV / Excel 数据导出（一键全套报告）
-- PySide6 数据可视化（表格 / matplotlib 折线图 / 柱状图）
+- 统一后台任务管理器（QThread + 单长任务锁 + 任务取消预留 + 独立任务抽屉）
+- 爬虫同步安全（原子写入 + 旧行保留，防半成品覆盖正式表）
+- v0.6.0 ADB / OCR 接口预留
+
+## 当前版本：v0.5.1
+
+已完成基础设施层、数据层、计算层、CLI 入口、GUI 界面和 Wiki 装备爬虫，
+593/595 项测试通过（99.7%）。
+
+新特性：Wiki统计学排名制欧非公式 + 测试体系版本化重组。
+
+下一步：v0.6.0 ADB 自动化 + PaddleOCR 识别。
 
 ## 技术栈
 
 | 类别 | 技术 |
 |------|------|
 | 语言 | Python 3.12 |
-| 数据存储 | CSV |
+| 数据存储 | CSV（utf-8-sig） |
 | 配置格式 | JSON |
+| GUI | PySide6（LGPL）+ matplotlib |
+| 爬虫 | requests + BeautifulSoup4 |
 | 图像处理 | OpenCV + Pillow |
-| OCR | PaddleOCR |
-| GUI | PySide6 |
+| OCR | PaddleOCR 3.x（v0.6.0） |
 | CLI | argparse + prettytable |
 | Excel 导出 | openpyxl |
-| Wiki 爬虫 | requests + BeautifulSoup |
-| 测试 | pytest |
-| 模拟器控制 | ADB |
-
-## 当前版本：v0.5.1
-
-已完成 GUI 界面 + Wiki 装备爬虫，543/546 项测试通过（99.5%）。
-
-下一步：v0.6.0 ADB 自动化 + PaddleOCR 识别。
+| 测试 | pytest + unittest |
+| 模拟器控制 | ADB（雷电优先，v0.6.0） |
 
 ## 项目架构
 
 | 目录 | 模块 | 状态 | 说明 |
 |------|------|------|------|
-| `core/utils/` | logger / path_manager / config_loader | ✅ | 日志 / 路径 / 配置加载 |
-| `core/data/` | rarity / equipment / research manager | ✅ | 稀有度 / 装备 / 科研期数 |
-| `core/data/` | special_equipment / equipment_updater | ✅ | 特殊装备 / 批量导入 |
-| `core/data/` | export_manager | ✅ | CSV / Excel 数据导出 |
-| `core/calculation/` | formula / user_data manager | ✅ | 公式配置 / 用户数据 |
-| `core/calculation/` | fragment / luck calculator | ✅ | 碎片等值 / 欧非值 |
-| `core/cli/` | app | ✅ | CLI 交互菜单 + 子命令 |
-| `ui/` | main_window / theme / widgets | ✅ | 9 页 GUI + 阵营皮肤 + 日志抽屉 |
-| `crawler/` | equipment / research / sync / integration | ✅ | Wiki 爬虫 + 自动同步 + 备份 |
-| `core/automation/` | — | 📋 | ADB 模拟器控制（v0.6.0） |
-| `core/recognition/` | — | 📋 | OpenCV + PaddleOCR 识别（v0.6.0） |
-| `config/` | games / simulators / ui / crawler | ✅ | 全局 + UI + 爬虫配置 |
-| `data/` | CSV + user_records + exports | ✅ | 装备库 + 用户记录 + 导出 |
-| `test/` + `qa_tests/` | 543/546 项测试 | ✅ | 99.5% 通过率 |
+| core/utils/ | logger / path_manager / config_loader | ✅ | 日志 / 路径 / 配置 |
+| core/data/ | rarity / equipment / research manager | ✅ | 稀有度 / 装备 / 科研期数 |
+| core/data/ | special_equipment / equipment_updater | ✅ | 特殊装备 / 批量导入 |
+| core/data/ | export_manager | ✅ | CSV / Excel 导出 |
+| core/calculation/ | formula / user_data manager | ✅ | 公式配置 / 用户数据 |
+| core/calculation/ | fragment / luck calculator | ✅ | 碎片等值 / 欧非值 |
+| core/calculation/ | trend_analyzer / research_progress | ✅ | 趋势分析 / 科研进度 |
+| core/cli/ | app | ✅ | CLI 交互菜单 + 子命令 |
+| crawler/ | equipment / research / sync / integration | ✅ | Wiki 爬虫 + 同步器 |
+| ui/ | main_window / theme / widgets / pages | ✅ | PySide6 桌面界面 |
+| ui/ | automation_bridge / secretary_pack | ✅ | 自动化桥接 / 秘书舰 |
+| core/state/ | runtime_state / task_manager | ✅ | 运行状态 / 任务管理 |
+| core/automation/ | — | 📋 | ADB 模拟器控制 |
+| core/recognition/ | — | 📋 | OpenCV + PaddleOCR |
+| config/ | games / simulators / ui / crawler | ✅ | 全部配置文件 |
+| data/ | CSV + user_records + exports + images | ✅ | 装备库 + 用户记录 + 导出 |
+| test/ + qa_tests/ | 593/595 项测试 | ✅ | 99.7% 通过率 |
 
 ## 快速开始
 
 ```bash
-# 安装依赖
 pip install -r requirements.txt
 
-# CLI 交互模式
-python main.py
+python -m ui.main_window          # 启动 GUI
+python main.py                    # CLI 交互模式
+python main.py status             # CLI 子命令
+python main.py record             # 数据录入
+python main.py export             # 数据导出
+python -m core.data.crawler_update  # 更新装备库
 
-# CLI 子命令
-python main.py status
-python main.py record
-python main.py export
-
-# 启动 GUI 界面
-python -m ui.main_window
-
-# Wiki 装备爬虫
-python -m crawler.equipment_crawler
-
-# 运行全部测试
-python -m pytest test/ -q
+python -m pytest test/ -q         # 运行全部测试
 ```

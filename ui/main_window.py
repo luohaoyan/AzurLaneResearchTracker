@@ -23,8 +23,8 @@ from typing import Any, Dict, List, Optional, Sequence
 from matplotlib import rcParams
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from PySide6.QtCore import QEasingCurve, QEvent, QObject, QParallelAnimationGroup, QDate, QPropertyAnimation, QThread, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QColor, QIcon, QMovie, QPixmap, QTextCharFormat, QWheelEvent
+from PySide6.QtCore import QEasingCurve, QEvent, QObject, QParallelAnimationGroup, QDate, QPropertyAnimation, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QColor, QIcon, QMovie, QPixmap, QResizeEvent, QTextCharFormat, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -65,12 +65,15 @@ from core.state.runtime_state import TaskStateKind, get_runtime_state_manager
 from core.utils.config_loader import get_config_loader
 from core.utils.logger import get_logger
 from core.utils.path_manager import PathManager
-from ui.automation_bridge import AutomationBridgeResult, get_automation_bridge
+from ui.automation_bridge import get_automation_bridge
+from ui.automation_task_specs import get_automation_task_definition, list_automation_task_definitions
 from ui.future_hooks import FeatureHookRegistry, FutureFeatureSpec, get_feature_hook_registry
 from ui.secretary_pack import validate_secretary_pack
+from ui.task_manager import BackgroundTaskSpec, get_gui_task_manager
 from ui.theme import ThemeTokens, build_stylesheet, get_theme_skin, install_application_fonts, list_theme_skins
 from ui.ui_config import get_ui_config_manager
 from ui.widgets.log_drawer import LogDrawer
+from ui.widgets.task_drawer import TaskDrawer
 
 rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial Unicode MS", "DejaVu Sans"]
 rcParams["axes.unicode_minus"] = False
@@ -95,6 +98,23 @@ def get_gui_version() -> str:
     if not raw_version:
         raw_version = "0.5.0"
     return raw_version if raw_version.startswith("v") else f"v{raw_version}"
+
+
+def read_bridge_result(result: object, field_name: str, default: object = "") -> object:
+    """
+    从 AutomationBridgeResult 或 dict 中读取字段。
+    输入：
+        result: 后台任务返回值。
+        field_name: 字段名称。
+        default: 缺省值。
+    输出：
+        object: 字段值，供 GUI 展示使用。
+    使用示例：
+        message = read_bridge_result(result, "message")
+    """
+    if isinstance(result, dict):
+        return result.get(field_name, default)
+    return getattr(result, field_name, default)
 
 
 def polish_data_table(table: QTableWidget, row_height: int = 44) -> None:
@@ -230,39 +250,6 @@ class BusyOverlay(QWidget):
         """推进转动字符。"""
         self._frame_index = (self._frame_index + 1) % len(self._frames)
         self.spinner_label.setText(self._frames[self._frame_index])
-
-
-class CrawlerUpdateWorker(QObject):
-    """
-    资料爬取后台执行器。
-    输入：
-        automation_bridge: 提供 run_crawler_update() 的桥接对象。
-    输出：
-        finished 信号携带 AutomationBridgeResult。
-    使用示例：
-        worker.moveToThread(thread)
-    """
-
-    finished = Signal(object)
-
-    def __init__(self, automation_bridge: object) -> None:
-        """保存桥接对象，等待线程启动后执行。"""
-        super().__init__()
-        self.automation_bridge = automation_bridge
-
-    @Slot()
-    def run(self) -> None:
-        """在线程中执行 crawler 更新，避免阻塞 GUI 主线程。"""
-        try:
-            result = self.automation_bridge.run_crawler_update()
-        except Exception as exc:
-            result = AutomationBridgeResult(
-                False,
-                "error",
-                "资料更新执行失败，可能是网页结构变化或更新模块异常；请复制运行日志给开发者。",
-                f"{type(exc).__name__}: {exc}",
-            )
-        self.finished.emit(result)
 
 
 def get_visible_research_phases(min_phase_number: int = 2) -> List[Dict[str, Any]]:
@@ -1228,10 +1215,9 @@ class UserDataPage(BasePage):
         self.research_manager = get_research_manager()
         self.user_data_manager = get_user_data_manager()
         self.automation_bridge = get_automation_bridge()
+        self.task_manager = get_gui_task_manager()
         self.all_equipment_rows: List[Dict[str, object]] = self.equipment_manager.get_equipment_with_image()
         self._icon_cache: Dict[str, QIcon] = {}
-        self._crawler_thread: Optional[QThread] = None
-        self._crawler_worker: Optional[CrawlerUpdateWorker] = None
         self._build_views()
         self.busy_overlay = BusyOverlay(self)
 
@@ -1567,45 +1553,34 @@ class UserDataPage(BasePage):
         使用示例：
             page._update_library_from_crawler()
         """
-        if self._crawler_thread is not None and self._crawler_thread.isRunning():
-            self.library_status_label.setText("装备资料还在更新中，指挥官先喝口茶等一下。")
+        spec = BackgroundTaskSpec(
+            "library_crawler_update",
+            "装备库资料更新",
+            TaskStateKind.EQUIPMENT_UPDATING,
+            "正在调用爬虫更新正式装备表。",
+            cancel_supported=False,
+        )
+        if not self.task_manager.start_task(spec, self.automation_bridge.run_crawler_update, self._on_library_crawler_finished):
+            self.library_status_label.setText("已有长任务正在运行，请等待完成后再更新装备表。")
             return
         self.library_status_label.setText("正在调用爬虫更新正式装备表，请稍候。")
         self.busy_overlay.show_busy("正在向资料库远征，装备情报下载中，请稍候。")
         self.update_library_button.setEnabled(False)
         self.refresh_library_button.setEnabled(False)
-        self._start_crawler_update_worker(self._on_library_crawler_finished)
 
-    def _start_crawler_update_worker(self, finished_handler: object) -> None:
-        """启动资料更新后台线程。"""
-        thread = QThread(self)
-        worker = CrawlerUpdateWorker(self.automation_bridge)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(finished_handler)
-        worker.finished.connect(thread.quit)
-        worker.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._clear_crawler_worker)
-        self._crawler_thread = thread
-        self._crawler_worker = worker
-        thread.start()
-
-    def _clear_crawler_worker(self) -> None:
-        """清理后台线程引用。"""
-        self._crawler_thread = None
-        self._crawler_worker = None
-
-    def _on_library_crawler_finished(self, result: AutomationBridgeResult) -> None:
+    def _on_library_crawler_finished(self, result: object) -> None:
         """资料更新完成后刷新状态和按钮。"""
         self.busy_overlay.hide_busy()
         self.update_library_button.setEnabled(True)
         self.refresh_library_button.setEnabled(True)
-        if result.success:
-            detail = f" {result.detail}" if result.detail else ""
-            self.library_status_label.setText(f"{result.message}{detail} 请点击“刷新装备表”载入到当前界面。")
+        success = bool(read_bridge_result(result, "success", False))
+        message = str(read_bridge_result(result, "message", "资料更新已结束。"))
+        detail_text = str(read_bridge_result(result, "detail", ""))
+        if success:
+            detail = f" {detail_text}" if detail_text else ""
+            self.library_status_label.setText(f"{message}{detail} 请点击“刷新装备表”载入到当前界面。")
             return
-        self.library_status_label.setText(f"{result.message} {result.detail}".strip())
+        self.library_status_label.setText(f"{message} {detail_text}".strip())
 
     def _refresh_equipment_sources_from_local(self) -> None:
         """
@@ -3464,8 +3439,11 @@ class AutomationLabPage(BasePage):
         super().__init__("自动化实验室", "检查模拟器连接、截图采集、OCR 识别和关键环境，帮助判断程序是否能正常运行。", parent)
         self.registry = registry
         self.automation_bridge = get_automation_bridge()
-        self._crawler_thread: Optional[QThread] = None
-        self._crawler_worker: Optional[CrawlerUpdateWorker] = None
+        self.task_manager = get_gui_task_manager()
+        self.automation_task_status_label = QLabel("待命：v0.6.0 自动化接口已预留，可从这里逐项预检。")
+        self.automation_task_status_label.setObjectName("card_caption")
+        self.automation_task_status_label.setWordWrap(True)
+        self.automation_task_buttons: Dict[str, QPushButton] = {}
         grid = QGridLayout()
         grid.setSpacing(12)
         self.root.addLayout(grid, stretch=1)
@@ -3477,6 +3455,7 @@ class AutomationLabPage(BasePage):
         ]):
             grid.addWidget(BasePage.build_card(title, body), index // 2, index % 2)
 
+        self.root.addWidget(self._build_automation_task_panel())
         self.crawler_status_label = QLabel("待命：资料爬取入口已接入，可从这里更新装备表、图片表和科研期数表。")
         self.crawler_status_label.setObjectName("panel_body")
         self.crawler_status_label.setWordWrap(True)
@@ -3499,6 +3478,65 @@ class AutomationLabPage(BasePage):
         self.root.addWidget(feature_panel)
         self.busy_overlay = BusyOverlay(self)
 
+    def _build_automation_task_panel(self) -> QFrame:
+        """
+        构建 v0.6.0 自动化预留接口面板。
+        输入：
+            无。
+        输出：
+            QFrame: 包含 ADB/OCR 预检按钮的任务入口。
+        使用示例：
+            panel = self._build_automation_task_panel()
+        """
+        panel = QFrame()
+        panel.setObjectName("content_panel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+
+        header = QHBoxLayout()
+        title = QLabel("v0.6.0 自动化预留接口")
+        title.setObjectName("panel_title")
+        header_note = QLabel("一次只允许一个长任务运行；取消仅为 OCR 等可安全重试任务预留。")
+        header_note.setObjectName("card_caption")
+        header_note.setWordWrap(True)
+        header.addWidget(title)
+        header.addWidget(header_note, stretch=1)
+        layout.addLayout(header)
+
+        grid = QGridLayout()
+        grid.setSpacing(10)
+        task_keys = [
+            "adb_connection_check",
+            "adb_screenshot_capture",
+            "ocr_equipment_scan",
+            "ocr_resource_scan",
+            "environment_check",
+        ]
+        for index, definition in enumerate(list_automation_task_definitions(task_keys)):
+            card = QFrame()
+            card.setObjectName("content_panel")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(14, 12, 14, 12)
+            card_layout.setSpacing(6)
+            title_label = QLabel(definition.title)
+            title_label.setObjectName("panel_title")
+            title_label.setMinimumHeight(24)
+            summary_label = QLabel(definition.summary)
+            summary_label.setObjectName("card_caption")
+            summary_label.setWordWrap(True)
+            button = QPushButton(definition.button_text)
+            button.clicked.connect(lambda _checked=False, key=definition.key: self._start_automation_task(key, self.automation_task_status_label))
+            self.automation_task_buttons[definition.key] = button
+            card_layout.addWidget(title_label)
+            card_layout.addWidget(summary_label)
+            card_layout.addWidget(button)
+            grid.addWidget(card, index // 2, index % 2)
+
+        layout.addLayout(grid)
+        layout.addWidget(self.automation_task_status_label)
+        return panel
+
     def _build_crawler_update_panel(self) -> QFrame:
         """
         构建资料爬取与更新入口。
@@ -3520,7 +3558,8 @@ class AutomationLabPage(BasePage):
         title.setObjectName("panel_title")
         self.crawler_update_button = QPushButton("检查并更新资料")
         self.crawler_update_button.setToolTip("调用 core.data.crawler_update.run_update()，更新装备、图片路径和科研基础资料。")
-        self.crawler_update_button.clicked.connect(self._on_crawler_update_clicked)
+        self.crawler_update_button.clicked.connect(lambda: self._start_automation_task("crawler_update", self.crawler_status_label))
+        self.automation_task_buttons["crawler_update"] = self.crawler_update_button
         title_row.addWidget(title)
         title_row.addStretch(1)
         title_row.addWidget(self.crawler_update_button)
@@ -3534,38 +3573,59 @@ class AutomationLabPage(BasePage):
         layout.addWidget(self.crawler_notice_label)
         return panel
 
-    def _on_crawler_update_clicked(self) -> None:
-        """触发资料爬取安全桥接入口，并给出友好状态。"""
-        if self._crawler_thread is not None and self._crawler_thread.isRunning():
-            self.crawler_status_label.setText("资料更新还在进行中，港区通讯中请稍候。")
+    def _start_automation_task(self, key: str, status_label: QLabel) -> None:
+        """
+        启动一个自动化预留长任务。
+        输入：
+            key: 自动化任务键。
+            status_label: 用于显示结果的状态标签。
+        输出：
+            None。
+        使用示例：
+            self._start_automation_task("ocr_resource_scan", self.automation_task_status_label)
+        """
+        definition = get_automation_task_definition(key)
+        if definition is None:
+            status_label.setText("未找到对应的自动化任务定义。")
             return
-        self.crawler_update_button.setEnabled(False)
-        self.busy_overlay.show_busy("正在向资料库远征，装备与科研情报更新中。")
-        thread = QThread(self)
-        worker = CrawlerUpdateWorker(self.automation_bridge)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(self._on_crawler_update_finished)
-        worker.finished.connect(thread.quit)
-        worker.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._clear_crawler_worker)
-        self._crawler_thread = thread
-        self._crawler_worker = worker
-        thread.start()
-        self.featureRequested.emit("crawler_update")
+        runner = getattr(self.automation_bridge, definition.bridge_method, None)
+        if not callable(runner):
+            status_label.setText("自动化桥接入口暂不可用，请稍后再试。")
+            return
+        if not self.task_manager.start_task(definition.to_background_spec(), runner, lambda result, task_key=key, label=status_label: self._on_automation_task_finished(task_key, result, label)):
+            status_label.setText("已有长任务正在运行，请等待完成后再启动该任务。")
+            return
+        self._set_automation_buttons_enabled(False)
+        self.busy_overlay.show_busy(definition.start_message)
+        status_label.setText(definition.start_message)
+        self.featureRequested.emit(definition.feature_key)
 
-    def _clear_crawler_worker(self) -> None:
-        """清理资料更新后台线程引用。"""
-        self._crawler_thread = None
-        self._crawler_worker = None
-
-    def _on_crawler_update_finished(self, result: AutomationBridgeResult) -> None:
-        """资料更新完成后回到主线程刷新 UI。"""
+    def _on_automation_task_finished(self, key: str, result: object, status_label: QLabel) -> None:
+        """
+        自动化任务完成后刷新 UI。
+        输入：
+            key: 任务键。
+            result: 后台任务返回值。
+            status_label: 对应的状态标签。
+        输出：
+            None。
+        使用示例：
+            self._on_automation_task_finished("crawler_update", result, self.crawler_status_label)
+        """
         self.busy_overlay.hide_busy()
-        self.crawler_update_button.setEnabled(True)
-        detail = f"\n{result.detail}" if result.detail and result.success else ""
-        self.crawler_status_label.setText(f"{result.message}{detail}")
+        self._set_automation_buttons_enabled(True)
+        success = bool(read_bridge_result(result, "success", False))
+        message = str(read_bridge_result(result, "message", "任务已结束。"))
+        detail_text = str(read_bridge_result(result, "detail", ""))
+        detail = f"\n{detail_text}" if detail_text and success else ""
+        status_label.setText(f"{message}{detail}")
+        if key == "crawler_update":
+            self.crawler_status_label.setText(f"{message}{detail}")
+
+    def _set_automation_buttons_enabled(self, enabled: bool) -> None:
+        """统一启用或禁用自动化实验室中的任务按钮。"""
+        for button in self.automation_task_buttons.values():
+            button.setEnabled(enabled)
 
     def _build_secretary_pack_panel(self) -> QFrame:
         """
@@ -4020,7 +4080,16 @@ class MainWindow(QMainWindow):
         root.addWidget(self.log_drawer)
 
         self.setCentralWidget(central)
+        self.task_drawer = TaskDrawer(central)
+        self.task_drawer.fit_to_parent()
+        self.task_drawer.raise_()
         self.navigation_list.setCurrentRow(0)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        """主窗口尺寸变化时，让悬浮任务抽屉继续贴住右侧边缘。"""
+        super().resizeEvent(event)
+        if hasattr(self, "task_drawer"):
+            self.task_drawer.fit_to_parent()
 
     def _build_navigation_panel(self) -> QWidget:
         """构建左侧导航栏。"""

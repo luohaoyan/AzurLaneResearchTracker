@@ -16,10 +16,11 @@ from __future__ import annotations
 # ============================================================
 
 from ui.widgets.log_drawer import GuiLogHandler, LogDrawer
+from ui.widgets.task_drawer import TaskDrawer
 
 
 # ============================================================
 # 🌐 第二部分：包导出声明
 # ============================================================
 
-__all__ = ["GuiLogHandler", "LogDrawer"]
+__all__ = ["GuiLogHandler", "LogDrawer", "TaskDrawer"]

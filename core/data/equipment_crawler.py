@@ -31,7 +31,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -659,15 +659,33 @@ class EquipmentCrawler:
         """并行下载时的线程任务入口。"""
         return self._download_image_with_session(self._get_image_session(), image_url, destination)
 
-    def _download_images(self, download_plan: Sequence[Tuple[EquipmentCard, Path]]) -> List[Path]:
+    def _download_images(
+        self,
+        download_plan: Sequence[Tuple[EquipmentCard, Path]],
+        progress_callback: Optional[Callable[[int, str, str], object]] = None,
+    ) -> List[Path]:
         """按配置并行下载图片，并保持输出顺序与输入一致。"""
         if not download_plan:
             return []
 
+        total_count = len(download_plan)
+        if progress_callback is not None:
+            progress_callback(0, "正在准备装备图片下载。", f"图片数量={total_count}")
+
         if self.settings.image_download_workers <= 1 or len(download_plan) == 1:
-            return [self.download_image(card.image_url, destination) for card, destination in download_plan]
+            image_paths: List[Path] = []
+            for index, (card, destination) in enumerate(download_plan, start=1):
+                image_paths.append(self.download_image(card.image_url, destination))
+                if progress_callback is not None:
+                    progress_callback(
+                        round(index * 100 / total_count),
+                        f"正在下载装备图片 {index}/{total_count}。",
+                        card.name,
+                    )
+            return image_paths
 
         results: Dict[int, Path] = {}
+        completed_count = 0
         with ThreadPoolExecutor(
             max_workers=self.settings.image_download_workers,
             thread_name_prefix="equipment-crawler",
@@ -679,6 +697,14 @@ class EquipmentCrawler:
             for future in as_completed(future_map):
                 index = future_map[future]
                 results[index] = future.result()
+                completed_count += 1
+                if progress_callback is not None:
+                    card = download_plan[index][0]
+                    progress_callback(
+                        round(completed_count * 100 / total_count),
+                        f"正在下载装备图片 {completed_count}/{total_count}。",
+                        card.name,
+                    )
 
         return [results[index] for index in range(len(download_plan))]
 
@@ -777,15 +803,25 @@ class EquipmentCrawler:
             shutil.copy2(image_path, target_dir / image_path.name)
         return all_imgs_dir
 
-    def crawl_all(self, workspace_name: Optional[str] = None) -> CrawlerResult:
+    def crawl_all(
+        self,
+        workspace_name: Optional[str] = None,
+        progress_callback: Optional[Callable[[int, str, str], object]] = None,
+    ) -> CrawlerResult:
         """执行全量装备抓取。"""
+        if progress_callback is not None:
+            progress_callback(5, "正在下载装备图鉴页面。", self.settings.source_url)
         html = self.fetch_page_html()
         workspace = self._prepare_workspace(workspace_name)
         raw_html_path = workspace["raw_dir"] / "equipment_atlas.html"
         raw_html_path.write_text(html, encoding="utf-8")
+        if progress_callback is not None:
+            progress_callback(15, "装备图鉴页面已保存，正在解析装备卡片。", str(raw_html_path))
 
         cards = extract_equipment_cards(html, self.settings)
         sampled_cards = assign_crawl_ids(cards)
+        if progress_callback is not None:
+            progress_callback(25, "装备卡片解析完成，正在生成图片下载计划。", f"装备数量={len(sampled_cards)}")
 
         download_plan: List[Tuple[EquipmentCard, Path]] = []
         for card in sampled_cards:
@@ -796,11 +832,22 @@ class EquipmentCrawler:
             destination = workspace["images_dir"] / rarity_folder / f"{card.crawl_id}{file_suffix}"
             download_plan.append((card, destination))
 
-        image_paths = self._download_images(download_plan)
+        download_progress_callback: Optional[Callable[[int, str, str], object]] = None
+        if progress_callback is not None:
+            download_progress_callback = lambda progress, message, detail="": progress_callback(
+                25 + round(int(progress) * 55 / 100),
+                message,
+                detail,
+            )
+        image_paths = self._download_images(download_plan, download_progress_callback)
+        if progress_callback is not None:
+            progress_callback(84, "装备图片下载完成，正在整理镜像目录。", f"图片数量={len(image_paths)}")
         mirror_dir = self._mirror_all_images(sampled_cards, image_paths)
 
         library_rows = self._build_library_rows(sampled_cards)
         image_rows = self._build_image_rows(sampled_cards, image_paths)
+        if progress_callback is not None:
+            progress_callback(92, "装备 stage CSV 已生成，正在写入清单。", f"装备行={len(library_rows)}")
 
         library_csv_path = workspace["manifests_dir"] / "equipment_library_stage.csv"
         images_csv_path = workspace["manifests_dir"] / "equipment_images_stage.csv"
@@ -839,6 +886,8 @@ class EquipmentCrawler:
         self.logger.info(
             f"full crawl completed: parsed={len(cards)}, downloaded={result.selected_count}, workspace={result.workspace_dir}, mirror={mirror_dir}"
         )
+        if progress_callback is not None:
+            progress_callback(100, "装备图鉴爬取完成。", f"工作区={result.workspace_dir}")
         return result
 
 

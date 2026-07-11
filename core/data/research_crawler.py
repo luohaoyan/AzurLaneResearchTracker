@@ -18,7 +18,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import requests
 from bs4 import BeautifulSoup
@@ -717,6 +717,7 @@ class ResearchCrawler:
         phase_limit: Optional[int] = None,
         common_limit: Optional[int] = None,
         workspace_name: Optional[str] = None,
+        progress_callback: Optional[Callable[[int, str, str], object]] = None,
     ) -> ResearchCrawlerResult:
         """执行一次科研爬虫，输出 stage 文件。"""
         original_settings = self.settings
@@ -730,16 +731,28 @@ class ResearchCrawler:
                     }
                 )
 
+            if progress_callback is not None:
+                progress_callback(10, "正在下载军部研究室页面。", self.settings.source_url)
             html = self.fetch_page_html()
             workspace = self._prepare_workspace(workspace_name)
             raw_html_path = workspace["raw_dir"] / self.settings.raw_html_name
             raw_html_path.write_text(html, encoding="utf-8")
+            if progress_callback is not None:
+                progress_callback(30, "科研页面已保存，正在解析期数与装备。", str(raw_html_path))
 
             common_names, phase_items, parse_warnings = self._parse_page(html)
             selected_common_names, selected_phase_items, limit_warnings = self._apply_limits(common_names, phase_items)
+            if progress_callback is not None:
+                progress_callback(
+                    55,
+                    "科研期数解析完成，正在分配 S0/Sx 编号。",
+                    f"期数={len(selected_phase_items)}；通用={len(selected_common_names)}",
+                )
 
             equipment_records, phase_records = self._assign_ids(selected_common_names, selected_phase_items)
             override_rows = self._build_override_rows(equipment_records)
+            if progress_callback is not None:
+                progress_callback(75, "科研装备编号完成，正在写入 stage CSV。", f"装备={len(equipment_records)}")
 
             phase_stage_path = workspace["manifests_dir"] / self.settings.phase_stage_name
             equipment_stage_path = workspace["manifests_dir"] / self.settings.equipment_stage_name
@@ -753,6 +766,8 @@ class ResearchCrawler:
             write_csv(phase_stage_path, phase_rows, CSV_PHASE_FIELDNAMES)
             write_csv(equipment_stage_path, [item.to_row() for item in equipment_records], CSV_EQUIPMENT_FIELDNAMES)
             write_csv(override_stage_path, override_rows, CSV_OVERRIDE_FIELDNAMES)
+            if progress_callback is not None:
+                progress_callback(90, "科研 stage CSV 写入完成，正在生成 manifest。", str(workspace["manifests_dir"]))
 
             result = ResearchCrawlerResult(
                 workspace_dir=workspace["run_dir"],
@@ -772,6 +787,8 @@ class ResearchCrawler:
             self.logger.info(
                 f"科研爬虫完成: 解析{result.parsed_phase_count}期, 通用{result.common_equipment_count}件, 总计{result.total_equipment_count}件, 工作区:{result.workspace_dir}"
             )
+            if progress_callback is not None:
+                progress_callback(100, "科研爬虫完成。", f"工作区={result.workspace_dir}")
             return result
         finally:
             self.settings = original_settings
@@ -781,13 +798,23 @@ class ResearchCrawler:
         phase_limit: Optional[int] = None,
         common_limit: Optional[int] = None,
         workspace_name: Optional[str] = None,
+        progress_callback: Optional[Callable[[int, str, str], object]] = None,
     ) -> ResearchCrawlerResult:
         """执行小规模科研爬虫。"""
-        return self.crawl_stage(phase_limit=phase_limit, common_limit=common_limit, workspace_name=workspace_name)
+        return self.crawl_stage(
+            phase_limit=phase_limit,
+            common_limit=common_limit,
+            workspace_name=workspace_name,
+            progress_callback=progress_callback,
+        )
 
-    def crawl_all(self, workspace_name: Optional[str] = None) -> ResearchCrawlerResult:
+    def crawl_all(
+        self,
+        workspace_name: Optional[str] = None,
+        progress_callback: Optional[Callable[[int, str, str], object]] = None,
+    ) -> ResearchCrawlerResult:
         """执行全量科研爬虫。"""
-        return self.crawl_stage(workspace_name=workspace_name)
+        return self.crawl_stage(workspace_name=workspace_name, progress_callback=progress_callback)
 
 
 def get_research_crawler(

@@ -27,7 +27,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from ..utils.config_loader import get_config_loader
 from ..utils.logger import get_logger
@@ -526,6 +526,7 @@ class CrawlerDataSynchronizer:
         special_rows: Sequence[Dict[str, str]],
         special_ids: set[str],
         source_run_dir: Path,
+        progress_callback: Optional[Callable[[int, str, str], object]] = None,
     ) -> Tuple[List[Dict[str, str]], List[Dict[str, str]], List[Path], List[str]]:
         """把装备爬虫和科研爬虫的结果合成最终 CSV 行。"""
         image_source_index = _build_image_source_index(
@@ -549,7 +550,8 @@ class CrawlerDataSynchronizer:
 
         rarity_folder_map = _load_rarity_folder_map()
 
-        for row in source_library_rows:
+        total_source_count = max(1, len(source_library_rows))
+        for row_index, row in enumerate(source_library_rows, start=1):
             old_equipment_id = _sanitize_text(row.get("equipment_id", ""))
             equipment_name = _sanitize_text(row.get("name", ""))
             if not old_equipment_id or not equipment_name:
@@ -591,6 +593,12 @@ class CrawlerDataSynchronizer:
                     "image_path": _relative_text(destination_path, self.project_root),
                 }
             )
+            if progress_callback is not None and (row_index == total_source_count or row_index % 20 == 0):
+                progress_callback(
+                    round(row_index * 100 / total_source_count),
+                    f"正在同步装备图片 {row_index}/{total_source_count}。",
+                    equipment_name,
+                )
 
         for row in special_rows:
             equipment_id = _sanitize_text(row.get("equipment_id", ""))
@@ -712,8 +720,11 @@ class CrawlerDataSynchronizer:
         workspace_name: Optional[str] = None,
         equipment_run_dir: Optional[Path | str] = None,
         research_run_dir: Optional[Path | str] = None,
+        progress_callback: Optional[Callable[[int, str, str], object]] = None,
     ) -> CrawlerSyncResult:
         """????????????????????????????"""
+        if progress_callback is not None:
+            progress_callback(5, "正在解析爬虫 stage 工作区。", "")
         explicit_equipment_run_dir = _coerce_optional_path(equipment_run_dir)
         explicit_research_run_dir = _coerce_optional_path(research_run_dir)
         equipment_run_dir = self._resolve_equipment_run_dir(explicit_equipment_run_dir)
@@ -727,20 +738,35 @@ class CrawlerDataSynchronizer:
         research_phases_path = self.data_root / "research_phases.csv"
         data_images_dir = self.data_root / self.settings.data_images_dir_name
 
+        if progress_callback is not None:
+            progress_callback(15, "正在备份正式数据文件。", str(backup_dir))
         _backup_tree(equipment_library_path, backup_dir / "equipment_library.csv")
         _backup_tree(equipment_images_path, backup_dir / "equipment_images.csv")
         _backup_tree(research_phases_path, backup_dir / "research_phases.csv")
         _backup_tree(data_images_dir, backup_dir / self.settings.data_images_dir_name)
 
+        if progress_callback is not None:
+            progress_callback(25, "正在读取 stage CSV。", f"{equipment_run_dir}；{research_run_dir}")
         source_library_rows = _load_csv_rows(_resolve_stage_csv(equipment_run_dir, "equipment_library_stage.csv"))
         source_image_rows = _load_csv_rows(_resolve_stage_csv(equipment_run_dir, "equipment_images_stage.csv"))
         research_phase_rows = _load_csv_rows(_resolve_stage_csv(research_run_dir, "research_phases_stage.csv"))
         research_equipment_rows = _load_csv_rows(_resolve_stage_csv(research_run_dir, "research_equipment_stage.csv"))
 
+        if progress_callback is not None:
+            progress_callback(35, "正在建立科研装备索引。", f"科研装备={len(research_equipment_rows)}")
         preserved_special_rows, special_ids = self._load_special_rows()
         research_index = _build_research_index(research_equipment_rows)
 
+        if progress_callback is not None:
+            progress_callback(45, "正在清理旧图片目录并准备同步。", str(data_images_dir))
         _clean_directory_contents(data_images_dir)
+        collect_progress_callback: Optional[Callable[[int, str, str], object]] = None
+        if progress_callback is not None:
+            collect_progress_callback = lambda progress, message, detail="": progress_callback(
+                45 + round(int(progress) * 35 / 100),
+                message,
+                detail,
+            )
         final_library_rows, final_image_rows, copied_paths, warnings = self._collect_final_rows(
             source_library_rows=source_library_rows,
             source_image_rows=source_image_rows,
@@ -748,11 +774,16 @@ class CrawlerDataSynchronizer:
             special_rows=preserved_special_rows,
             special_ids=special_ids,
             source_run_dir=equipment_run_dir,
+            progress_callback=collect_progress_callback,
         )
 
+        if progress_callback is not None:
+            progress_callback(86, "正在原子写入正式 CSV。", f"装备={len(final_library_rows)}；图片={len(final_image_rows)}")
         _atomic_write_csv(equipment_library_path, final_library_rows, CSV_LIBRARY_FIELDNAMES)
         _atomic_write_csv(equipment_images_path, final_image_rows, CSV_IMAGE_FIELDNAMES)
         _atomic_write_csv(research_phases_path, research_phase_rows, CSV_PHASE_FIELDNAMES)
+        if progress_callback is not None:
+            progress_callback(92, "正在同步特殊装备 ID。", f"特殊装备={len(preserved_special_rows)}")
         special_equipment_path = self._sync_special_equipment_file(final_library_rows, warnings)
 
         manifest_path = workspace_dir / "crawler_sync_manifest.json"
@@ -776,6 +807,8 @@ class CrawlerDataSynchronizer:
         if special_equipment_path is not None:
             manifest_payload["special_equipment_path"] = str(special_equipment_path)
         _write_json(manifest_path, manifest_payload)
+        if progress_callback is not None:
+            progress_callback(100, "爬虫数据同步完成。", str(manifest_path))
 
         self.logger.info(
             "爬虫数据同步完成: 装备%s条, 图片%s条, 科研期数%s条, 工作区%s",

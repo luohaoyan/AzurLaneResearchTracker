@@ -13,8 +13,9 @@ from __future__ import annotations
 # 第一部分：导入依赖
 # ============================================================
 
+import inspect
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from ..utils.logger import get_logger
 from .crawler_sync import get_crawler_data_synchronizer
@@ -35,18 +36,68 @@ def _build_success_message(equipment_count: int, image_count: int, phase_count: 
     )
 
 
-def run_update(workspace_name: Optional[str] = None) -> Dict[str, Any]:
+def _call_with_optional_progress(
+    entry: Callable[..., Any],
+    progress_callback: Callable[[int, str, str], None],
+    **kwargs: Any,
+) -> Any:
+    """调用子模块入口，并在其支持时传入 progress_callback。"""
+    try:
+        signature = inspect.signature(entry)
+    except (TypeError, ValueError):
+        return entry(**kwargs)
+    parameters = signature.parameters
+    accepts_progress = "progress_callback" in parameters
+    accepts_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
+    call_kwargs = dict(kwargs)
+    if accepts_progress or accepts_kwargs:
+        call_kwargs["progress_callback"] = progress_callback
+    return entry(**call_kwargs)
+
+
+def run_update(
+    workspace_name: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, str, str], object]] = None,
+) -> Dict[str, Any]:
     """执行装备爬虫、科研爬虫和正式数据同步的完整流程。"""
     logger = get_logger()
     run_name = workspace_name or datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    equipment_result = get_equipment_crawler().crawl_all(workspace_name=run_name)
-    research_result = get_research_crawler().crawl_all(workspace_name=run_name)
-    sync_result = get_crawler_data_synchronizer().sync(
+    def report(progress: int, message: str, detail: str = "") -> None:
+        """把 crawler 阶段进度转交给 GUI 任务清单。"""
+        if progress_callback is not None:
+            progress_callback(max(0, min(100, int(progress))), message, detail)
+
+    def scale_progress(start: int, end: int) -> Callable[[int, str, str], None]:
+        """把子任务 0-100 进度映射到总任务进度区间。"""
+        def reporter(progress: int, message: str, detail: str = "") -> None:
+            safe_progress = max(0, min(100, int(progress)))
+            mapped_progress = start + round((end - start) * safe_progress / 100)
+            report(mapped_progress, message, detail)
+
+        return reporter
+
+    report(8, "正在准备资料更新工作区。", f"workspace={run_name}")
+    equipment_result = _call_with_optional_progress(
+        get_equipment_crawler().crawl_all,
+        scale_progress(10, 58),
+        workspace_name=run_name,
+    )
+    report(60, "装备图鉴爬取完成，正在解析科研期数。", f"装备条目={equipment_result.selected_count}")
+    research_result = _call_with_optional_progress(
+        get_research_crawler().crawl_all,
+        scale_progress(60, 75),
+        workspace_name=run_name,
+    )
+    report(78, "科研资料解析完成，正在安全同步正式 CSV。", f"科研装备={research_result.total_equipment_count}")
+    sync_result = _call_with_optional_progress(
+        get_crawler_data_synchronizer().sync,
+        scale_progress(78, 95),
         workspace_name=run_name,
         equipment_run_dir=equipment_result.workspace_dir,
         research_run_dir=research_result.workspace_dir,
     )
+    report(97, "正式数据已同步，正在刷新特殊装备缓存。", f"备份目录={sync_result.backup_dir}")
     get_special_equipment_manager().reload()
 
     message = _build_success_message(
@@ -55,6 +106,7 @@ def run_update(workspace_name: Optional[str] = None) -> Dict[str, Any]:
         len(sync_result.final_phase_rows),
     )
     logger.info(message)
+    report(100, message, f"workspace={run_name}")
 
     warnings = list(equipment_result.warnings) + list(research_result.warnings) + list(sync_result.warnings)
 

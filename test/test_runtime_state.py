@@ -88,6 +88,37 @@ def test_runtime_state_manager_error_is_not_running() -> None:
     assert state["task"]["last_error"] == "模拟器未连接"
 
 
+def test_runtime_state_manager_throttles_high_frequency_progress_logs() -> None:
+    """高频进度刷新应更新状态，但不能把每一次百分比都写进日志。"""
+    manager = RuntimeStateManager()
+    manager.reset()
+    log_messages: list[str] = []
+    original_logger = manager.logger
+
+    class _FakeLogger:
+        def info(self, message: str) -> None:
+            """收集 INFO 日志，模拟真实日志器。"""
+            log_messages.append(message)
+
+    try:
+        manager.logger = _FakeLogger()
+        for progress in range(1, 51):
+            manager.set_task_state(TaskStateKind.EQUIPMENT_UPDATING, progress, f"正在下载装备图片 {progress}/50")
+
+        state = manager.get_full_state()
+
+        assert state["task"]["progress"] == 50
+        assert state["task"]["user_message"] == "正在下载装备图片 50/50"
+        assert len(log_messages) <= 6
+        assert not any("2%" in message for message in log_messages)
+
+        manager.set_task_state(TaskStateKind.EQUIPMENT_UPDATING, 100, "资料更新完成")
+
+        assert any("100%" in message for message in log_messages)
+    finally:
+        manager.logger = original_logger
+
+
 def test_global_runtime_state_manager_can_reset() -> None:
     """全局管理器应能回到默认空闲状态，方便 GUI 测试和程序重启语义。"""
     manager = get_runtime_state_manager()

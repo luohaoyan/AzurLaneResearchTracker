@@ -1,7 +1,10 @@
 # test_config_loader.py
+from copy import deepcopy
 import json
 import os
 import sys
+from pathlib import Path
+from typing import Generator
 
 import pytest
 
@@ -10,6 +13,21 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from core.utils import config_loader as config_loader_module
 from core.utils.config_loader import ConfigSaveError, get_config_loader
+
+
+@pytest.fixture(autouse=True)
+def isolate_config_directory(tmp_path: Path) -> Generator[None, None, None]:
+    """把配置写入统一隔离到临时目录，禁止测试改写项目正式 JSON。"""
+    config_loader = get_config_loader()
+    original_dir = config_loader.config_dir
+    original_cache = deepcopy(config_loader.cache)
+    config_loader.config_dir = tmp_path
+    config_loader.cache = deepcopy(original_cache)
+    try:
+        yield
+    finally:
+        config_loader.config_dir = original_dir
+        config_loader.cache = original_cache
 
 
 def test_save_config_persists_to_disk_and_cache(tmp_path):

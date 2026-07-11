@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 from core.state.runtime_state import get_runtime_state_manager
 from core.utils.config_loader import get_config_loader
 from core.utils.logger import get_std_logger
+from ui.widgets.task_drawer import build_task_summary_text
 
 
 # ============================================================
@@ -151,8 +152,14 @@ class LogDrawer(QWidget):
         self.log_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.log_text.setPlaceholderText("本次运行日志会显示在这里。")
 
+        self.content_area = QWidget()
+        content_layout = QVBoxLayout(self.content_area)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        content_layout.addWidget(self.log_text)
+
         root.addWidget(header)
-        root.addWidget(self.log_text)
+        root.addWidget(self.content_area)
 
     def install_logging_handler(self) -> None:
         """
@@ -226,6 +233,7 @@ class LogDrawer(QWidget):
         self.toggle_button.setText("收起日志" if expanded else "展开日志")
 
         detail_widgets = [
+            self.content_area,
             self.log_text,
             self.filter_label,
             self.filter_combo,
@@ -329,6 +337,9 @@ class LogDrawer(QWidget):
             "",
             "本次运行日志:",
             "\n".join(entry["line"] for entry in self._entries[-200:]) or "无",
+            "",
+            "后台任务清单:",
+            build_task_summary_text(),
         ]
         QGuiApplication.clipboard().setText("\n".join(lines))
 
