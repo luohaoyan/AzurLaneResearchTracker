@@ -5,7 +5,7 @@
 | 属性 | 值 |
 |------|-----|
 | 项目名称 | 碧蓝航线科研装备统计器 (AzurLaneResearchTracker) |
-| 当前版本 | v0.5.0 |
+| 当前版本 | v0.5.1 |
 | 开发语言 | Python 3.12 |
 | IDE | PyCharm 2024 |
 | 测试框架 | pytest / unittest |
