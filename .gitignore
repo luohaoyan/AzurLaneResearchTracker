@@ -37,3 +37,7 @@ data/exports/
 
 # Crawler workdir
 workdir/
+
+# AI 辅助文件（本地保留，不纳入版本控制）
+AGENTS.md
+.skills/
