@@ -6,8 +6,8 @@ S0-004,data/images/super_rare/S0-004.jpg
 S0-005,data/images/super_rare/S0-005.jpg
 S0-006,data/images/super_rare/S0-006.jpg
 S0-007,data/images/super_rare/S0-007.jpg
-S1-001,
-S1-002,img/b.png
+S1-001,data/images/super_rare/S1-001.jpg
+S1-002,data/images/super_rare/S1-002.jpg
 S1-003,data/images/super_rare/S1-003.jpg
 S1-004,data/images/super_rare/S1-004.jpg
 S1-005,data/images/super_rare/S1-005.jpg
@@ -60,6 +60,9 @@ S9-003,data/images/super_rare/S9-003.jpg
 S9-004,data/images/super_rare/S9-004.jpg
 S9-005,data/images/super_rare/S9-005.jpg
 S9-006,data/images/super_rare/S9-006.jpg
+G0042,data/images/super_rare/G0042.jpg
+G0151,data/images/super_rare/G0151.jpg
+G0182,data/images/super_rare/G0182.jpg
 G0001,data/images/ultra_rare/G0001.jpg
 G0002,data/images/ultra_rare/G0002.jpg
 G0003,data/images/ultra_rare/G0003.jpg
@@ -90,7 +93,6 @@ G0037,data/images/super_rare/G0037.jpg
 G0038,data/images/super_rare/G0038.jpg
 G0039,data/images/super_rare/G0039.jpg
 G0041,data/images/super_rare/G0041.jpg
-G0042,data/images/super_rare/G0042.jpg
 G0043,data/images/super_rare/G0043.jpg
 G0045,data/images/super_rare/G0045.jpg
 G0046,data/images/super_rare/G0046.jpg
@@ -158,7 +160,6 @@ G0144,data/images/super_rare/G0144.jpg
 G0148,data/images/super_rare/G0148.jpg
 G0149,data/images/super_rare/G0149.jpg
 G0150,data/images/super_rare/G0150.jpg
-G0151,data/images/super_rare/G0151.jpg
 G0152,data/images/super_rare/G0152.jpg
 G0153,data/images/super_rare/G0153.jpg
 G0154,data/images/super_rare/G0154.jpg
@@ -185,7 +186,6 @@ G0175,data/images/super_rare/G0175.jpg
 G0176,data/images/super_rare/G0176.jpg
 G0178,data/images/super_rare/G0178.jpg
 G0179,data/images/super_rare/G0179.jpg
-G0182,data/images/super_rare/G0182.jpg
 G0183,data/images/super_rare/G0183.jpg
 G0184,data/images/super_rare/G0184.jpg
 G0185,data/images/super_rare/G0185.jpg

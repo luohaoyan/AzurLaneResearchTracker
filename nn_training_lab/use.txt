@@ -1,0 +1,91 @@
+已完成独立的整图识别流水线：
+
+```text
+整张截图
+→ 卡片/ROI 检测
+→ 半截卡片拒绝
+→ OpenCV 图标匹配
+→ OCR 数量识别
+→ OpenCV 不确定时调用神经网络
+→ 统一输出预览图、CSV、JSON
+```
+
+**使用方法**
+
+1. 把截图放到：
+
+```text
+G:\ALLPeoject\PythonProject\AzurLaneResearchTracker-OCR\nn_training_lab\screenshot_pipeline\test_img
+```
+
+2. 文件名包含稀有度，例如：
+
+```text
+design_rare_001.png
+design_elite_001.png
+design_super_rare_001.png
+design_ultra_rare_001.png
+```
+
+也支持 `blue`、`purple`、`gold`、`rainbow`。
+
+3. 双击运行：
+
+```text
+G:\ALLPeoject\PythonProject\AzurLaneResearchTracker-OCR\nn_training_lab\RUN_SCREENSHOT_PIPELINE.bat
+```
+
+不需要打开 PyCharm。
+
+**输出位置**
+
+每次运行会生成独立目录：
+
+```text
+nn_training_lab\screenshot_pipeline\test_out\run_时间戳\
+```
+
+其中：
+
+- `annotated\*_pipeline.png`：原截图标注预览
+- `icon_crops\*_cardXX_icon.png`：实际送入 OpenCV/NN 的 icon
+- `screenshot_pipeline_results.csv`：每张卡一行的结果
+- `screenshot_pipeline_results.json`：完整识别结构
+- `screenshot_pipeline_summary.json`：本轮统计
+
+预览颜色和文字：
+
+- 绿色：最终识别通过
+- 红色：需要人工复核
+- 橙色：半截卡片，已拒绝识别
+- 蓝框：icon ROI
+- 黄框：数量 OCR ROI
+- 标签会显示 `cv=... ocr=... nn=...`
+
+**结果字段**
+
+重点查看：
+
+```text
+opencv_equipment_id/name
+nn_equipment_id/name
+final_equipment_id/name
+recognition_source
+ocr_status
+fragment_count
+required_count
+visibility
+warnings
+```
+
+只有 OpenCV 和神经网络结果一致时，才会自动生成最终装备结果。神经网络单独猜出的结果只作为候选，不会强行确认。
+
+本轮烟测结果：20 张卡中检测到 12 张完整卡、8 张半截卡；OpenCV 成功 10 张，2 张触发 NN fallback，最终确认 10 张。该数据只是流程验证，不代表通用准确率。
+
+测试结果：
+
+- OCR/契约测试：`173 passed`
+- 完整 `test/`：`346 passed`
+- `.tmp_pytest*` 已清理
+
+核心入口：[run_screenshot_pipeline.py](/G:/ALLPeoject/PythonProject/AzurLaneResearchTracker-OCR/nn_training_lab/scripts/run_screenshot_pipeline.py)

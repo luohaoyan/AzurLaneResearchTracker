@@ -25,6 +25,7 @@ ENV/
 thumbs.db
 Logs/
 data/images/
+models/
 *.zip
 *.exe
 

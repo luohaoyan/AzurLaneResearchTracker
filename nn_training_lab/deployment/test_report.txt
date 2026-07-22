@@ -1,0 +1,114 @@
+装备 icon 部署与性能测试报告
+============================
+
+一、测试结论
+------------
+
+当前设计图装备 icon 识别已经可以进入测试工程师验收阶段。
+
+推荐正式方案：
+
+OpenCV 高置信直出 + OCR 辅助名称/数量 + ONNX Runtime 处理疑难 icon。
+
+PyTorch 不建议作为普通用户默认依赖，保留给训练和对照。
+
+
+二、模型与导出
+--------------
+
+源 PyTorch 模型：
+nn_training_lab\pytorch_icon_training\models\run_20260722_191241
+
+训练信息：
+
+- 训练设备：NVIDIA GeForce RTX 5070 Ti
+- epochs：80
+- label_key：equipment_name
+- 类别数：210
+- 训练样本：330
+- 验证样本：90
+- best_validation_top1：0.7888888888888889
+
+ONNX 导出目录：
+nn_training_lab\deployment\onnx_models\run_20260722_191241
+
+导出结果：
+
+- FP32：ok
+- FP16：ok
+- INT8 dynamic：ok
+
+
+三、后端 benchmark
+-----------------
+
+测试命令：
+python nn_training_lab\scripts\benchmark_icon_backends.py --pytorch-run nn_training_lab\pytorch_icon_training\models\run_20260722_191241 --onnx-dir nn_training_lab\deployment\onnx_models\run_20260722_191241 --limit 120
+
+输出目录：
+nn_training_lab\deployment\benchmark_out\run_20260722_192640
+
+120 个现有样本结果：
+
+- OpenCV：top1=0.975，top3=0.975，avg_ms=327.29
+- PyTorch CUDA：top1=0.9667，top3=0.975，avg_ms=76.59
+- ONNX FP32 CPU：top1=0.9667，top3=0.975，avg_ms=73.26
+
+额外 ONNX 模型测试：
+
+- ONNX INT8 dynamic CPU：
+  top1=0.9667，top3=0.975，avg_ms=89.16
+  结论：本机不比 FP32 快，暂不推荐默认。
+
+- ONNX FP16 CPU：
+  top1=0.9667，top3=0.975，avg_ms=12.73
+  结论：本机最快，可作为优先测试模型；其他机器需要复测。
+
+
+四、已验证样例
+--------------
+
+用户补充 icon：
+
+- equipment_name：试作型三联装310mm主炮#T0
+- equipment_id：S2-002
+- OpenCV top1 confidence：0.9999999
+- PyTorch top1 confidence：0.9895
+- ONNX FP32 top1 confidence：0.9841
+
+
+五、项目测试
+------------
+
+已运行：
+
+python -m pytest test\v060\ocr -q --basetemp=.tmp_pytest_single_icon
+
+结果：
+
+182 passed
+
+本轮新增 ONNX 测试后，还需要测试工程师在独立环境重新运行：
+
+python -m pytest test\v060\ocr -q --basetemp=.tmp_pytest_ocr_acceptance
+python -m pytest test\v060\contracts -q --basetemp=.tmp_pytest_contracts_acceptance
+
+
+六、已知限制
+------------
+
+1. benchmark 样本来自现有训练/图库体系，不代表独立真实截图准确率。
+2. 真实项目验收仍要使用未参与训练的新截图。
+3. DirectML/OpenVINO/TensorRT 目前只做 provider 探测，不作为默认依赖。
+4. INT8 是动态量化，不是校准后的静态量化；如果后续要压榨低端 CPU，需要专门准备校准集。
+5. 当前模型还是 ResNet18，后续若要进一步减小体积，可追加 MobileNetV3 或 EfficientNet-lite 对照实验。
+
+
+七、建议给测试工程师的验收重点
+------------------------------
+
+1. 在纯 CPU 机器上跑 recognition_workbench，确认 ONNX 可以正常 fallback。
+2. 在有 NVIDIA 独显机器上分别测 PyTorch 和 ONNX。
+3. 在核显机器上可选安装 onnxruntime-directml 后测 DmlExecutionProvider。
+4. 用新的设计图截图对照 annotated 和 CSV，重点看金装/彩装相似主炮、鱼雷类。
+5. 半截卡片必须继续 rejected，不允许被 NN 猜测为装备。

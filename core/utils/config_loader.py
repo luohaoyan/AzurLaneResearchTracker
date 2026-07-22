@@ -97,8 +97,8 @@ class ConfigLoader:
                     "connect_timeout": 10
                 },
                 "screen": {
-                    "width": 1920,
-                    "height": 1080,
+                    "width": 1280,
+                    "height": 720,
                     "dpi": 320
                 },
                 "performance": {
@@ -131,8 +131,8 @@ class ConfigLoader:
                     "connect_timeout": 10
                 },
                 "screen": {
-                    "width": 1600,
-                    "height": 900,
+                    "width": 1280,
+                    "height": 720,
                     "dpi": 240
                 },
                 "performance": {
@@ -166,8 +166,8 @@ class ConfigLoader:
                     "research_button": "resources/templates/azur_lane/ui_elements/research_button.png"
                 },
                 "recognition": {
-                    "equipment_region": [100, 200, 800, 600],
-                    "fragment_region": [900, 200, 400, 600],
+                    "equipment_region": [80, 160, 640, 480],
+                    "fragment_region": [720, 160, 320, 480],
                     "confidence_threshold": 0.8
                 },
                 "calculations": {

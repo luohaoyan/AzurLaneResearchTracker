@@ -1,0 +1,73 @@
+识别工作台使用说明（OpenCV + OCR + PyTorch）
+============================================
+
+一、最简单的测试
+----------------
+1. 把完整的 1280x720 设计图截图放到：
+   recognition_workbench\test_img
+2. 双击本目录下的 RUN_RECOGNITION.bat。
+3. 打开最新目录：
+   recognition_workbench\test_out\run_时间戳\
+
+如果只是给正式流程跑结构化结果，不想生成 annotated 预览图：
+双击 RUN_RECOGNITION_NO_PREVIEW.bat。
+
+二、PowerShell 指定目录
+-----------------------
+python recognition_workbench\run_recognition.py --input-dir "你的截图目录" --run-name "my_test"
+
+长截图使用：
+python recognition_workbench\run_recognition.py --input-dir "你的截图目录" --image-mode long_screenshot --run-name "my_long_test"
+
+关闭预览图：
+python recognition_workbench\run_recognition.py --input-dir "你的截图目录" --run-name "my_test" --no-preview
+
+指定 NN 后端：
+python recognition_workbench\run_recognition.py --nn-backend auto
+python recognition_workbench\run_recognition.py --nn-backend onnx
+python recognition_workbench\run_recognition.py --nn-backend pytorch
+python recognition_workbench\run_recognition.py --nn-backend off
+
+指定 ONNX FP16 模型：
+python recognition_workbench\run_recognition.py --nn-backend onnx --onnx-model equipment_icon_resnet18_fp16.onnx
+
+三、输出文件
+------------
+annotated\*_pipeline.png
+  原图标注预览。绿色表示最终接受，红色表示需要复核，橙色表示半截卡片被拒绝。
+  默认生成；加 --no-preview 或双击 RUN_RECOGNITION_NO_PREVIEW.bat 时不会生成。
+icon_crops\*_cardXX_icon.png
+  实际交给 OpenCV 和 PyTorch 的完整 icon 裁剪。
+screenshot_pipeline_results.csv
+  每张卡一行，包含 OpenCV、OCR、PyTorch top-k、最终名称和数量字段。
+screenshot_pipeline_results.json
+  同一轮的完整结构化结果。
+screenshot_pipeline_summary.json
+  本轮数量统计。它是流程统计，不是准确率证明。
+recognition_model.json
+  记录本轮使用的 PyTorch/ONNX 模型目录、实际 NN 后端和 equipment_name 标签契约。
+
+四、识别顺序
+------------
+整图 -> 卡片/ROI 检测 -> 半截卡拒绝 -> OpenCV icon + OCR -> OpenCV 不确定时调用 ONNX/PyTorch。
+只有 OpenCV 与名称 OCR/PyTorch 的证据满足阈值时才填写 final_equipment_name；冲突会保留 needs_review。
+模型主要输出 equipment_name。equipment_id 只从当前 data\equipment_library.csv 动态映射，供兼容使用。
+
+五、检查结果
+------------
+优先查看 CSV 的 final_status、final_equipment_name、recognition_source、opencv_confidence、
+nn_equipment_name、nn_confidence、fragment_count、required_count 和 warnings。
+partial_rejected 是预期行为：卡片边界或 icon 被截断时不识别，避免错误写入。
+
+六、单独测试一个 icon
+----------------------
+该模式要求完整正方形 icon（至少 64x64），不能直接输入整张 1280x720 截图：
+python nn_training_lab\pytorch_icon_training\scripts\predict_icon.py "icon.png" --model "nn_training_lab\pytorch_icon_training\models\run_20260722_181933" --top-k 5
+
+这个命令在终端逐行输出 JSON 候选；它不会写正式 CSV 或用户数据。
+当前 RUN_NN_INFERENCE.bat 是旧的 Paddle 单 icon 入口，验证 PyTorch 时使用上面的命令或本工作台。
+
+七、验收注意
+------------
+请使用没有进入训练集的截图，并人工对照 annotated 预览和 CSV。当前数据长尾明显，流程成功数不能直接等于真实准确率，
+没有独立真值标注前不得宣称达到 98%。

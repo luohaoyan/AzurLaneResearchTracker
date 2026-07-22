@@ -1,0 +1,125 @@
+装备 icon 部署说明
+==================
+
+一、测试工程师最快使用方式
+------------------------
+
+1. 放入完整设计图截图：
+   recognition_workbench\test_img\
+
+2. 双击运行：
+   recognition_workbench\RUN_RECOGNITION.bat
+
+3. 查看输出：
+   recognition_workbench\test_out\run_时间戳\
+
+4. 默认后端：
+   OpenCV + OCR + ONNX/PyTorch auto
+
+   auto 会优先使用：
+   nn_training_lab\deployment\onnx_models\run_20260722_191241\equipment_icon_resnet18_fp32.onnx
+
+   如果 ONNX Runtime 或模型不存在，会回退到 PyTorch。
+
+
+二、推荐正式接入策略
+--------------------
+
+设计图识别建议使用分层方案：
+
+1. OpenCV 先跑 icon 匹配。
+   命中高置信、无冲突时直接使用 OpenCV 结果。
+
+2. OCR 读取卡片名称和碎片数量。
+   名称 OCR 只作为辅助证据，不单独覆盖高置信 OpenCV。
+
+3. OpenCV ambiguous / unknown / 低置信时，调用 ONNX Runtime。
+   普通用户默认使用 ONNX，比 PyTorch 更容易部署。
+
+4. PyTorch 只保留给训练、调试和模型对照。
+   不建议作为普通用户默认运行依赖。
+
+
+三、ONNX 模型文件
+----------------
+
+当前导出目录：
+nn_training_lab\deployment\onnx_models\run_20260722_191241\
+
+文件说明：
+
+- equipment_icon_resnet18_fp32.onnx
+  通用 FP32 模型，兼容性最好。
+
+- equipment_icon_resnet18_fp16.onnx
+  半精度模型。本机 CPUExecutionProvider benchmark 速度最快，但其他机器仍需测试。
+
+- equipment_icon_resnet18_int8_dynamic.onnx
+  动态 INT8 量化模型。本机速度没有 FP16/FP32 快，暂不建议默认使用。
+
+- label_map.json
+  模型类别映射。label_key 是 equipment_name。
+
+- onnx_export_summary.json
+  导出摘要和 checker 状态。
+
+
+四、命令行用法
+--------------
+
+默认自动后端：
+python recognition_workbench\run_recognition.py
+
+强制 ONNX：
+python recognition_workbench\run_recognition.py --nn-backend onnx
+
+强制 PyTorch：
+python recognition_workbench\run_recognition.py --nn-backend pytorch
+
+关闭 NN，只测 OpenCV + OCR：
+python recognition_workbench\run_recognition.py --nn-backend off
+
+不生成 annotated 预览：
+python recognition_workbench\run_recognition.py --no-preview
+
+指定 ONNX FP16：
+python recognition_workbench\run_recognition.py --nn-backend onnx --onnx-model equipment_icon_resnet18_fp16.onnx
+
+
+五、重新导出 ONNX
+----------------
+
+python nn_training_lab\pytorch_icon_training\scripts\export_onnx.py --run-dir nn_training_lab\pytorch_icon_training\models\run_20260722_191241
+
+该命令会生成 FP32、FP16 和 INT8 动态量化版本。
+
+
+六、重新 benchmark
+-----------------
+
+综合对比：
+python nn_training_lab\scripts\benchmark_icon_backends.py --pytorch-run nn_training_lab\pytorch_icon_training\models\run_20260722_191241 --onnx-dir nn_training_lab\deployment\onnx_models\run_20260722_191241 --limit 120
+
+只测 ONNX FP16：
+python nn_training_lab\scripts\benchmark_icon_backends.py --skip-opencv --skip-pytorch --pytorch-run nn_training_lab\pytorch_icon_training\models\run_20260722_191241 --onnx-dir nn_training_lab\deployment\onnx_models\run_20260722_191241 --onnx-model equipment_icon_resnet18_fp16.onnx --limit 120
+
+
+七、硬件后端说明
+----------------
+
+当前代码通过 ONNX Runtime provider 自动探测后端：
+
+- CPUExecutionProvider：所有机器兜底。
+- CUDAExecutionProvider：需要 onnxruntime-gpu。
+- DmlExecutionProvider：需要 onnxruntime-directml，适合 Windows 核显/部分独显。
+- OpenVINOExecutionProvider：需要对应 OpenVINO/ONNX Runtime 构建。
+- TensorRTExecutionProvider：需要 TensorRT 和对应 ORT GPU 环境。
+
+当前 requirements 只固定基础 ONNX Runtime CPU 依赖。DirectML/OpenVINO/TensorRT 不强制安装，避免普通用户安装失败。
+
+
+八、准确率注意
+--------------
+
+当前 benchmark 使用现有训练/图库样本，属于工程诊断，不是独立真实截图准确率。
+真实验收仍要用用户新截图，人工确认 annotated 预览和 CSV。

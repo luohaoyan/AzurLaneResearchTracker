@@ -10,8 +10,8 @@
         "connect_timeout": 10
     },
     "screen": {
-        "width": 1920,
-        "height": 1080,
+        "width": 1280,
+        "height": 720,
         "dpi": 320
     },
     "performance": {
