@@ -22,8 +22,10 @@ from core.automation.adb_controller import (
     AdbConnectionResult,
     AdbDevice,
     AdbDisplayCheckResult,
+    AdbCommandResult,
     AdbPathResolution,
     AdbScreenshotResult,
+    AdbStateWaitResult,
     NavigationResult,
 )
 from core.automation.adb_task_api import get_adb_task_api
@@ -73,6 +75,29 @@ class FakeController:
         """模拟真实截图成功。"""
         artifact = ScreenshotArtifact(str((Path.cwd() / "fake.png").resolve()), scene, "127.0.0.1:7555")
         return AdbScreenshotResult(True, "ready", "ADB 截图完成。", artifact=artifact, method="exec-out")
+
+    def launch_game(self, package_name: str, **kwargs: Any) -> AdbCommandResult:
+        """模拟游戏启动成功。"""
+        return AdbCommandResult(True, "ok", "游戏已启动。")
+
+    def wait_for_state(self, expected_state: object, state_probe: object, **kwargs: Any) -> AdbStateWaitResult:
+        """模拟状态等待成功。"""
+        scene = RecognitionScene.EQUIPMENT_LIST
+        return AdbStateWaitResult(
+            True,
+            "ready",
+            "状态已稳定。",
+            str(expected_state),
+            screen_state="warehouse_material",
+            scene=scene,
+            scene_hint="material_tab",
+            screenshot_path=str((Path.cwd() / "state.png").resolve()),
+            resolution=(1280, 720),
+            timestamp="2026-07-23T12:00:00",
+            confidence=0.91,
+            attempts=2,
+            stable_frames=2,
+        )
 
     def run_sequence(self, sequence_name: str, scene_probe: object, **kwargs: Any) -> NavigationResult:
         """模拟导航成功。"""
@@ -135,3 +160,23 @@ def test_adb_task_api_environment_check_includes_display_contract() -> None:
     assert display["resolution"] == [1280, 720]
     assert display["recommended_resolution"] == [1280, 720]
     assert display["required_mode"] == "tablet"
+
+
+def test_adb_task_api_launch_game_and_wait_for_state_payloads() -> None:
+    """新 API 包装应透传 launch_game 和 wait_for_state 的结构化字段。"""
+    api = get_adb_task_api()
+    original_factory = api._controller_factory
+    api._controller_factory = FakeController
+    try:
+        launch = api.launch_game()
+        wait = api.wait_for_state("warehouse_material", lambda scene: True)
+    finally:
+        api._controller_factory = original_factory
+
+    assert launch.success is True
+    assert launch.payload is not None
+    assert launch.payload["package_name"] == "com.bilibili.azurlane"
+    assert wait.success is True
+    assert wait.payload is not None
+    assert wait.payload["screen_state"] == "warehouse_material"
+    assert wait.payload["scene"] == "equipment_list"

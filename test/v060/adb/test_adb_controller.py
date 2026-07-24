@@ -365,7 +365,17 @@ def test_display_environment_suggests_enabling_adb_when_unavailable() -> None:
 def test_run_sequence_uses_scene_probe_and_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     """导航应通过 scene_probe 判断到达状态，并最多重试两次。"""
     probe_calls = 0
-    runner = FakeRunner(lambda command, kwargs: _completed(command))
+    devices_output = "List of devices attached\n127.0.0.1:7555 device\n"
+    def handler(command: list[str], kwargs: dict[str, Any]) -> subprocess.CompletedProcess[Any]:
+        if "devices" in command:
+            return _completed(command, stdout=devices_output)
+        if "exec-out" in command:
+            return _completed(command, stdout=PNG_SIGNATURE + b"nav")
+        if "pull" in command:
+            return _completed(command)
+        return _completed(command)
+
+    runner = FakeRunner(handler)
     controller = _controller(runner)
     monkeypatch.setattr(
         controller,

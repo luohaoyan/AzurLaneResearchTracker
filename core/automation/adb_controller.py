@@ -18,6 +18,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -174,6 +175,132 @@ class AdbDeviceListResult:
 
 
 @dataclass(frozen=True)
+class AdbPackageInfo:
+    """
+    模拟器中已安装的 Android 应用包。
+    输入：
+        package_name/is_system/source。
+    输出：
+        可供应用选择和登录流程使用的稳定包信息。
+    使用示例：
+        package = AdbPackageInfo("com.bilibili.azurlane")
+    """
+
+    package_name: str
+    is_system: bool = False
+    source: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为 API payload。"""
+        return {
+            "package_name": self.package_name,
+            "is_system": self.is_system,
+            "source": self.source,
+        }
+
+
+@dataclass(frozen=True)
+class AdbPackageListResult:
+    """
+    应用包列表查询结果。
+    输入：
+        success/status/message/packages/source。
+    输出：
+        不依赖 Android SDK 类型的结构化应用列表。
+    使用示例：
+        result = controller.list_packages(include_system=False)
+    """
+
+    success: bool
+    status: str
+    message: str
+    packages: Tuple[AdbPackageInfo, ...] = ()
+    source: str = ""
+    adb_path: Optional[str] = None
+    adb_source: str = "missing"
+    warnings: Tuple[str, ...] = ()
+    command_results: Tuple[AdbCommandResult, ...] = ()
+
+    @property
+    def package_names(self) -> Tuple[str, ...]:
+        """返回去重后的包名元组，便于旧式调用。"""
+        return tuple(item.package_name for item in self.packages)
+
+    def to_payload(self) -> Dict[str, Any]:
+        """转换为任务 API payload。"""
+        return {
+            "packages": [item.to_dict() for item in self.packages],
+            "package_names": list(self.package_names),
+            "package_count": len(self.packages),
+            "source": self.source,
+            "adb_path": self.adb_path,
+            "adb_source": self.adb_source,
+            "commands": [item.to_dict() for item in self.command_results],
+        }
+
+
+@dataclass(frozen=True)
+class AdbSimulatorProfile:
+    """
+    单台 ADB 设备的模拟器指纹。
+    输入：
+        serial/state/type/confidence/evidence。
+    输出：
+        只读识别结果，不会擅自选择多设备或修改配置。
+    使用示例：
+        profile = controller.identify_simulator(device)
+    """
+
+    serial: str
+    state: str
+    simulator_type: str
+    confidence: float
+    evidence: Tuple[str, ...] = ()
+    properties: Dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为 API payload。"""
+        return {
+            "serial": self.serial,
+            "state": self.state,
+            "simulator_type": self.simulator_type,
+            "confidence": float(self.confidence),
+            "evidence": list(self.evidence),
+            "properties": dict(self.properties),
+        }
+
+
+@dataclass(frozen=True)
+class AdbSimulatorListResult:
+    """
+    当前 ADB 设备的模拟器识别结果。
+    输入：
+        profiles/命令状态。
+    输出：
+        可展示给用户并供后续选择模拟器配置的候选列表。
+    使用示例：
+        result = controller.detect_simulators()
+    """
+
+    success: bool
+    status: str
+    message: str
+    simulators: Tuple[AdbSimulatorProfile, ...] = ()
+    adb_path: Optional[str] = None
+    adb_source: str = "missing"
+    warnings: Tuple[str, ...] = ()
+
+    def to_payload(self) -> Dict[str, Any]:
+        """转换为任务 API payload。"""
+        return {
+            "simulators": [item.to_dict() for item in self.simulators],
+            "simulator_count": len(self.simulators),
+            "adb_path": self.adb_path,
+            "adb_source": self.adb_source,
+        }
+
+
+@dataclass(frozen=True)
 class AdbConnectionResult:
     """
     ADB 连接选择结果。
@@ -266,6 +393,13 @@ class AdbScreenshotResult:
     method: str = ""
     adb_path: Optional[str] = None
     adb_source: str = "missing"
+    resolution: Optional[Tuple[int, int]] = None
+    timestamp: str = ""
+    screen_state: str = ""
+    scene_hint: str = ""
+    elapsed_ms: int = 0
+    retry_count: int = 0
+    confidence: Optional[float] = None
     warnings: Tuple[str, ...] = ()
     detail: str = ""
 
@@ -279,6 +413,58 @@ class AdbScreenshotResult:
             "capture_method": self.method,
             "adb_path": self.adb_path,
             "adb_source": self.adb_source,
+            "resolution": list(self.resolution) if self.resolution else None,
+            "timestamp": self.timestamp,
+            "screen_state": self.screen_state,
+            "scene_hint": self.scene_hint,
+            "elapsed_ms": self.elapsed_ms,
+            "retry_count": self.retry_count,
+            "confidence": self.confidence,
+        }
+
+
+@dataclass(frozen=True)
+class AdbStateWaitResult:
+    """
+    状态等待结果。
+    输入：
+        expected_state/state_probe/timeout/stable_frames。
+    输出：
+        可直接被登录、仓库切换与弹窗处理流程复用的稳定状态确认结果。
+    使用示例：
+        result = controller.wait_for_state("harbor", probe)
+    """
+
+    success: bool
+    status: str
+    message: str
+    expected_state: str
+    screen_state: str = ""
+    scene: Optional[RecognitionScene] = None
+    scene_hint: str = ""
+    screenshot_path: Optional[str] = None
+    resolution: Optional[Tuple[int, int]] = None
+    timestamp: str = ""
+    confidence: Optional[float] = None
+    attempts: int = 0
+    stable_frames: int = 0
+    warnings: Tuple[str, ...] = ()
+    detail: str = ""
+
+    def to_payload(self) -> Dict[str, Any]:
+        """转换为结构化 payload。"""
+        return {
+            "expected_state": self.expected_state,
+            "screen_state": self.screen_state,
+            "scene": self.scene.value if self.scene else None,
+            "scene_hint": self.scene_hint,
+            "screenshot_path": self.screenshot_path,
+            "resolution": list(self.resolution) if self.resolution else None,
+            "timestamp": self.timestamp,
+            "confidence": self.confidence,
+            "attempts": self.attempts,
+            "stable_frames": self.stable_frames,
+            "warnings": list(self.warnings),
         }
 
 
@@ -299,6 +485,13 @@ class NavigationResult:
     message: str
     sequence_name: str
     target_scene: Optional[RecognitionScene] = None
+    target_screen_state: str = ""
+    screen_state: str = ""
+    scene_hint: str = ""
+    screenshot_path: Optional[str] = None
+    resolution: Optional[Tuple[int, int]] = None
+    timestamp: str = ""
+    confidence: Optional[float] = None
     attempts: int = 0
     warnings: Tuple[str, ...] = ()
     detail: str = ""
@@ -308,6 +501,13 @@ class NavigationResult:
         return {
             "sequence_name": self.sequence_name,
             "target_scene": self.target_scene.value if self.target_scene else None,
+            "target_screen_state": self.target_screen_state,
+            "screen_state": self.screen_state,
+            "scene_hint": self.scene_hint,
+            "screenshot_path": self.screenshot_path,
+            "resolution": list(self.resolution) if self.resolution else None,
+            "timestamp": self.timestamp,
+            "confidence": self.confidence,
             "attempts": self.attempts,
             "warnings": list(self.warnings),
         }
@@ -374,6 +574,51 @@ class AdbOperationSequenceResult:
             "steps": [step.to_dict() for step in self.steps],
             "failure_index": self.failure_index,
             "warnings": list(self.warnings),
+        }
+
+
+@dataclass(frozen=True)
+class AdbLoginResult:
+    """
+    游戏启动与登录等待结果。
+    输入：
+        包名、serial、尝试次数、前台包名和步骤结果。
+    输出：
+        可交给 GUI/OCR 整合层的登录状态；不保存账号密码，也不绕过验证码。
+    使用示例：
+        result = controller.login_game("com.bilibili.azurlane", scene_probe=probe)
+    """
+
+    success: bool
+    status: str
+    message: str
+    package_name: str
+    serial: Optional[str] = None
+    attempts: int = 0
+    foreground_package: Optional[str] = None
+    screen_state: str = ""
+    scene_hint: str = ""
+    screenshot_path: Optional[str] = None
+    resolution: Optional[Tuple[int, int]] = None
+    timestamp: str = ""
+    confidence: Optional[float] = None
+    steps: Tuple[AdbOperationStepResult, ...] = ()
+    warnings: Tuple[str, ...] = ()
+
+    def to_payload(self) -> Dict[str, Any]:
+        """转换为任务 API payload。"""
+        return {
+            "package_name": self.package_name,
+            "device_serial": self.serial,
+            "attempts": self.attempts,
+            "foreground_package": self.foreground_package,
+            "screen_state": self.screen_state,
+            "scene_hint": self.scene_hint,
+            "screenshot_path": self.screenshot_path,
+            "resolution": list(self.resolution) if self.resolution else None,
+            "timestamp": self.timestamp,
+            "confidence": self.confidence,
+            "steps": [step.to_dict() for step in self.steps],
         }
 
 
@@ -640,6 +885,276 @@ class AdbController:
             warnings=resolution.warnings,
         )
 
+    @staticmethod
+    def parse_getprop(output: str) -> Dict[str, str]:
+        """
+        解析 `adb shell getprop` 输出。
+        输入：
+            Android 属性文本，例如 `[ro.product.model]: [MuMu]`。
+        输出：
+            属性名到属性值的字典。
+        使用示例：
+            props = AdbController.parse_getprop(raw_output)
+        """
+        properties: Dict[str, str] = {}
+        for line in output.splitlines():
+            match = re.match(r"\s*\[([^\]]+)\]:\s*\[([^\]]*)\]", line)
+            if match:
+                properties[match.group(1)] = match.group(2)
+        return properties
+
+    @staticmethod
+    def parse_packages(output: str, *, source: str = "") -> Tuple[AdbPackageInfo, ...]:
+        """
+        解析 `dumpsys package` 或 `pm list packages` 输出。
+        输入：
+            Android 包列表文本；source 仅用于结果标记。
+        输出：
+            按首次出现顺序去重的应用包信息。
+        使用示例：
+            packages = AdbController.parse_packages("package:com.example.app")
+        """
+        package_pattern = re.compile(r"Package\s+\[([^\s\]]+)", re.IGNORECASE)
+        pm_pattern = re.compile(r"^\s*package:([^\s]+)", re.IGNORECASE)
+        name_pattern = re.compile(r"^[A-Za-z][A-Za-z0-9_.$-]*(?:\.[A-Za-z0-9_.$-]+)+$")
+        parsed: list[AdbPackageInfo] = []
+        current_name: Optional[str] = None
+        current_system = False
+
+        def append_current() -> None:
+            nonlocal current_name, current_system
+            if current_name and name_pattern.fullmatch(current_name):
+                parsed.append(AdbPackageInfo(current_name, current_system, source))
+            current_name = None
+            current_system = False
+
+        for raw_line in output.splitlines():
+            line = raw_line.strip()
+            package_match = package_pattern.search(line)
+            if package_match:
+                append_current()
+                current_name = package_match.group(1)
+                current_system = "SYSTEM" in line.upper()
+                continue
+
+            pm_match = pm_pattern.match(line)
+            if pm_match:
+                append_current()
+                package_name = pm_match.group(1).strip()
+                if name_pattern.fullmatch(package_name):
+                    parsed.append(AdbPackageInfo(package_name, False, source))
+                continue
+
+            if current_name:
+                upper_line = line.upper()
+                if ("SYSTEM" in upper_line and "FLAG" in upper_line) or "CODEPATH=/SYSTEM/" in upper_line:
+                    current_system = True
+        append_current()
+
+        unique: Dict[str, AdbPackageInfo] = {}
+        for item in parsed:
+            previous = unique.get(item.package_name)
+            if previous is None or (item.is_system and not previous.is_system):
+                unique[item.package_name] = item
+        return tuple(unique.values())
+
+    def list_packages(
+        self,
+        *,
+        serial: Optional[str] = None,
+        include_system: bool = False,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> AdbPackageListResult:
+        """
+        读取模拟器中已安装的程序包列表。
+        输入：
+            serial: 可选设备串号；include_system: 是否包含系统应用。
+        输出：
+            优先使用包管理器输出，失败后回退到另一种 Android 命令；不会向 GUI 抛 ADB 异常。
+        使用示例：
+            result = controller.list_packages(include_system=False)
+        """
+        self._raise_if_cancelled(task_context, "ADB 应用列表查询已取消。")
+        connection = self.check_connection(serial=serial, task_context=task_context)
+        if not connection.success or connection.selected_device is None:
+            return AdbPackageListResult(
+                False,
+                connection.status,
+                connection.message,
+                adb_path=connection.adb_path,
+                adb_source=connection.adb_source,
+                warnings=connection.warnings,
+            )
+
+        device_serial = connection.selected_device.serial
+        if include_system:
+            commands: Tuple[Tuple[str, Tuple[object, ...]], ...] = (
+                ("dumpsys", ("shell", "dumpsys", "package")),
+                ("pm", ("shell", "pm", "list", "packages")),
+            )
+        else:
+            commands = (
+                ("pm_user", ("shell", "pm", "list", "packages", "-3")),
+                ("dumpsys", ("shell", "dumpsys", "package")),
+            )
+
+        command_results: list[AdbCommandResult] = []
+        warnings = list(connection.warnings)
+        for source, args in commands:
+            self._raise_if_cancelled(task_context, "ADB 应用列表查询已取消。")
+            result = self.run_adb(
+                list(args),
+                serial=device_serial,
+                adb_path=connection.adb_path,
+                timeout=self.command_timeout,
+            )
+            command_results.append(result)
+            if not result.success:
+                warnings.append(f"{source} 应用列表查询失败: {result.status}")
+                continue
+            packages = self.parse_packages(result.stdout, source=source)
+            if not include_system:
+                packages = tuple(item for item in packages if not item.is_system)
+            if packages:
+                return AdbPackageListResult(
+                    True,
+                    "ready",
+                    f"发现 {len(packages)} 个已安装应用。",
+                    packages=packages,
+                    source=source,
+                    adb_path=connection.adb_path,
+                    adb_source=connection.adb_source,
+                    warnings=tuple(warnings),
+                    command_results=tuple(command_results),
+                )
+            warnings.append(f"{source} 应用列表为空，继续尝试回退命令。")
+
+        last_result = command_results[-1] if command_results else None
+        return AdbPackageListResult(
+            False,
+            last_result.status if last_result and not last_result.success else "error",
+            "无法读取模拟器中的应用列表。",
+            adb_path=connection.adb_path,
+            adb_source=connection.adb_source,
+            warnings=tuple(warnings),
+            command_results=tuple(command_results),
+        )
+
+    @staticmethod
+    def _simulator_type_for(
+        serial: str,
+        properties: Optional[Dict[str, str]] = None,
+    ) -> Tuple[str, float, Tuple[str, ...]]:
+        """根据 serial 与 Android 属性推断模拟器家族。"""
+        serial_lower = serial.lower()
+        props = {str(key).lower(): str(value).lower() for key, value in (properties or {}).items()}
+        evidence: list[str] = []
+        joined = " ".join(props.values())
+
+        if any(token in joined for token in ("mumu", "netease", "nemu")):
+            evidence.append("Android 属性包含 MuMu/Nemu 标识")
+            return "mumu", 0.95, tuple(evidence)
+        if any(token in joined for token in ("ldplayer", "leidian", "leidianbox")):
+            evidence.append("Android 属性包含雷电标识")
+            return "leidian", 0.95, tuple(evidence)
+        if "bluestacks" in joined or "bst" in joined:
+            evidence.append("Android 属性包含 BlueStacks 标识")
+            return "bluestacks", 0.95, tuple(evidence)
+        if "nox" in joined:
+            evidence.append("Android 属性包含夜神标识")
+            return "nox", 0.95, tuple(evidence)
+        if serial_lower.startswith("emulator-"):
+            evidence.append("serial 使用 Android Emulator 格式")
+            return "avd", 0.9, tuple(evidence)
+
+        port_match = re.search(r":(\d+)$", serial_lower)
+        port = int(port_match.group(1)) if port_match else 0
+        if port == 7555 or 16384 <= port <= 17408:
+            evidence.append(f"serial 端口 {port} 属于 MuMu 常见范围")
+            return "mumu", 0.75, tuple(evidence)
+        if 5555 <= port <= 5619:
+            evidence.append(f"serial 端口 {port} 处于雷电/BlueStacks 共用范围")
+            return "leidian_or_bluestacks", 0.5, tuple(evidence)
+        if 62001 <= port <= 63025:
+            evidence.append(f"serial 端口 {port} 属于夜神常见范围")
+            return "nox", 0.75, tuple(evidence)
+        evidence.append("未匹配已知模拟器指纹")
+        return "generic_adb", 0.35, tuple(evidence)
+
+    def identify_simulator(
+        self,
+        device: AdbDevice,
+        *,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> AdbSimulatorProfile:
+        """
+        识别单台 ADB 设备所属模拟器家族。
+        输入：
+            device: `adb devices -l` 解析出的设备。
+        输出：
+            指纹和置信度；低置信度结果要求用户确认，不自动修改配置。
+        使用示例：
+            profile = controller.identify_simulator(device)
+        """
+        self._raise_if_cancelled(task_context, "模拟器识别已取消。")
+        properties = dict(device.properties)
+        warnings: list[str] = []
+        if device.state == "device":
+            result = self.run_adb(
+                ["shell", "getprop"],
+                serial=device.serial,
+                timeout=self.command_timeout,
+            )
+            if result.success:
+                properties.update(self.parse_getprop(result.stdout))
+            else:
+                warnings.append(f"无法读取 {device.serial} 的 Android 属性: {result.status}")
+        simulator_type, confidence, evidence = self._simulator_type_for(device.serial, properties)
+        return AdbSimulatorProfile(
+            serial=device.serial,
+            state=device.state,
+            simulator_type=simulator_type,
+            confidence=confidence,
+            evidence=tuple(evidence) + tuple(warnings),
+            properties=properties,
+        )
+
+    def detect_simulators(
+        self,
+        *,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> AdbSimulatorListResult:
+        """
+        识别所有当前 ADB 设备，不在多设备时擅自选择。
+        输入：
+            task_context: 可选取消上下文。
+        输出：
+            包含 device/offline/unauthorized 状态和模拟器家族置信度的候选列表。
+        使用示例：
+            result = controller.detect_simulators()
+        """
+        self._raise_if_cancelled(task_context, "模拟器识别已取消。")
+        devices = self.list_devices(task_context)
+        if not devices.success:
+            return AdbSimulatorListResult(
+                False,
+                devices.status,
+                devices.message,
+                adb_path=devices.adb_path,
+                adb_source=devices.adb_source,
+                warnings=devices.warnings,
+            )
+        profiles = tuple(self.identify_simulator(device, task_context=task_context) for device in devices.devices)
+        return AdbSimulatorListResult(
+            True,
+            "ready" if any(item.state == "device" for item in profiles) else "warning",
+            f"识别到 {len(profiles)} 台 ADB 设备。",
+            simulators=profiles,
+            adb_path=devices.adb_path,
+            adb_source=devices.adb_source,
+            warnings=devices.warnings,
+        )
+
     def check_connection(
         self,
         serial: Optional[str] = None,
@@ -787,6 +1302,8 @@ class AdbController:
         *,
         serial: Optional[str] = None,
         output_dir: Optional[Path] = None,
+        screen_state: Optional[str] = None,
+        scene_hint: Optional[str] = None,
         task_context: Optional[TaskExecutionContext] = None,
     ) -> AdbScreenshotResult:
         """
@@ -799,6 +1316,8 @@ class AdbController:
             result = controller.capture_screenshot(RecognitionScene.RESEARCH)
         """
         self._raise_if_cancelled(task_context, "ADB 截图任务已取消。")
+        started_at = self.time_provider()
+        timestamp = datetime.now().isoformat(timespec="seconds")
         normalized_scene = RecognitionScene.normalize(scene)
         screenshot_dir = output_dir or (PathManager.get_work_dir() / "automation" / "screenshots")
         screenshot_dir.mkdir(parents=True, exist_ok=True)
@@ -810,6 +1329,10 @@ class AdbController:
                 connection.message,
                 adb_path=connection.adb_path,
                 adb_source=connection.adb_source,
+                resolution=self.screen_size,
+                timestamp=timestamp,
+                screen_state=self._normalize_state_value(screen_state or normalized_scene.value),
+                scene_hint=self._normalize_state_value(scene_hint or normalized_scene.value),
                 warnings=connection.warnings,
                 detail="设备未 ready，截图未执行。",
             )
@@ -818,6 +1341,8 @@ class AdbController:
         device_serial = connection.selected_device.serial
         final_path = self._build_screenshot_path(screenshot_dir, normalized_scene)
         reconnect_enabled = bool(self.adb_config.get("reconnect_on_failure", True))
+        normalized_screen_state = self._normalize_state_value(screen_state or normalized_scene.value)
+        normalized_scene_hint = self._normalize_state_value(scene_hint or normalized_scene.value)
 
         for attempt in range(2):
             self._raise_if_cancelled(task_context, "ADB 截图任务已取消。")
@@ -839,6 +1364,12 @@ class AdbController:
                     method="exec-out",
                     adb_path=connection.adb_path,
                     adb_source=connection.adb_source,
+                    resolution=self.screen_size,
+                    timestamp=timestamp,
+                    screen_state=normalized_screen_state,
+                    scene_hint=normalized_scene_hint,
+                    elapsed_ms=int((self.time_provider() - started_at) * 1000),
+                    retry_count=attempt,
                     warnings=tuple(warnings),
                 )
             warnings.append(f"exec-out 截图失败: {exec_result.status}")
@@ -859,6 +1390,12 @@ class AdbController:
                     method="pull",
                     adb_path=connection.adb_path,
                     adb_source=connection.adb_source,
+                    resolution=self.screen_size,
+                    timestamp=timestamp,
+                    screen_state=normalized_screen_state,
+                    scene_hint=normalized_scene_hint,
+                    elapsed_ms=int((self.time_provider() - started_at) * 1000),
+                    retry_count=attempt,
                     warnings=tuple(warnings),
                 )
             warnings.append(f"pull 截图失败: {pull_result.status}")
@@ -873,6 +1410,12 @@ class AdbController:
             "ADB 截图失败，exec-out 与 pull 回退均未成功。",
             adb_path=connection.adb_path,
             adb_source=connection.adb_source,
+            resolution=self.screen_size,
+            timestamp=timestamp,
+            screen_state=normalized_screen_state,
+            scene_hint=normalized_scene_hint,
+            elapsed_ms=int((self.time_provider() - started_at) * 1000),
+            retry_count=1,
             warnings=tuple(warnings),
             detail="已重试一次。",
         )
@@ -1336,6 +1879,654 @@ class AdbController:
             timeout=self.command_timeout,
         )
 
+    @staticmethod
+    def parse_foreground_package(output: str) -> Optional[str]:
+        """
+        从 `dumpsys window` 或 `dumpsys activity` 输出提取前台包名。
+        输入：
+            Android 窗口/Activity dump 文本。
+        输出：
+            包名；无法解析时返回 None。
+        使用示例：
+            package = AdbController.parse_foreground_package(raw_output)
+        """
+        patterns = (
+            r"mCurrentFocus=Window\{.*?\s(?P<package>[A-Za-z0-9_.$-]+)/[^\s}]+\}",
+            r"mFocusedApp=.*?\s(?P<package>[A-Za-z0-9_.$-]+)/[^\s}]+\s",
+            r"ACTIVITY\s+(?P<package>[A-Za-z0-9_.$-]+)/[^\s]+\s",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, output)
+            if match:
+                return match.group("package")
+        return None
+
+    def get_foreground_package(
+        self,
+        *,
+        serial: Optional[str] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> AdbCommandResult:
+        """
+        查询当前前台应用包名。
+        输入：
+            可选 serial 与取消上下文。
+        输出：
+            成功时 stdout 为包名，失败时返回结构化错误。
+        使用示例：
+            result = controller.get_foreground_package()
+        """
+        self._raise_if_cancelled(task_context, "ADB 前台应用查询已取消。")
+        activity_result = self.get_foreground_activity(serial=serial, task_context=task_context)
+        if not activity_result.success:
+            return activity_result
+        package_name = self.parse_foreground_package(activity_result.stdout)
+        if not package_name:
+            return AdbCommandResult(
+                False,
+                "error",
+                "无法从前台窗口信息解析应用包名。",
+                stdout=activity_result.stdout,
+                stderr=activity_result.stderr,
+                command=activity_result.command,
+            )
+        return AdbCommandResult(
+            True,
+            "ok",
+            "已读取前台应用包名。",
+            stdout=package_name,
+            command=activity_result.command,
+        )
+
+    def login_game(
+        self,
+        package_name: str,
+        *,
+        activity_name: Optional[str] = None,
+        scene_probe: Optional[Callable[..., object]] = None,
+        state_probe: Optional[Callable[..., object]] = None,
+        serial: Optional[str] = None,
+        timeout_seconds: float = 30.0,
+        max_retries: int = 2,
+        login_steps: Optional[Sequence[Dict[str, Any]]] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> AdbLoginResult:
+        """
+        启动游戏并等待登录完成。
+        输入：
+            package_name/activity_name: 游戏包和可选入口；scene_probe: OCR/模板层注入的主界面判断；
+            login_steps: 可选的确认弹窗操作，禁止在此传入账号密码；timeout_seconds/max_retries 控制等待。
+        输出：
+            ready 表示探针确认港区主页，started 表示已启动但未提供探针，timeout/error 表示未完成。
+        使用示例：
+            result = controller.login_game(
+                "com.bilibili.azurlane",
+                scene_probe=lambda scene: scene is RecognitionScene.HARBOR,
+            )
+        """
+        self._raise_if_cancelled(task_context, "ADB 游戏登录任务已取消。")
+        package = str(package_name or "").strip()
+        if not package:
+            return AdbLoginResult(False, "invalid_package", "游戏包名不能为空。", "", screen_state="unknown", scene_hint="unknown")
+
+        connection = self.check_connection(serial=serial, task_context=task_context)
+        if not connection.success or connection.selected_device is None:
+            return AdbLoginResult(
+                False,
+                connection.status,
+                connection.message,
+                package,
+                screen_state="unknown",
+                scene_hint="unknown",
+                warnings=connection.warnings,
+            )
+        device_serial = connection.selected_device.serial
+        warnings = list(connection.warnings)
+
+        package_result = self.list_packages(serial=device_serial, task_context=task_context)
+        if package_result.success and package not in package_result.package_names:
+            return AdbLoginResult(
+                False,
+                "package_not_installed",
+                f"模拟器中未安装游戏包: {package}",
+                package,
+                serial=device_serial,
+                screen_state="unknown",
+                scene_hint="unknown",
+                warnings=tuple(package_result.warnings),
+            )
+        if not package_result.success:
+            warnings.extend(package_result.warnings)
+            warnings.append("无法确认游戏包是否已安装，仍尝试启动并由 ADB 返回结果判断。")
+
+        steps = list(login_steps) if login_steps is not None else self._load_login_steps(warnings)
+        retries = min(2, max(0, int(max_retries)))
+        timeout = max(0.0, float(timeout_seconds))
+        all_step_results: list[AdbOperationStepResult] = []
+        foreground_package: Optional[str] = None
+        probe = state_probe or scene_probe
+
+        for attempt in range(retries + 1):
+            self._raise_if_cancelled(task_context, "ADB 游戏登录任务已取消。")
+            start_result = self.start_app(
+                package,
+                activity_name,
+                serial=device_serial,
+                task_context=task_context,
+            )
+            if not start_result.success:
+                warnings.append(f"第 {attempt + 1} 次启动游戏失败: {start_result.status}")
+                continue
+
+            for index, step in enumerate(steps, start=len(all_step_results) + 1):
+                self._raise_if_cancelled(task_context, "ADB 登录步骤已取消。")
+                if not isinstance(step, dict):
+                    step_result = AdbOperationStepResult(index, "invalid", False, "error", "登录步骤必须是 dict。")
+                else:
+                    step_result = self._run_operation_step(index, step, device_serial, task_context)
+                all_step_results.append(step_result)
+                if not step_result.success:
+                    warnings.append(f"第 {attempt + 1} 次登录步骤失败: {step_result.message}")
+                    break
+                self._sleep_with_cancel(self._step_delay(step, 0.0), task_context)
+            else:
+                foreground = self.get_foreground_package(serial=device_serial, task_context=task_context)
+                if foreground.success:
+                    foreground_package = foreground.stdout.strip()
+
+                if probe is not None:
+                    wait_result = self.wait_for_state(
+                        RecognitionScene.HARBOR,
+                        probe,
+                        serial=device_serial,
+                        timeout_seconds=timeout,
+                        stable_frames=2,
+                        skip_first_sample=True,
+                        screenshot_scene=RecognitionScene.HARBOR,
+                        task_context=task_context,
+                    )
+                    warnings.extend(wait_result.warnings)
+                    if wait_result.success:
+                        return AdbLoginResult(
+                            True,
+                            "ready",
+                            "游戏已启动并确认进入港区主页。",
+                            package,
+                            serial=device_serial,
+                            attempts=attempt + 1,
+                            foreground_package=foreground_package,
+                            screen_state=wait_result.screen_state,
+                            scene_hint=wait_result.scene_hint,
+                            screenshot_path=wait_result.screenshot_path,
+                            resolution=wait_result.resolution,
+                            timestamp=wait_result.timestamp,
+                            confidence=wait_result.confidence,
+                            steps=tuple(all_step_results),
+                            warnings=tuple(warnings),
+                        )
+                    warnings.append(f"第 {attempt + 1} 次登录等待超时: {wait_result.message}")
+                    continue
+
+                deadline = self.time_provider() + timeout
+                while True:
+                    self._raise_if_cancelled(task_context, "ADB 登录状态判断已取消。")
+                    foreground = self.get_foreground_package(serial=device_serial, task_context=task_context)
+                    if foreground.success:
+                        foreground_package = foreground.stdout.strip()
+                    if foreground_package == package:
+                        return AdbLoginResult(
+                            True,
+                            "started",
+                            "游戏已启动，未提供状态探针，登录页面由后续识别层确认。",
+                            package,
+                            serial=device_serial,
+                            attempts=attempt + 1,
+                            foreground_package=foreground_package,
+                            screen_state="app_launch",
+                            scene_hint="app_launch",
+                            steps=tuple(all_step_results),
+                            warnings=tuple(warnings),
+                        )
+                    if self.time_provider() >= deadline:
+                        break
+                    self._sleep_with_cancel(min(0.5, max(0.0, deadline - self.time_provider())), task_context)
+                warnings.append(f"第 {attempt + 1} 次登录等待超时。")
+
+        return AdbLoginResult(
+            False,
+            "timeout" if probe is not None else "error",
+            "游戏启动后未确认登录完成。",
+            package,
+            serial=device_serial,
+            attempts=retries + 1,
+            foreground_package=foreground_package,
+            screen_state="unknown",
+            scene_hint=foreground_package or "unknown",
+            steps=tuple(all_step_results),
+            warnings=tuple(warnings),
+        )
+
+    def wait_for_state(
+        self,
+        expected_state: RecognitionScene | str,
+        state_probe: Callable[..., object],
+        *,
+        serial: Optional[str] = None,
+        timeout_seconds: float = 8.0,
+        stable_frames: int = 2,
+        skip_first_sample: bool = True,
+        screenshot_scene: Optional[RecognitionScene | str] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> AdbStateWaitResult:
+        """
+        等待页面或屏幕状态稳定。
+        输入：
+            expected_state: 目标 RecognitionScene 或 screen_state 字符串。
+            state_probe: 注入的状态探针，可返回 bool / str / RecognitionScene / dict。
+            stable_frames: 连续命中多少次才算稳定。
+            skip_first_sample: 是否丢弃第一帧旧图。
+        输出：
+            AdbStateWaitResult：稳定后自动补一张截图，返回绝对路径和状态信息。
+        使用示例：
+            result = controller.wait_for_state("warehouse_material", probe)
+        """
+        self._raise_if_cancelled(task_context, "ADB 状态等待已取消。")
+        expected_state_text = self._normalize_state_value(expected_state)
+        expected_scene = self._scene_for_screen_state(screenshot_scene or expected_state)
+        timeout = max(0.0, float(timeout_seconds))
+        stable_target = max(1, int(stable_frames))
+        deadline = self.time_provider() + timeout
+        attempts = 0
+        stable_hits = 0
+        screen_state = ""
+        scene_hint = ""
+        confidence: Optional[float] = None
+        warnings: list[str] = []
+        started_at = self.time_provider()
+        screenshot_scene_value = self._scene_for_screen_state(screenshot_scene or expected_state)
+
+        while True:
+            self._raise_if_cancelled(task_context, "ADB 状态等待已取消。")
+            if skip_first_sample:
+                skip_first_sample = False
+                self._sleep_with_cancel(0.05, task_context)
+                continue
+
+            matched = False
+            observation_seen = False
+            for candidate in self._state_probe_candidates(expected_state):
+                self._raise_if_cancelled(task_context, "ADB 状态等待已取消。")
+                try:
+                    probe_result = self._invoke_state_probe(state_probe, candidate)
+                except TypeError as exc:
+                    warnings.append(f"状态探针调用失败: {exc}")
+                    continue
+                attempts += 1
+                candidate_matched, candidate_state, candidate_hint, candidate_confidence = self._probe_result_to_observation(
+                    probe_result,
+                    expected_state_text,
+                    expected_scene,
+                )
+                if candidate_state:
+                    screen_state = candidate_state
+                    observation_seen = True
+                if candidate_hint:
+                    scene_hint = candidate_hint
+                if candidate_confidence is not None:
+                    confidence = candidate_confidence
+                if candidate_matched:
+                    matched = True
+                    stable_hits += 1
+                    break
+
+            if not matched:
+                stable_hits = 0
+
+            if stable_hits >= stable_target:
+                screenshot = self.capture_screenshot(
+                    screenshot_scene_value,
+                    serial=serial,
+                    screen_state=screen_state or expected_state_text,
+                    scene_hint=scene_hint or screen_state or expected_state_text,
+                    task_context=task_context,
+                )
+                if not screenshot.success:
+                    return AdbStateWaitResult(
+                        False,
+                        screenshot.status,
+                        screenshot.message,
+                        expected_state_text,
+                        screen_state=screen_state or expected_state_text,
+                        scene=screenshot.artifact.scene if screenshot.artifact else expected_scene,
+                        scene_hint=scene_hint or screen_state or expected_state_text,
+                        screenshot_path=screenshot.artifact.screenshot_path if screenshot.artifact else None,
+                        resolution=screenshot.resolution or self.screen_size,
+                        timestamp=screenshot.timestamp or datetime.now().isoformat(timespec="seconds"),
+                        confidence=confidence,
+                        attempts=attempts,
+                        stable_frames=stable_hits,
+                        warnings=tuple(warnings) + tuple(screenshot.warnings),
+                        detail=screenshot.detail or "状态已确认但截图失败。",
+                    )
+                elapsed_ms = int((self.time_provider() - started_at) * 1000)
+                return AdbStateWaitResult(
+                    True,
+                    "ready",
+                    "状态已稳定。",
+                    expected_state_text,
+                    screen_state=screen_state or expected_state_text,
+                    scene=screenshot.artifact.scene if screenshot.artifact else expected_scene,
+                    scene_hint=scene_hint or screen_state or expected_state_text,
+                    screenshot_path=screenshot.artifact.screenshot_path if screenshot.artifact else None,
+                    resolution=screenshot.resolution or self.screen_size,
+                    timestamp=screenshot.timestamp or datetime.now().isoformat(timespec="seconds"),
+                    confidence=confidence,
+                    attempts=attempts,
+                    stable_frames=stable_hits,
+                    warnings=tuple(warnings) + tuple(screenshot.warnings),
+                    detail=f"等待完成，用时 {elapsed_ms} ms。",
+                )
+
+            if self.time_provider() >= deadline:
+                break
+            if not observation_seen:
+                scene_hint = scene_hint or expected_state_text
+            self._sleep_with_cancel(min(0.2, max(0.0, deadline - self.time_provider())), task_context)
+
+        return AdbStateWaitResult(
+            False,
+            "timeout",
+            f"等待状态 {expected_state_text} 超时。",
+            expected_state_text,
+            screen_state=screen_state or expected_state_text,
+            scene=expected_scene,
+            scene_hint=scene_hint or screen_state or expected_state_text,
+            resolution=self.screen_size,
+            timestamp=datetime.now().isoformat(timespec="seconds"),
+            confidence=confidence,
+            attempts=attempts,
+            stable_frames=stable_hits,
+            warnings=tuple(warnings),
+            detail=f"最后观测={screen_state or 'unknown'}；稳定帧={stable_hits}",
+        )
+
+    def launch_game(
+        self,
+        package_name: str,
+        activity_name: Optional[str] = None,
+        *,
+        serial: Optional[str] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> AdbCommandResult:
+        """
+        启动游戏应用。
+        输入：
+            package_name: 游戏包名；activity_name: 可选入口 Activity。
+        输出：
+            与 start_app 等价的命令结果，便于 OCR 登录前先拉起游戏。
+        使用示例：
+            controller.launch_game("com.bilibili.azurlane")
+        """
+        return self.start_app(
+            package_name,
+            activity_name,
+            serial=serial,
+            task_context=task_context,
+        )
+
+    def return_to_harbor(
+        self,
+        scene_probe: Callable[..., object],
+        *,
+        serial: Optional[str] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> NavigationResult:
+        """
+        返回港区主页。
+        输入：
+            scene_probe: 港区识别探针，可复用 OCR 或测试假实现。
+        输出：
+            配置化导航结果，失败时保留最后一次 warning。
+        使用示例：
+            controller.return_to_harbor(scene_probe)
+        """
+        return self.run_sequence("return_home", scene_probe, serial=serial, task_context=task_context)
+
+    def enter_warehouse(
+        self,
+        scene_probe: Callable[..., object],
+        *,
+        serial: Optional[str] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> NavigationResult:
+        """
+        进入仓库入口页面。
+        输入：
+            scene_probe: 页面确认探针。
+        输出：
+            通过 config/automation/sequences.json 中的 enter_warehouse 序列返回结构化结果。
+        使用示例：
+            controller.enter_warehouse(scene_probe)
+        """
+        return self.run_sequence("enter_warehouse", scene_probe, serial=serial, task_context=task_context)
+
+    def select_warehouse_tab(
+        self,
+        tab: str,
+        state_probe: Callable[..., object],
+        *,
+        serial: Optional[str] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> NavigationResult:
+        """
+        切换仓库子页标签。
+        输入：
+            tab: design / equipment / material。
+            state_probe: 支持 screen_state 的状态探针。
+        输出：
+            切换成功后返回目标 screen_state；未知 tab 返回 error。
+        使用示例：
+            controller.select_warehouse_tab("material", probe)
+        """
+        normalized_tab = self._normalize_state_value(tab)
+        sequence_name = {
+            "design": "warehouse_design",
+            "equipment": "warehouse_equipment",
+            "material": "warehouse_material",
+        }.get(normalized_tab)
+        if sequence_name is None:
+            return NavigationResult(
+                False,
+                "invalid_tab",
+                f"未知仓库标签: {tab}",
+                f"warehouse_{normalized_tab or 'unknown'}",
+                target_screen_state=normalized_tab,
+                warnings=(f"支持的标签只有 design / equipment / material。",),
+            )
+
+        try:
+            root_config = self._load_sequence_config()
+            sequence_config = self._get_sequence_config(root_config, sequence_name)
+        except (FileNotFoundError, KeyError, ValueError) as exc:
+            return NavigationResult(False, "error", str(exc), sequence_name)
+
+        steps = sequence_config.get("steps", [])
+        warnings: list[str] = []
+        if steps:
+            operation_result = self.run_operations(
+                steps,
+                serial=serial,
+                default_delay=float(root_config.get("defaults", {}).get("step_delay", 0.0) or 0.0),
+                task_context=task_context,
+            )
+            warnings.extend(operation_result.warnings)
+            if not operation_result.success:
+                return NavigationResult(
+                    False,
+                    operation_result.status,
+                    operation_result.message,
+                    sequence_name,
+                    target_screen_state=normalized_tab,
+                    warnings=tuple(warnings),
+                    detail=f"仓库标签切换在步骤失败: {operation_result.failure_index}",
+                )
+
+        target_state = self._normalize_state_value(sequence_config.get("target_screen_state", normalized_tab))
+        wait_result = self.wait_for_state(
+            target_state,
+            state_probe,
+            serial=serial,
+            timeout_seconds=float(sequence_config.get("timeout_seconds", 6.0) or 6.0),
+            stable_frames=int(sequence_config.get("stable_frames", root_config.get("defaults", {}).get("stable_frames", 2)) or 2),
+            skip_first_sample=bool(sequence_config.get("skip_first_sample", True)),
+            screenshot_scene=sequence_config.get("screenshot_scene", "equipment_list"),
+            task_context=task_context,
+        )
+        warnings.extend(wait_result.warnings)
+        return NavigationResult(
+            wait_result.success,
+            wait_result.status,
+            wait_result.message,
+            sequence_name,
+            target_scene=wait_result.scene,
+            target_screen_state=target_state,
+            screen_state=wait_result.screen_state,
+            scene_hint=wait_result.scene_hint,
+            screenshot_path=wait_result.screenshot_path,
+            resolution=wait_result.resolution,
+            timestamp=wait_result.timestamp,
+            confidence=wait_result.confidence,
+            attempts=wait_result.attempts,
+            warnings=tuple(warnings),
+            detail=wait_result.detail,
+        )
+
+    def close_popup(
+        self,
+        *,
+        policy: str = "auto",
+        state_probe: Optional[Callable[..., object]] = None,
+        serial: Optional[str] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> NavigationResult:
+        """
+        关闭弹窗或覆盖层。
+        输入：
+            policy: auto / back / home / double_back。
+            state_probe: 可选状态探针，用于确认弹窗已消失。
+        输出：
+            仅在动作和确认都成功后返回 ready。
+        使用示例：
+            controller.close_popup(policy="auto", state_probe=probe)
+        """
+        normalized_policy = self._normalize_state_value(policy)
+        if normalized_policy == "home":
+            action_result = self.press_home(serial=serial, task_context=task_context)
+        elif normalized_policy == "double_back":
+            action_result = self.run_operations(
+                [
+                    {"action": "keyevent", "keycode": "KEYCODE_BACK", "post_delay": 0.2},
+                    {"action": "keyevent", "keycode": "KEYCODE_BACK", "post_delay": 0.2},
+                ],
+                serial=serial,
+                task_context=task_context,
+            )
+            if not action_result.success:
+                return NavigationResult(
+                    False,
+                    action_result.status,
+                    action_result.message,
+                    "close_popup",
+                    target_screen_state="unknown",
+                    warnings=action_result.warnings,
+                    detail=action_result.message,
+                )
+            if state_probe is None:
+                return NavigationResult(
+                    True,
+                    "ready",
+                    "弹窗动作完成，未提供状态探针。",
+                    "close_popup",
+                    target_screen_state="unknown",
+                    screen_state="unknown",
+                    warnings=action_result.warnings,
+                )
+            wait_result = self.wait_for_state(
+                "unknown",
+                state_probe,
+                serial=serial,
+                timeout_seconds=2.0,
+                stable_frames=1,
+                task_context=task_context,
+            )
+            return NavigationResult(
+                wait_result.success,
+                wait_result.status,
+                wait_result.message,
+                "close_popup",
+                target_screen_state="unknown",
+                screen_state=wait_result.screen_state,
+                scene_hint=wait_result.scene_hint,
+                screenshot_path=wait_result.screenshot_path,
+                resolution=wait_result.resolution,
+                timestamp=wait_result.timestamp,
+                confidence=wait_result.confidence,
+                attempts=wait_result.attempts,
+                warnings=wait_result.warnings,
+                detail=wait_result.detail,
+            )
+
+        elif normalized_policy == "back":
+            action_result = self.press_back(serial=serial, task_context=task_context)
+        else:
+            action_result = self.press_back(serial=serial, task_context=task_context)
+
+        if not action_result.success:
+            return NavigationResult(
+                False,
+                action_result.status,
+                action_result.message,
+                "close_popup",
+                target_screen_state="unknown",
+                warnings=tuple(action_result.warnings) if action_result.warnings else (action_result.message,),
+                detail=action_result.message,
+            )
+
+        if state_probe is None:
+            return NavigationResult(
+                True,
+                "ready",
+                "弹窗动作完成，未提供状态探针。",
+                "close_popup",
+                target_screen_state="unknown",
+                screen_state="unknown",
+            )
+
+        wait_result = self.wait_for_state(
+            "unknown",
+            state_probe,
+            serial=serial,
+            timeout_seconds=2.0,
+            stable_frames=1,
+            task_context=task_context,
+        )
+        return NavigationResult(
+            wait_result.success,
+            wait_result.status,
+            wait_result.message,
+            "close_popup",
+            target_screen_state="unknown",
+            screen_state=wait_result.screen_state,
+            scene_hint=wait_result.scene_hint,
+            screenshot_path=wait_result.screenshot_path,
+            resolution=wait_result.resolution,
+            timestamp=wait_result.timestamp,
+            confidence=wait_result.confidence,
+            attempts=wait_result.attempts,
+            warnings=wait_result.warnings,
+            detail=wait_result.detail,
+        )
+
     def get_screen_info(
         self,
         *,
@@ -1426,6 +2617,7 @@ class AdbController:
         sequence_name: str,
         scene_probe: Callable[..., object],
         *,
+        state_probe: Optional[Callable[..., object]] = None,
         serial: Optional[str] = None,
         task_context: Optional[TaskExecutionContext] = None,
     ) -> NavigationResult:
@@ -1447,11 +2639,16 @@ class AdbController:
             return NavigationResult(False, "error", str(exc), sequence_name)
 
         target_scene = self._target_scene_for_sequence(sequence_name, sequence_config)
+        target_screen_state = self._normalize_state_value(sequence_config.get("target_screen_state", ""))
         defaults = root_config.get("defaults", {}) if isinstance(root_config.get("defaults"), dict) else {}
         max_retries = min(2, int(sequence_config.get("max_retries", defaults.get("max_retries", 2)) or 0))
         timeout_seconds = float(sequence_config.get("timeout_seconds", defaults.get("timeout_seconds", 8.0)) or 0.0)
+        default_stable_frames = 2 if target_screen_state else 1
+        stable_frames = int(sequence_config.get("stable_frames", defaults.get("stable_frames", default_stable_frames)) or default_stable_frames)
+        wait_probe = state_probe or scene_probe
         base_resolution = self._sequence_base_resolution(root_config, sequence_config)
         warnings: list[str] = []
+        last_state_result: Optional[AdbStateWaitResult] = None
 
         for attempt in range(max_retries + 1):
             self._raise_if_cancelled(task_context, "ADB 导航任务已取消。")
@@ -1468,24 +2665,67 @@ class AdbController:
                 delay_seconds = float(step.get("delay", defaults.get("step_delay", 0.0)) or 0.0)
                 self._sleep_with_cancel(delay_seconds, task_context)
 
-            if self._wait_for_scene(scene_probe, target_scene, timeout_seconds, task_context):
+            if wait_probe is not None:
+                wait_target = target_screen_state or target_scene
+                last_state_result = self.wait_for_state(
+                    wait_target,
+                    wait_probe,
+                    serial=serial,
+                    timeout_seconds=timeout_seconds,
+                    stable_frames=stable_frames,
+                    skip_first_sample=bool(sequence_config.get("skip_first_screenshot", True)),
+                    screenshot_scene=target_scene,
+                    task_context=task_context,
+                )
+                warnings.extend(last_state_result.warnings)
+                if last_state_result.success:
+                    return NavigationResult(
+                        True,
+                        "ready",
+                        f"导航序列 {sequence_name} 已到达目标页面。",
+                        sequence_name,
+                        target_scene=target_scene,
+                        target_screen_state=target_screen_state,
+                        screen_state=last_state_result.screen_state,
+                        scene_hint=last_state_result.scene_hint,
+                        screenshot_path=last_state_result.screenshot_path,
+                        resolution=last_state_result.resolution,
+                        timestamp=last_state_result.timestamp,
+                        confidence=last_state_result.confidence,
+                        attempts=attempt + 1,
+                        warnings=tuple(warnings),
+                        detail=last_state_result.detail,
+                    )
+            elif self._wait_for_scene(scene_probe, target_scene, timeout_seconds, task_context):
                 return NavigationResult(
                     True,
                     "ready",
                     f"导航序列 {sequence_name} 已到达目标页面。",
                     sequence_name,
                     target_scene=target_scene,
+                    target_screen_state=target_screen_state,
+                    screen_state=target_scene.value,
+                    scene_hint=target_scene.value,
                     attempts=attempt + 1,
                     warnings=tuple(warnings),
                 )
-            warnings.append(f"第 {attempt + 1} 次导航未到达 {target_scene.value}。")
+            warnings.append(
+                f"第 {attempt + 1} 次导航未到达 {target_screen_state or target_scene.value}。"
+            )
 
         return NavigationResult(
             False,
             "timeout",
-            f"导航序列 {sequence_name} 超时，未到达 {target_scene.value}。",
+            f"导航序列 {sequence_name} 超时，未到达 {target_screen_state or target_scene.value}。",
             sequence_name,
             target_scene=target_scene,
+            target_screen_state=target_screen_state,
+            screen_state=last_state_result.screen_state if last_state_result else target_scene.value,
+            scene_hint=last_state_result.scene_hint if last_state_result else target_scene.value,
+            screenshot_path=last_state_result.screenshot_path if last_state_result else None,
+            resolution=last_state_result.resolution if last_state_result else None,
+            timestamp=last_state_result.timestamp if last_state_result else "",
+            confidence=last_state_result.confidence if last_state_result else None,
             attempts=max_retries + 1,
             warnings=tuple(warnings),
         )
@@ -1619,6 +2859,134 @@ class AdbController:
             "建议将模拟器分辨率设置为 1280x720。",
             common,
         )
+
+    @staticmethod
+    def _normalize_state_value(value: RecognitionScene | str | object) -> str:
+        """把 RecognitionScene / 字符串 / 其他对象统一成可比较的 screen_state 文本。"""
+        if value is None:
+            return ""
+        if isinstance(value, RecognitionScene):
+            return value.value
+        return str(value).strip().lower()
+
+    @staticmethod
+    def _scene_for_screen_state(screen_state: RecognitionScene | str | object) -> RecognitionScene:
+        """把登录/仓库等细分 screen_state 映射回冻结的 RecognitionScene。"""
+        normalized = AdbController._normalize_state_value(screen_state)
+        mapping = {
+            "app_launch": RecognitionScene.HARBOR,
+            "loading": RecognitionScene.HARBOR,
+            "login": RecognitionScene.HARBOR,
+            "harbor": RecognitionScene.HARBOR,
+            "unknown": RecognitionScene.HARBOR,
+            "warehouse": RecognitionScene.EQUIPMENT_LIST,
+            "warehouse_design": RecognitionScene.EQUIPMENT_LIST,
+            "warehouse_equipment": RecognitionScene.EQUIPMENT_LIST,
+            "warehouse_material": RecognitionScene.EQUIPMENT_LIST,
+            "filter_panel": RecognitionScene.EQUIPMENT_LIST,
+            "equipment_list": RecognitionScene.EQUIPMENT_LIST,
+            "research": RecognitionScene.RESEARCH,
+            "phase_select": RecognitionScene.PHASE_SELECT,
+        }
+        if normalized in mapping:
+            return mapping[normalized]
+        try:
+            return RecognitionScene.normalize(normalized)
+        except ValueError:
+            return RecognitionScene.HARBOR
+
+    @staticmethod
+    def _probe_result_to_observation(
+        probe_result: object,
+        expected_state_text: str,
+        expected_scene: Optional[RecognitionScene],
+    ) -> Tuple[bool, str, str, Optional[float]]:
+        """把 state_probe / scene_probe 的返回值统一成可比较观察结果。"""
+        observed_state = ""
+        scene_hint = ""
+        confidence: Optional[float] = None
+        matched = False
+
+        if isinstance(probe_result, dict):
+            raw_state = probe_result.get("screen_state", probe_result.get("state", ""))
+            observed_state = AdbController._normalize_state_value(raw_state)
+            scene_hint = AdbController._normalize_state_value(probe_result.get("scene_hint", ""))
+            raw_scene = probe_result.get("scene")
+            if raw_scene is not None:
+                try:
+                    observed_scene = RecognitionScene.normalize(raw_scene)
+                except ValueError:
+                    observed_scene = None
+                else:
+                    if expected_scene is not None and observed_scene is expected_scene:
+                        matched = True
+                    if not observed_state:
+                        observed_state = observed_scene.value
+                    if not scene_hint:
+                        scene_hint = observed_scene.value
+            if expected_state_text and observed_state == AdbController._normalize_state_value(expected_state_text):
+                matched = True
+            if "matched" in probe_result:
+                matched = matched or bool(probe_result.get("matched"))
+            raw_confidence = probe_result.get("confidence")
+            if raw_confidence is not None:
+                try:
+                    confidence = float(raw_confidence)
+                except (TypeError, ValueError):
+                    confidence = None
+            if not scene_hint:
+                scene_hint = observed_state
+        elif isinstance(probe_result, RecognitionScene):
+            observed_state = probe_result.value
+            scene_hint = probe_result.value
+            matched = expected_scene is not None and probe_result is expected_scene
+            if expected_state_text and observed_state == AdbController._normalize_state_value(expected_state_text):
+                matched = True
+        elif isinstance(probe_result, str):
+            observed_state = AdbController._normalize_state_value(probe_result)
+            scene_hint = observed_state
+            if expected_state_text and observed_state == AdbController._normalize_state_value(expected_state_text):
+                matched = True
+            else:
+                try:
+                    matched = expected_scene is not None and RecognitionScene.normalize(observed_state) is expected_scene
+                except ValueError:
+                    matched = False
+        else:
+            matched = bool(probe_result)
+            if matched:
+                observed_state = expected_state_text
+                scene_hint = expected_state_text
+
+        return matched, observed_state, scene_hint, confidence
+
+    @staticmethod
+    def _state_probe_candidates(
+        expected_state: RecognitionScene | str,
+    ) -> Tuple[object, ...]:
+        """生成 state_probe 的候选入参，优先兼容 scene_probe 再兼容纯字符串探针。"""
+        normalized_state = AdbController._normalize_state_value(expected_state)
+        if isinstance(expected_state, RecognitionScene):
+            return (expected_state,)
+        expected_scene = AdbController._scene_for_screen_state(expected_state)
+        candidates = [expected_scene, normalized_state]
+        if expected_scene.value == normalized_state:
+            candidates.pop()
+        return tuple(candidates)
+
+    @staticmethod
+    def _invoke_state_probe(state_probe: Callable[..., object], candidate: object) -> object:
+        """尽量按探针期望的入参形式调用，兼容 0/1 参数回调。"""
+        try:
+            signature = inspect.signature(state_probe)
+            if len(signature.parameters) == 0:
+                return state_probe()
+        except (TypeError, ValueError):
+            pass
+        try:
+            return state_probe(candidate)
+        except TypeError:
+            return state_probe()
 
     def _run_operation_step(
         self,
@@ -1855,6 +3223,39 @@ class AdbController:
 
     def _load_sequence_config(self) -> Dict[str, Any]:
         """读取导航序列配置文件。"""
+        sequence_path = PathManager.get_config_dir() / "automation" / "sequences.json"
+        if not sequence_path.exists():
+            raise FileNotFoundError(f"导航序列配置不存在: {sequence_path}")
+        with open(sequence_path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+        if not isinstance(data, dict):
+            raise ValueError("导航序列配置必须是 JSON 对象。")
+        return data
+
+    @staticmethod
+    def _load_login_steps(warnings: list[str]) -> list[Dict[str, Any]]:
+        """读取显式启用的登录确认步骤，避免盲目点击旧版占位坐标。"""
+        try:
+            root_config = AdbController._load_sequence_config_for_login()
+        except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+            warnings.append(f"登录步骤配置不可用: {exc}")
+            return []
+        raw_login = root_config.get("login", [])
+        if isinstance(raw_login, dict):
+            if not bool(raw_login.get("enabled", False)):
+                return []
+            raw_steps = raw_login.get("steps", [])
+        elif isinstance(raw_login, list):
+            warnings.append("检测到旧版固定坐标 login 配置，默认不自动执行；请通过 login_steps 显式传入。")
+            return []
+        else:
+            warnings.append("登录步骤配置不是列表，已跳过固定确认点击。")
+            return []
+        return [step for step in raw_steps if isinstance(step, dict)]
+
+    @staticmethod
+    def _load_sequence_config_for_login() -> Dict[str, Any]:
+        """读取登录步骤配置的静态辅助函数，避免创建控制器。"""
         sequence_path = PathManager.get_config_dir() / "automation" / "sequences.json"
         if not sequence_path.exists():
             raise FileNotFoundError(f"导航序列配置不存在: {sequence_path}")

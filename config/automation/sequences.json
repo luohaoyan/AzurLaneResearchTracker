@@ -12,6 +12,7 @@
     "sequences": {
         "go_harbor": {
             "target_scene": "harbor",
+            "target_screen_state": "harbor",
             "timeout_seconds": 6.0,
             "steps": [
                 {
@@ -28,6 +29,7 @@
         },
         "return_home": {
             "target_scene": "harbor",
+            "target_screen_state": "harbor",
             "timeout_seconds": 6.0,
             "steps": [
                 {
@@ -44,6 +46,7 @@
         },
         "enter_research": {
             "target_scene": "research",
+            "target_screen_state": "research",
             "timeout_seconds": 10.0,
             "steps": [
                 {
@@ -62,6 +65,7 @@
         },
         "enter_equipment": {
             "target_scene": "equipment_list",
+            "target_screen_state": "warehouse_equipment",
             "timeout_seconds": 10.0,
             "steps": [
                 {
@@ -75,6 +79,67 @@
                     "x": 773,
                     "y": 313,
                     "delay": 0.8
+                }
+            ]
+        },
+        "enter_warehouse": {
+            "target_scene": "equipment_list",
+            "target_screen_state": "warehouse_design",
+            "timeout_seconds": 10.0,
+            "steps": [
+                {
+                    "action": "tap",
+                    "x": 1110,
+                    "y": 617,
+                    "delay": 0.6
+                },
+                {
+                    "action": "tap",
+                    "x": 773,
+                    "y": 313,
+                    "delay": 0.8
+                }
+            ]
+        },
+        "warehouse_design": {
+            "target_scene": "equipment_list",
+            "target_screen_state": "warehouse_design",
+            "timeout_seconds": 6.0,
+            "stable_frames": 2,
+            "steps": [
+                {
+                    "action": "tap",
+                    "x": 890,
+                    "y": 679,
+                    "delay": 0.5
+                }
+            ]
+        },
+        "warehouse_equipment": {
+            "target_scene": "equipment_list",
+            "target_screen_state": "warehouse_equipment",
+            "timeout_seconds": 6.0,
+            "stable_frames": 2,
+            "steps": [
+                {
+                    "action": "tap",
+                    "x": 1049,
+                    "y": 679,
+                    "delay": 0.5
+                }
+            ]
+        },
+        "warehouse_material": {
+            "target_scene": "equipment_list",
+            "target_screen_state": "warehouse_material",
+            "timeout_seconds": 6.0,
+            "stable_frames": 2,
+            "steps": [
+                {
+                    "action": "tap",
+                    "x": 1208,
+                    "y": 679,
+                    "delay": 0.5
                 }
             ]
         }
