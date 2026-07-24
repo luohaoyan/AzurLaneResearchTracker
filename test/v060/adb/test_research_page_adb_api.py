@@ -374,6 +374,7 @@ def test_capture_design_chart_sequence_writes_manifest_actions_device_info_and_s
     assert manifest["page_name"] == "research_design_chart"
     assert manifest["frames"][0]["scroll_offset_px"] == 0
     assert manifest["frames"][1]["scroll_offset_px"] == 468
+    assert manifest["frames"][0]["scroll_step_px"] == 468
     assert manifest["next_resume_cursor"] == 2
     assert summary["frame_count"] == 2
     assert summary["duplicate_frame_count"] == 1
@@ -454,6 +455,27 @@ def test_capture_current_screen_returns_absolute_path_and_resume_helper(
     assert Path(artifact.screenshot_path).is_absolute()
     assert Path(artifact.screenshot_path).exists()
     assert artifact.session_id
+    assert artifact.scroll_step_px == 0
+
+
+def test_capture_design_chart_sequence_to_dict_exposes_resume_and_scroll_fields(
+    research_page_api: tuple[ResearchPageAdbApi, FakeResearchController],
+) -> None:
+    """会话对象应显式暴露 next_resume_cursor 和 scroll_step_px，方便 OCR 层直接消费。"""
+    api, _fake = research_page_api
+
+    session = api.capture_design_chart_sequence(
+        frame_count=2,
+        overlap_ratio=0.35,
+        scene_probe=_scene_probe,
+        state_probe=_state_probe,
+    )
+
+    payload = session.to_dict()
+
+    assert payload["next_resume_cursor"] == session.next_resume_cursor
+    assert payload["frames"][0]["scroll_step_px"] == session.frames[0].scroll_step_px
+    assert payload["frames"][0]["scroll_step_px"] == session.scroll_step_px
 
 
 def test_research_page_api_singleton_accessor_matches_class_instance() -> None:

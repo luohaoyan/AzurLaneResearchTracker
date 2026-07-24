@@ -83,6 +83,19 @@ class ResearchPageCaptureArtifact:
     message: str = "科研页截图完成。"
     warnings: Tuple[str, ...] = ()
 
+    @property
+    def scroll_step_px(self) -> int:
+        """
+        返回本帧实际滚动步长。
+        输入：
+            无。
+        输出：
+            与 scroll_pixels 保持一致的步长像素值。
+        使用示例：
+            step_px = artifact.scroll_step_px
+        """
+        return int(self.scroll_pixels)
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为 manifest、actions.log 和 summary 都能直接使用的字典。"""
         return {
@@ -104,6 +117,7 @@ class ResearchPageCaptureArtifact:
             "scroll_offset_px": self.scroll_offset_px,
             "scroll_direction": self.scroll_direction,
             "scroll_pixels": self.scroll_pixels,
+            "scroll_step_px": self.scroll_pixels,
             "overlap_ratio": self.overlap_ratio,
             "sha1": self.sha1,
             "timestamp": self.timestamp,
@@ -154,6 +168,7 @@ class ResearchPageScrollSession:
     success: bool = True
     status: str = "ready"
     message: str = "科研页分帧采集完成。"
+    next_resume_cursor: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为可序列化字典，方便测试或 GUI 查看。"""
@@ -172,6 +187,7 @@ class ResearchPageScrollSession:
             "device_info_path": self.device_info_path,
             "summary_path": self.summary_path,
             "resume_cursor": self.resume_cursor,
+            "next_resume_cursor": self.next_resume_cursor,
             "bottom_reached": self.bottom_reached,
             "filter_state": self.filter_state,
             "rarity_state": self.rarity_state,

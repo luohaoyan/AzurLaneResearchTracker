@@ -374,6 +374,7 @@ class ResearchPageAdbApi:
                 success=False,
                 status=str(device_payload.get("status", "unavailable")),
                 message=message,
+                next_resume_cursor=safe_resume_cursor,
             )
 
         if prepare_page:
@@ -460,6 +461,7 @@ class ResearchPageAdbApi:
                     success=False,
                     status=navigation.status,
                     message=navigation.message,
+                    next_resume_cursor=safe_resume_cursor,
                 )
 
         effective_scroll_step_px = self._effective_scroll_step_px(scroll_step_px, safe_overlap_ratio)
@@ -627,6 +629,7 @@ class ResearchPageAdbApi:
             success=success,
             status=status,
             message=message,
+            next_resume_cursor=next_scroll_index,
         )
 
     def load_resume_cursor(self, summary_path: str | Path) -> int:
@@ -1566,6 +1569,7 @@ class ResearchPageAdbApi:
             success=False,
             status=status,
             message=message,
+            next_resume_cursor=int(resume_cursor),
         )
 
     @staticmethod
