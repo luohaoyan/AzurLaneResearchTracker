@@ -112,6 +112,16 @@ def test_log_drawer_appends_and_filters_messages(log_drawer: LogDrawer) -> None:
     assert "启动完成" not in visible_text
 
 
+def test_log_drawer_wraps_long_text_by_widget_width(log_drawer: LogDrawer) -> None:
+    """超长日志应按控件宽度自动换行，便于复制和阅读。"""
+    log_drawer.set_expanded(True)
+    long_message = "日志内容" * 40
+    log_drawer.append_message("INFO", long_message)
+
+    assert log_drawer.log_text.lineWrapMode() == log_drawer.log_text.LineWrapMode.WidgetWidth
+    assert long_message in log_drawer.log_text.toPlainText()
+
+
 def test_log_drawer_copy_all_and_clear(log_drawer: LogDrawer) -> None:
     """复制全部应写入剪贴板，清空后界面和内存条目都应为空。"""
     log_drawer.append_message("WARNING", "资源即将达到上限")
