@@ -67,7 +67,56 @@ python nn_training_lab\pytorch_icon_training\scripts\predict_icon.py "icon.png" 
 这个命令在终端逐行输出 JSON 候选；它不会写正式 CSV 或用户数据。
 当前 RUN_NN_INFERENCE.bat 是旧的 Paddle 单 icon 入口，验证 PyTorch 时使用上面的命令或本工作台。
 
-七、验收注意
+七、ADB 分帧采集后识别
+----------------------
+如果 ADB 开发层已经生成：
+workdir\automation\adb_capture_runs\run_xxx\manifest.json
+
+最简单方式：
+双击 recognition_workbench\RUN_ADB_MANIFEST_RECOGNITION.bat
+然后把 manifest.json 完整路径粘进去。
+
+命令方式：
+python recognition_workbench\run_adb_design_fragment_recognition.py --manifest "workdir\automation\adb_capture_runs\run_xxx\manifest.json"
+
+如果要直接调用 ADB 采集 8 帧后识别：
+双击 recognition_workbench\RUN_ADB_CAPTURE_AND_RECOGNIZE.bat
+
+或命令：
+python recognition_workbench\run_adb_design_fragment_recognition.py --capture --frame-count 8 --overlap-ratio 0.35
+
+输出目录：
+recognition_workbench\adb_test_out\adb_design_时间戳\
+
+额外输出：
+adb_capture_context.json
+  记录本轮使用的 ADB manifest、筛选出的 frame、原始滚动状态和识别 summary。
+
+默认规则：
+  is_duplicate_frame=true 的重复帧不会送入 OCR。
+  success=false 或截图路径不存在的帧不会送入 OCR。
+  如果确实要测试重复帧，可加 --include-duplicates。
+
+八、验收注意
 ------------
 请使用没有进入训练集的截图，并人工对照 annotated 预览和 CSV。当前数据长尾明显，流程成功数不能直接等于真实准确率，
 没有独立真值标注前不得宣称达到 98%。
+
+九、仓库页 -> 设计图页切换检查
+--------------------------------
+如果你现在已经停在“仓库”页面，只想先确认能不能切到“设计图”页，可以直接运行：
+
+双击：
+recognition_workbench\RUN_WAREHOUSE_DESIGN_TAB_CHECK.bat
+
+命令：
+python recognition_workbench\run_warehouse_design_tab_check.py
+
+如果不想做截图确认，只想先看切页动作是否执行：
+python recognition_workbench\run_warehouse_design_tab_check.py --no-confirm
+
+输出说明：
+  1. 会打印一份 JSON，里面有 navigation 和 warehouse_label_result。
+  2. design_tab_confirmed=true 表示切页后已经确认是设计图页。
+  3. 如果仓库标签识别依赖不可用，会保留切页动作结果，但会写 warning。
+  4. 如果确认失败，会返回非 0 退出码，方便 bat 和后续脚本判断。
