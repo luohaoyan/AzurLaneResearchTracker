@@ -15,6 +15,7 @@ from __future__ import annotations
 # 📦 第一部分：导入依赖
 # ============================================================
 
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,7 +25,7 @@ from matplotlib import rcParams
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from PySide6.QtCore import QEasingCurve, QEvent, QObject, QParallelAnimationGroup, QDate, QPropertyAnimation, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QIcon, QMovie, QPixmap, QResizeEvent, QTextCharFormat, QWheelEvent
+from PySide6.QtGui import QAction, QColor, QIcon, QMovie, QPixmap, QResizeEvent, QShowEvent, QTextCharFormat, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -59,6 +60,8 @@ from core.calculation.trend_analyzer import get_trend_analyzer
 from core.calculation.research_progress_analyzer import get_research_progress_analyzer
 from core.calculation.luck_calculator import get_luck_calculator
 from core.calculation.user_data_manager import get_user_data_manager
+from core.automation.simulator_preferences import get_simulator_preferences
+from core.automation.simulator_registry import list_simulator_profiles
 from core.data.equipment_manager import get_equipment_manager
 from core.data.research_manager import get_research_manager
 from core.state.runtime_state import TaskStateKind, get_runtime_state_manager
@@ -3433,20 +3436,34 @@ class AutomationLabPage(BasePage):
     """
 
     featureRequested = Signal(str)
+    collectionCommitted = Signal()
 
     def __init__(self, registry: FeatureHookRegistry, parent: Optional[QWidget] = None) -> None:
         """创建自动化实验室页面。"""
         super().__init__("自动化实验室", "检查模拟器连接、截图采集、OCR 识别和关键环境，帮助判断程序是否能正常运行。", parent)
+        self.logger = get_logger()
         self.registry = registry
         self.automation_bridge = get_automation_bridge()
         self.task_manager = get_gui_task_manager()
+        self._collection_preview_id = ""
         self.automation_task_status_label = QLabel("待命：v0.6.0 自动化接口已预留，可从这里逐项预检。")
         self.automation_task_status_label.setObjectName("card_caption")
         self.automation_task_status_label.setWordWrap(True)
         self.automation_task_buttons: Dict[str, QPushButton] = {}
+        self.emulator_status_label = QLabel("正在准备连接检测。")
+        self.emulator_status_label.setObjectName("panel_body")
+        self.emulator_status_label.setWordWrap(True)
+        self.emulator_status_badge = QLabel("● 未检测")
+        self.emulator_status_badge.setObjectName("panel_title")
+        self.emulator_status_badge.setProperty("connectionState", "unknown")
+        self.emulator_detail_label = QLabel("模拟器：自动选择；设备：未连接；端口：未设置")
+        self.emulator_detail_label.setObjectName("card_caption")
+        self.emulator_detail_label.setWordWrap(True)
+        self.emulator_candidates_label = QLabel("")
+        self.emulator_candidates_label.setObjectName("card_caption")
+        self.emulator_candidates_label.setWordWrap(True)
         grid = QGridLayout()
         grid.setSpacing(12)
-        self.root.addLayout(grid, stretch=1)
         for index, (title, body) in enumerate([
             ("模拟器连接", "后续用于检测 ADB、设备在线状态和游戏窗口。"),
             ("登录截图", "后续用于采集当前画面，确认截图链路可用。"),
@@ -3455,7 +3472,10 @@ class AutomationLabPage(BasePage):
         ]):
             grid.addWidget(BasePage.build_card(title, body), index // 2, index % 2)
 
+        self.root.addWidget(self._build_emulator_connection_panel())
+        self.root.addLayout(grid)
         self.root.addWidget(self._build_automation_task_panel())
+        self.root.addWidget(self._build_collection_panel())
         self.crawler_status_label = QLabel("待命：资料爬取入口已接入，可从这里更新装备表、图片表和科研期数表。")
         self.crawler_status_label.setObjectName("panel_body")
         self.crawler_status_label.setWordWrap(True)
@@ -3477,6 +3497,183 @@ class AutomationLabPage(BasePage):
                 feature_layout.addWidget(button)
         self.root.addWidget(feature_panel)
         self.busy_overlay = BusyOverlay(self)
+        self._startup_connection_queued = False
+
+    def _build_emulator_connection_panel(self) -> QFrame:
+        """
+        构建模拟器连接状态面板。
+        输入：
+            无。
+        输出：
+            QFrame: 常驻展示 ADB 路径、设备状态、显示环境和前台应用。
+        使用示例：
+            panel = self._build_emulator_connection_panel()
+        """
+        panel = QFrame()
+        panel.setObjectName("content_panel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title = QLabel("模拟器连接")
+        title.setObjectName("panel_title")
+        self.emulator_refresh_button = QPushButton("刷新状态")
+        self.emulator_refresh_button.setToolTip("在后台检测当前选择对应的 ADB 设备。")
+        self.emulator_refresh_button.clicked.connect(self._start_selected_connection_check)
+        self.emulator_connect_button = QPushButton("连接并测试")
+        self.emulator_connect_button.setToolTip("按下方选择连接模拟器，并读取一次显示环境。")
+        self.emulator_connect_button.clicked.connect(self._start_selected_connection)
+        # 保留旧属性名，兼容已有页面测试和外部调用。
+        self.emulator_auto_connect_button = self.emulator_connect_button
+        self.automation_task_buttons["adb_connection_check"] = self.emulator_refresh_button
+        self.automation_task_buttons["adb_auto_connect"] = self.emulator_connect_button
+
+        title_row.addWidget(title)
+        title_row.addWidget(self.emulator_status_badge)
+        title_row.addStretch(1)
+        title_row.addWidget(self.emulator_refresh_button)
+        title_row.addWidget(self.emulator_connect_button)
+
+        selection_row = QHBoxLayout()
+        simulator_label = QLabel("模拟器")
+        simulator_label.setObjectName("card_caption")
+        self.emulator_selector = QComboBox()
+        self.emulator_selector.setObjectName("emulator_selector")
+        self.emulator_selector.currentIndexChanged.connect(self._on_simulator_selection_changed)
+
+        serial_label = QLabel("Serial")
+        serial_label.setObjectName("card_caption")
+        self.emulator_serial_edit = QLineEdit()
+        self.emulator_serial_edit.setPlaceholderText("可选，如 127.0.0.1:5555")
+        self.emulator_serial_edit.setClearButtonEnabled(True)
+        self.emulator_serial_edit.setMinimumWidth(170)
+
+        port_label = QLabel("端口")
+        port_label.setObjectName("card_caption")
+        self.emulator_port_edit = QLineEdit()
+        self.emulator_port_edit.setPlaceholderText("可选，如 5555")
+        self.emulator_port_edit.setClearButtonEnabled(True)
+        self.emulator_port_edit.setMaximumWidth(110)
+        self._populate_simulator_selector()
+
+        selection_row.addWidget(simulator_label)
+        selection_row.addWidget(self.emulator_selector, stretch=1)
+        selection_row.addWidget(serial_label)
+        selection_row.addWidget(self.emulator_serial_edit)
+        selection_row.addWidget(port_label)
+        selection_row.addWidget(self.emulator_port_edit)
+
+        note = QLabel("程序启动后会自动检测一次；详细 ADB 路径、候选设备和环境信息请查看运行日志。")
+        note.setObjectName("card_caption")
+        note.setWordWrap(True)
+
+        layout.addLayout(title_row)
+        layout.addLayout(selection_row)
+        layout.addWidget(self.emulator_status_label)
+        layout.addWidget(self.emulator_detail_label)
+        layout.addWidget(self.emulator_candidates_label)
+        layout.addWidget(note)
+        self.emulator_candidates_label.hide()
+        return panel
+
+    def _populate_simulator_selector(self) -> None:
+        """填充自动选择和内置模拟器选项，并恢复用户最近选择。"""
+        self.emulator_selector.clear()
+        self.emulator_selector.addItem("自动选择", "auto")
+        known_keys = {"auto"}
+        for profile in list_simulator_profiles():
+            self.emulator_selector.addItem(profile.display_name, profile.key)
+            known_keys.add(profile.key)
+
+        for key in get_config_loader().list_available_simulators():
+            if key in known_keys:
+                continue
+            config = get_config_loader().get_simulator_config(key)
+            self.emulator_selector.addItem(str(config.get("name", key)), key)
+
+        selection = get_simulator_preferences().get_selection()
+        selected_key = str(selection.get("selection") or "auto")
+        index = self.emulator_selector.findData(selected_key)
+        self.emulator_selector.setCurrentIndex(index if index >= 0 else 0)
+        self.emulator_serial_edit.setText(str(selection.get("serial") or ""))
+        self.emulator_port_edit.setText(str(selection.get("port") or ""))
+
+    def _on_simulator_selection_changed(self, _index: int) -> None:
+        """切换模拟器时保留手动 serial/端口输入，不擅自覆盖用户字段。"""
+        self.emulator_selector.setToolTip(f"当前选择：{self.emulator_selector.currentText()}")
+
+    def _selected_simulator_options(self) -> Dict[str, str]:
+        """读取 UI 当前模拟器、serial 和端口选择。"""
+        return {
+            "simulator_key": str(self.emulator_selector.currentData() or "auto"),
+            "serial": str(self.emulator_serial_edit.text()).strip(),
+            "port": str(self.emulator_port_edit.text()).strip(),
+        }
+
+    def _start_startup_connection_check(self) -> None:
+        """程序启动后异步执行一次连接检测，不阻塞 Qt 主线程。"""
+        if self._startup_connection_queued:
+            return
+        self._startup_connection_queued = True
+        self._start_selected_connection(startup=True)
+
+    def _start_selected_connection_check(self) -> None:
+        """按当前 UI 选择执行一次严格连接检查。"""
+        self._start_selected_connection(check_only=True)
+
+    def _start_selected_connection(self, startup: bool = False, check_only: bool = False) -> None:
+        """按 UI 选择启动后台连接或连接测试任务。"""
+        options = self._selected_simulator_options()
+        preferences = get_simulator_preferences()
+        preferences.save_selection(
+            options["simulator_key"],
+            serial=options["serial"],
+            port=options["port"],
+            auto_select=options["simulator_key"] == "auto",
+        )
+
+        if check_only:
+            definition = get_automation_task_definition("adb_connection_check")
+            runner = lambda task_context=None: self.automation_bridge.run_adb_connection_check(
+                task_context=task_context,
+                simulator_key=options["simulator_key"],
+                serial=options["serial"] or None,
+                port=options["port"] or None,
+            )
+            task_key = "adb_connection_check"
+        else:
+            definition = get_automation_task_definition("adb_auto_connect")
+            runner = lambda task_context=None: self.automation_bridge.run_adb_auto_connect(
+                task_context=task_context,
+                simulator_key=options["simulator_key"],
+                serial=options["serial"] or None,
+                port=options["port"] or None,
+            )
+            task_key = "adb_auto_connect"
+        if definition is None:
+            return
+
+        if not self.task_manager.start_task(
+            definition.to_background_spec(),
+            runner,
+            lambda result, key=task_key: self._on_automation_task_finished(key, result, self.emulator_status_label),
+        ):
+            if not startup:
+                self.emulator_status_label.setText("已有任务运行中，请稍候再检测。")
+            return
+
+        self._set_emulator_controls_enabled(False)
+        if not startup:
+            self.emulator_status_label.setText(definition.start_message)
+
+    def _set_emulator_controls_enabled(self, enabled: bool) -> None:
+        """连接任务运行时冻结选择控件，避免任务中途改变目标设备。"""
+        self.emulator_selector.setEnabled(enabled)
+        self.emulator_serial_edit.setEnabled(enabled)
+        self.emulator_port_edit.setEnabled(enabled)
+        self.emulator_refresh_button.setEnabled(enabled)
+        self.emulator_connect_button.setEnabled(enabled)
 
     def _build_automation_task_panel(self) -> QFrame:
         """
@@ -3507,7 +3704,6 @@ class AutomationLabPage(BasePage):
         grid = QGridLayout()
         grid.setSpacing(10)
         task_keys = [
-            "adb_connection_check",
             "adb_screenshot_capture",
             "ocr_equipment_scan",
             "ocr_resource_scan",
@@ -3536,6 +3732,233 @@ class AutomationLabPage(BasePage):
         layout.addLayout(grid)
         layout.addWidget(self.automation_task_status_label)
         return panel
+
+    def _build_collection_panel(self) -> QFrame:
+        """
+        构建自动采集预览确认面板。
+        输入：
+            无。
+        输出：
+            QFrame: 快速采集、预览表和确认写入按钮。
+        使用示例：
+            panel = self._build_collection_panel()
+        """
+        panel = QFrame()
+        panel.setObjectName("content_panel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title = QLabel("自动采集预览")
+        title.setObjectName("panel_title")
+        note = QLabel("OCR 结果先进入预览表，确认后才写入今日装备记录。")
+        note.setObjectName("card_caption")
+        note.setWordWrap(True)
+        self.collection_start_button = QPushButton("快速采集")
+        self.collection_start_button.setToolTip("执行 ADB 截图与 OCR 识别，生成待确认采集预览。")
+        self.collection_start_button.clicked.connect(self._start_collection_preview)
+        title_row.addWidget(title)
+        title_row.addWidget(note, stretch=1)
+        title_row.addWidget(self.collection_start_button)
+
+        self.collection_preview_table = QTableWidget(0, 4)
+        self.collection_preview_table.setHorizontalHeaderLabels(["装备", "装备数量", "碎片数量", "置信度"])
+        self.collection_preview_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.collection_preview_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.collection_preview_table.setAlternatingRowColors(True)
+        polish_data_table(self.collection_preview_table, row_height=36)
+        self.collection_preview_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+
+        action_row = QHBoxLayout()
+        self.collection_status_label = QLabel("待命：快速采集尚未开始。")
+        self.collection_status_label.setObjectName("card_caption")
+        self.collection_status_label.setWordWrap(True)
+        self.collection_confirm_button = QPushButton("确认写入")
+        self.collection_confirm_button.setEnabled(False)
+        self.collection_confirm_button.clicked.connect(self._on_collection_confirm_clicked)
+        self.collection_discard_button = QPushButton("丢弃预览")
+        self.collection_discard_button.setEnabled(False)
+        self.collection_discard_button.clicked.connect(self._on_collection_discard_clicked)
+        action_row.addWidget(self.collection_status_label, stretch=1)
+        action_row.addWidget(self.collection_confirm_button)
+        action_row.addWidget(self.collection_discard_button)
+
+        layout.addLayout(title_row)
+        layout.addWidget(self.collection_preview_table)
+        layout.addLayout(action_row)
+        return panel
+
+    def _start_collection_preview(self) -> None:
+        """
+        启动快速自动采集任务。
+        输入：
+            无。
+        输出：
+            None，任务结果由 _on_collection_preview_finished 处理。
+        使用示例：
+            self._start_collection_preview()
+        """
+        spec = BackgroundTaskSpec(
+            "quick_collection",
+            "快速自动采集",
+            TaskStateKind.OCR_PROCESSING,
+            "正在执行快速自动采集，结果会先进入预览。",
+            True,
+        )
+        if not self.task_manager.start_task(spec, self.automation_bridge.run_quick_collection, self._on_collection_preview_finished):
+            self.collection_status_label.setText("已有长任务正在运行，请等待完成后再启动快速采集。")
+            return
+        self._set_collection_running(True)
+        self.busy_overlay.show_busy(spec.start_message)
+        self.collection_status_label.setText(spec.start_message)
+
+    def _on_collection_preview_finished(self, result: object) -> None:
+        """
+        快速采集完成后刷新预览表。
+        输入：
+            result: AutomationBridgeResult 或 dict。
+        输出：
+            None。
+        使用示例：
+            self._on_collection_preview_finished(result)
+        """
+        self.busy_overlay.hide_busy()
+        self._set_collection_running(False)
+        success = bool(read_bridge_result(result, "success", False))
+        message = str(read_bridge_result(result, "message", "快速采集已结束。"))
+        self.collection_status_label.setText(message)
+        if not success:
+            return
+
+        payload = self._bridge_payload(result)
+        preview = payload.get("preview", {}) if isinstance(payload.get("preview", {}), dict) else {}
+        raw_records = preview.get("equipment_records") or payload.get("equipment_records") or []
+        records = raw_records if isinstance(raw_records, list) else []
+        preview_id = str(payload.get("preview_id") or preview.get("preview_id") or "").strip()
+        requires_confirmation = bool(payload.get("requires_confirmation", bool(records)))
+
+        self._fill_collection_preview_table(records)
+        self._collection_preview_id = preview_id if records else ""
+        can_confirm = bool(records and preview_id and requires_confirmation)
+        self.collection_confirm_button.setEnabled(can_confirm)
+        self.collection_discard_button.setEnabled(bool(records and preview_id))
+        if not records:
+            self.collection_status_label.setText(f"{message} 当前没有可确认的装备记录。")
+
+    def _on_collection_confirm_clicked(self) -> None:
+        """
+        启动预览确认写入任务。
+        输入：
+            无，读取当前 _collection_preview_id。
+        输出：
+            None。
+        使用示例：
+            self._on_collection_confirm_clicked()
+        """
+        preview_id = self._collection_preview_id
+        if not preview_id:
+            self.collection_status_label.setText("当前没有待确认的采集预览。")
+            return
+
+        def runner(task_context: Optional[object] = None) -> object:
+            """把当前预览 ID 绑定到确认写入后台任务。"""
+            return self.automation_bridge.confirm_collection_preview(preview_id, task_context=task_context)
+
+        spec = BackgroundTaskSpec(
+            "confirm_collection_preview",
+            "确认采集结果",
+            TaskStateKind.OCR_PROCESSING,
+            "正在写入已确认的采集结果。",
+            True,
+        )
+        if not self.task_manager.start_task(spec, runner, self._on_collection_confirm_finished):
+            self.collection_status_label.setText("已有长任务正在运行，请等待完成后再确认写入。")
+            return
+        self._set_collection_running(True)
+        self.busy_overlay.show_busy(spec.start_message)
+        self.collection_status_label.setText(spec.start_message)
+
+    def _on_collection_confirm_finished(self, result: object) -> None:
+        """
+        预览确认写入完成后刷新 UI。
+        输入：
+            result: AutomationBridgeResult 或 dict。
+        输出：
+            None。
+        使用示例：
+            self._on_collection_confirm_finished(result)
+        """
+        self.busy_overlay.hide_busy()
+        self._set_collection_running(False)
+        success = bool(read_bridge_result(result, "success", False))
+        message = str(read_bridge_result(result, "message", "采集结果确认任务已结束。"))
+        self.collection_status_label.setText(message)
+        if success:
+            self._clear_collection_preview()
+            self.collection_status_label.setText(message)
+            self.collectionCommitted.emit()
+            return
+        has_preview = bool(self._collection_preview_id)
+        self.collection_confirm_button.setEnabled(has_preview)
+        self.collection_discard_button.setEnabled(has_preview)
+
+    def _on_collection_discard_clicked(self) -> None:
+        """
+        丢弃当前待确认采集预览。
+        输入：
+            无。
+        输出：
+            None。
+        使用示例：
+            self._on_collection_discard_clicked()
+        """
+        preview_id = self._collection_preview_id
+        if not preview_id:
+            self.collection_status_label.setText("当前没有可丢弃的采集预览。")
+            return
+        discarded = bool(self.automation_bridge.discard_collection_preview(preview_id))
+        self._clear_collection_preview()
+        self.collection_status_label.setText("已丢弃当前采集预览。" if discarded else "采集预览已不存在。")
+
+    def _fill_collection_preview_table(self, records: List[Dict[str, object]]) -> None:
+        """把待确认装备记录显示到预览表。"""
+        self.collection_preview_table.setRowCount(len(records))
+        for row_index, record in enumerate(records):
+            equipment_text = str(
+                record.get("equipment_id")
+                or record.get("final_equipment_name")
+                or record.get("equipment_name")
+                or "未知装备"
+            )
+            values = [
+                equipment_text,
+                str(record.get("equipment_count", 0)),
+                str(record.get("fragment_count", 0)),
+                f"{float(record.get('confidence', 0.0) or 0.0):.2f}",
+            ]
+            for column, value in enumerate(values):
+                self.collection_preview_table.setItem(row_index, column, QTableWidgetItem(value))
+
+    def _clear_collection_preview(self) -> None:
+        """清空当前采集预览和确认按钮状态。"""
+        self._collection_preview_id = ""
+        self.collection_preview_table.setRowCount(0)
+        self.collection_confirm_button.setEnabled(False)
+        self.collection_discard_button.setEnabled(False)
+
+    def _set_collection_running(self, running: bool) -> None:
+        """采集或确认任务运行时暂时冻结采集按钮。"""
+        self.collection_start_button.setEnabled(not running)
+        if running:
+            self.collection_confirm_button.setEnabled(False)
+            self.collection_discard_button.setEnabled(False)
+
+    @staticmethod
+    def _bridge_payload(result: object) -> Dict[str, object]:
+        """兼容 AutomationBridgeResult 和 dict 读取 payload。"""
+        payload = read_bridge_result(result, "payload", {})
+        return payload if isinstance(payload, dict) else {}
 
     def _build_crawler_update_panel(self) -> QFrame:
         """
@@ -3614,13 +4037,131 @@ class AutomationLabPage(BasePage):
         """
         self.busy_overlay.hide_busy()
         self._set_automation_buttons_enabled(True)
+        if key in {"adb_connection_check", "adb_auto_connect"}:
+            self._set_emulator_controls_enabled(True)
         success = bool(read_bridge_result(result, "success", False))
         message = str(read_bridge_result(result, "message", "任务已结束。"))
         detail_text = str(read_bridge_result(result, "detail", ""))
         detail = f"\n{detail_text}" if detail_text and success else ""
         status_label.setText(f"{message}{detail}")
+        if key in {"adb_connection_check", "adb_auto_connect"}:
+            self._update_emulator_connection_status(result)
         if key == "crawler_update":
             self.crawler_status_label.setText(f"{message}{detail}")
+
+    def _update_emulator_connection_status(self, result: object) -> None:
+        """
+        根据 ADB 桥接结果刷新模拟器连接状态面板。
+        输入：
+            result: AutomationBridgeResult 或 dict。
+        输出：
+            None。
+        使用示例：
+            self._update_emulator_connection_status(result)
+        """
+        payload = self._bridge_payload(result)
+        success = bool(read_bridge_result(result, "success", False))
+        status = str(payload.get("connection_status") or read_bridge_result(result, "status", "unknown"))
+        message = str(read_bridge_result(result, "message", "ADB 检测已结束。"))
+        warnings = read_bridge_result(result, "warnings", ())
+        warning_list = list(warnings) if isinstance(warnings, (list, tuple)) else []
+
+        connected = bool(success and status == "ready")
+        badge = "● 已连接" if connected else self._emulator_status_badge_text(status)
+        self.emulator_status_badge.setText(badge)
+        self.emulator_status_badge.setProperty("connectionState", "ready" if connected else "error")
+        self.emulator_status_badge.style().unpolish(self.emulator_status_badge)
+        self.emulator_status_badge.style().polish(self.emulator_status_badge)
+        connected_text = f"已连接：{payload.get('simulator_name') or '模拟器'}"
+        if message.strip() == "ADB 设备连接正常。":
+            connected_text += "（ADB 设备连接正常）"
+        self.emulator_status_label.setText(
+            connected_text if connected else f"未连接：{self._short_connection_message(status, message)}"
+        )
+
+        simulator_name = str(payload.get("simulator_name") or payload.get("simulator_key") or "自动选择")
+        device_serial = str(payload.get("device_serial") or payload.get("default_device_serial") or "未发现")
+        port = str(payload.get("port") or self._port_from_serial(device_serial) or "未设置")
+        self.emulator_detail_label.setText(f"模拟器：{simulator_name}；设备：{device_serial}；端口：{port}")
+
+        # 详细字段只进入日志抽屉，避免把 ADB 路径、候选串和前台包堆在主界面。
+        self.logger.info(
+            "模拟器连接详情：状态=%s，模拟器=%s，设备=%s，端口=%s，ADB=%s，来源=%s，候选=%s，"
+            "显示环境=%s，前台应用=%s，告警=%s",
+            status,
+            simulator_name,
+            device_serial,
+            port,
+            payload.get("adb_path") or "未找到",
+            payload.get("adb_source") or "missing",
+            payload.get("detected_simulators") or payload.get("candidates") or [],
+            payload.get("display_environment") or {},
+            payload.get("foreground_app") or {},
+            warning_list,
+        )
+
+        candidates = payload.get("detected_simulators") or payload.get("candidates") or []
+        if status == "multiple_devices":
+            self.emulator_candidates_label.setText("发现多台设备：请填写 Serial 后重试。")
+            self.emulator_candidates_label.show()
+        else:
+            self.emulator_candidates_label.clear()
+            self.emulator_candidates_label.hide()
+
+    @staticmethod
+    def _emulator_status_badge_text(status: str) -> str:
+        """把 ADB 状态转换成紧凑的状态徽标。"""
+        status_map = {
+            "ready": "● 已连接",
+            "not_connected": "● 未连接",
+            "unavailable": "● 未连接",
+            "offline": "● 离线",
+            "unauthorized": "● 未授权",
+            "multiple_devices": "● 多设备",
+            "timeout": "● 超时",
+            "error": "● 异常",
+        }
+        return status_map.get(status, f"● {status or '未知'}")
+
+    @staticmethod
+    def _short_connection_message(status: str, message: str) -> str:
+        """把底层连接错误压缩成用户易读的一行。"""
+        if status == "multiple_devices":
+            return "发现多台设备，请填写 Serial"
+        if status == "unauthorized":
+            return "设备未授权"
+        if status == "offline":
+            return "设备离线"
+        if status == "unavailable":
+            return "ADB 不可用"
+        if status == "timeout":
+            return "连接超时"
+        return str(message or "请查看运行日志")
+
+    @staticmethod
+    def _port_from_serial(serial: str) -> str:
+        """从本地 TCP serial 提取端口。"""
+        match = re.search(r":(\d+)$", str(serial or "").strip())
+        return match.group(1) if match else ""
+
+    @staticmethod
+    def _format_emulator_candidates(candidates: object) -> str:
+        """把候选设备/模拟器指纹压缩成一行可读摘要。"""
+        if not isinstance(candidates, list) or not candidates:
+            return "候选设备：未发现在线 ADB 设备。"
+        parts: List[str] = []
+        for item in candidates[:8]:
+            if not isinstance(item, dict):
+                continue
+            serial = str(item.get("serial") or "未知")
+            state = str(item.get("state") or "unknown")
+            simulator_type = str(item.get("simulator_type") or item.get("type") or "")
+            if simulator_type:
+                parts.append(f"{serial}({state}/{simulator_type})")
+            else:
+                parts.append(f"{serial}({state})")
+        suffix = " ..." if len(candidates) > 8 else ""
+        return f"候选设备：{'、'.join(parts)}{suffix}" if parts else "候选设备：未发现在线 ADB 设备。"
 
     def _set_automation_buttons_enabled(self, enabled: bool) -> None:
         """统一启用或禁用自动化实验室中的任务按钮。"""
@@ -4005,6 +4546,7 @@ class MainWindow(QMainWindow):
         self,
         theme_tokens: Optional[ThemeTokens] = None,
         registry: Optional[FeatureHookRegistry] = None,
+        auto_connect_on_startup: bool = False,
         parent: Optional[QWidget] = None,
     ) -> None:
         """初始化主窗口、导航栏、页面栈、日志抽屉、菜单和状态栏。"""
@@ -4014,6 +4556,7 @@ class MainWindow(QMainWindow):
         self.active_skin = str(self.ui_config_manager.get_appearance_config().get("active_skin", "harbor_night"))
         self.theme_tokens = theme_tokens or get_theme_skin(self.active_skin).tokens
         self.registry = registry or get_feature_hook_registry()
+        self.auto_connect_on_startup = bool(auto_connect_on_startup)
         self.runtime_manager = get_runtime_state_manager()
         self.gui_version = get_gui_version()
         self.navigation_items = self._build_navigation_items()
@@ -4025,6 +4568,7 @@ class MainWindow(QMainWindow):
         self._iron_blood_timer = QTimer(self)
         self._iron_blood_timer.setInterval(1200)
         self._iron_blood_timer.timeout.connect(self._toggle_iron_blood_pulse)
+        self._startup_connection_scheduled = False
 
         current_app = QApplication.instance()
         if current_app is not None:
@@ -4090,6 +4634,26 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         if hasattr(self, "task_drawer"):
             self.task_drawer.fit_to_parent()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        """窗口首次显示后延迟启动一次后台模拟器连接检测。"""
+        super().showEvent(event)
+        if self._startup_connection_scheduled:
+            return
+        if not self.auto_connect_on_startup:
+            return
+        self._startup_connection_scheduled = True
+        QTimer.singleShot(3000, self._start_startup_connection_if_idle)
+
+    def _start_startup_connection_if_idle(self) -> None:
+        """若用户尚未启动其他任务，则触发自动化实验室的启动检测。"""
+        page = self.pages.get("automation_lab")
+        if not isinstance(page, AutomationLabPage):
+            return
+        if page.task_manager.is_running():
+            self.logger.info("检测到已有自动化任务，跳过启动时模拟器连接检测。")
+            return
+        page._start_startup_connection_check()
 
     def _build_navigation_panel(self) -> QWidget:
         """构建左侧导航栏。"""
@@ -4440,7 +5004,7 @@ def run_gui(argv: Optional[Sequence[str]] = None) -> int:
     owns_app = app is None
     if app is None:
         app = QApplication(list(argv) if argv is not None else sys.argv)
-    window = MainWindow()
+    window = MainWindow(auto_connect_on_startup=True)
     window.show()
     if owns_app:
         return int(app.exec())

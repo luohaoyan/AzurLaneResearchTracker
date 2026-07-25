@@ -58,6 +58,14 @@ class ConfigLoader:
                 },
                 "current_simulator": "mumu",
                 "current_game": "azur_lane",
+                "simulator_preferences": {
+                    "selection": "auto",
+                    "serial": "",
+                    "port": "",
+                    "auto_select": True,
+                    "history": [],
+                    "last_connection": {},
+                },
                 "data_storage": {
                     "format": "csv",
                     "backup_enabled": True,

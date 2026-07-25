@@ -1,0 +1,24 @@
+{
+  "status": "completed",
+  "source_run_dir": "G:\\ALLPeoject\\PythonProject\\AzurLaneResearchTracker-OCR\\nn_training_lab\\pytorch_icon_training\\models\\run_20260722_191241",
+  "output_dir": "G:\\ALLPeoject\\PythonProject\\AzurLaneResearchTracker-OCR\\nn_training_lab\\deployment\\onnx_models\\run_20260722_191241",
+  "label_key": "equipment_name",
+  "classes": 210,
+  "opset": 17,
+  "variants": {
+    "fp32": {
+      "path": "G:\\ALLPeoject\\PythonProject\\AzurLaneResearchTracker-OCR\\nn_training_lab\\deployment\\onnx_models\\run_20260722_191241\\equipment_icon_resnet18_fp32.onnx",
+      "status": "ok"
+    },
+    "fp16": {
+      "path": "G:\\ALLPeoject\\PythonProject\\AzurLaneResearchTracker-OCR\\nn_training_lab\\deployment\\onnx_models\\run_20260722_191241\\equipment_icon_resnet18_fp16.onnx",
+      "status": "ok"
+    },
+    "int8_dynamic": {
+      "path": "G:\\ALLPeoject\\PythonProject\\AzurLaneResearchTracker-OCR\\nn_training_lab\\deployment\\onnx_models\\run_20260722_191241\\equipment_icon_resnet18_int8_dynamic.onnx",
+      "status": "ok"
+    }
+  },
+  "created_at": "2026-07-22 19:26:11",
+  "note": "ONNX 输出 logits；推理端统一做 softmax 并返回 equipment_name。"
+}

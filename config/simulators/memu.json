@@ -1,0 +1,41 @@
+{
+    "name": "逍遥模拟器",
+    "type": "memu",
+    "window_class": "Qt5QWindowIcon",
+    "window_title": "MEmu",
+    "control_method": "adb",
+    "adb": {
+        "path": "C:/Program Files/Microvirt/MEmu/adb.exe",
+        "port": 21503,
+        "candidate_serials": [
+            "127.0.0.1:21503",
+            "127.0.0.1:21513",
+            "127.0.0.1:21523"
+        ],
+        "common_paths": [
+            "C:/Program Files/Microvirt/MEmu/adb.exe",
+            "D:/Program Files/Microvirt/MEmu/adb.exe",
+            "C:/Program Files (x86)/Microvirt/MEmu/adb.exe"
+        ],
+        "connect_timeout": 10,
+        "auto_connect_timeout": 2,
+        "max_auto_connect_candidates": 8,
+        "reconnect_on_failure": true
+    },
+    "screen": {
+        "width": 1280,
+        "height": 720,
+        "dpi": 240,
+        "mode": "tablet",
+        "recommended_for_ocr": true
+    },
+    "performance": {
+        "click_delay": 0.5,
+        "screenshot_delay": 0.3,
+        "template_scale": 1.0
+    },
+    "custom_commands": {
+        "start_simulator": "C:/Program Files/Microvirt/MEmu/MEmu.exe",
+        "stop_simulator": "taskkill /f /im MEmu.exe"
+    }
+}

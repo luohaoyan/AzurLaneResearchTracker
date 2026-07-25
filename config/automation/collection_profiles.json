@@ -1,0 +1,54 @@
+{
+    "order": [
+        "quick",
+        "full",
+        "custom"
+    ],
+    "profiles": {
+        "quick": {
+            "title": "快速采集",
+            "description": "采集港区资源与当前装备页，适合日常快速刷新。",
+            "steps": {
+                "resources": true,
+                "equipment": true,
+                "research": false
+            },
+            "allow_partial": true,
+            "navigation_sequences": [
+                "return_home",
+                "capture_harbor",
+                "open_equipment"
+            ],
+            "estimated_seconds": 30
+        },
+        "full": {
+            "title": "完整采集",
+            "description": "预留完整装备仓库与科研页遍历流程，后续合并 ADB/OCR 后启用。",
+            "steps": {
+                "resources": true,
+                "equipment": true,
+                "research": true
+            },
+            "allow_partial": true,
+            "navigation_sequences": [
+                "return_home",
+                "capture_harbor",
+                "open_equipment",
+                "open_research"
+            ],
+            "estimated_seconds": 180
+        },
+        "custom": {
+            "title": "自定义采集",
+            "description": "预留用户勾选采集内容的模式，当前默认采集资源和装备页。",
+            "steps": {
+                "resources": true,
+                "equipment": true,
+                "research": false
+            },
+            "allow_partial": true,
+            "navigation_sequences": [],
+            "estimated_seconds": 60
+        }
+    }
+}

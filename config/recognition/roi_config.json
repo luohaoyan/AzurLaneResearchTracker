@@ -1,0 +1,334 @@
+{
+  "schema_version": "0.6.0",
+  "base_resolution": {
+    "width": 1280,
+    "height": 720
+  },
+  "calibration": {
+    "status": "pending",
+    "message": "ROI 坐标基于 1280x720 模拟器截图与 OCR_dev_imgs 当前样例整理，仍需真实标注截图校准；不得宣称准确率。"
+  },
+  "ocr": {
+    "confidence_threshold": 0.8,
+    "paddleocr": {
+      "lang": "ch",
+      "use_angle_cls": false,
+      "use_gpu": false,
+      "use_doc_orientation_classify": false,
+      "use_doc_unwarping": false,
+      "use_textline_orientation": false,
+      "device": "cpu",
+      "enable_mkldnn": false,
+      "enable_cinn": false,
+      "cpu_threads": 4,
+      "text_detection_model_name": "PP-OCRv4_mobile_det",
+      "text_recognition_model_name": "PP-OCRv4_mobile_rec",
+      "model_root": "models/paddleocr",
+      "det_model_dir": "models/paddleocr/det/PP-OCRv4_mobile_det_infer",
+      "rec_model_dir": "models/paddleocr/rec",
+      "cls_model_dir": ""
+    },
+    "fallback_paddleocr": {
+      "lang": "ch",
+      "use_doc_orientation_classify": false,
+      "use_doc_unwarping": false,
+      "use_textline_orientation": false,
+      "device": "cpu",
+      "enable_mkldnn": false,
+      "enable_cinn": false,
+      "cpu_threads": 4,
+      "text_detection_model_name": "PP-OCRv4_mobile_det",
+      "text_recognition_model_name": "PP-OCRv5_server_rec",
+      "det_model_dir": "models/paddleocr/det/PP-OCRv4_mobile_det_infer",
+      "rec_model_dir": "models/paddleocr/rec_v5_server",
+      "cls_model_dir": ""
+    }
+  },
+  "template_matching": {
+    "threshold": 0.82,
+    "scales": [0.9, 1.0, 1.1],
+    "iou_threshold": 0.3,
+    "templates": {}
+  },
+  "capture_validation": {
+    "allow_partial_image": false,
+    "min_width_ratio": 0.85,
+    "min_height_ratio": 0.85,
+    "max_aspect_delta": 0.12,
+    "message": "模拟器截图必须接近 1280x720；疑似半截图或宽高比异常时跳过识别，避免输出脏数据。"
+  },
+  "card_digits": {
+    "stack_count_ratios": [
+      [0.70, 0.57, 0.28, 0.36],
+      [0.62, 0.50, 0.36, 0.46]
+    ],
+    "fragment_pair_ratios": [
+      [0.72, 0.04, 0.26, 0.42],
+      [0.66, 0.00, 0.32, 0.50]
+    ],
+    "calibration": {
+      "status": "pending",
+      "message": "装备卡片数字区域基于 eq.png / eq_type_x 样例预设：整装数量只扫右下角，碎片数量按左/右解析；仍需真实标注截图校准。"
+    }
+  },
+  "equipment_icon_matching": {
+    "enabled": true,
+    "gallery_csv_path": "data/equipment_images.csv",
+    "supplemental_gallery_csv_paths": [
+      "nn_training_lab/archive/equipment_icon_matcher_v2/reviewed_icon_gallery/reviewed_icon_gallery_manifest.csv",
+      "nn_training_lab/archive/equipment_icon_matcher_v2/accepted_icon_gallery/accepted_icon_gallery_manifest.csv"
+    ],
+    "gallery_import_policy": "official_plus_human_reviewed",
+    "threshold": 0.6,
+    "ambiguous_margin": 0.012,
+    "top_n": 5,
+    "target_size": [96, 96],
+    "min_icon_size": [12, 12],
+    "structure_weight": 0.42,
+    "color_weight": 0.19,
+    "edge_weight": 0.24,
+    "hash_weight": 0.07,
+    "region_weight": 0.08,
+    "region_grid": [3, 3],
+    "region_keep_ratio": 0.72,
+    "region_refine_top_k": 32,
+    "icon_ratios": {
+      "equipment": [
+        [0.05, 0.08, 0.82, 0.68],
+        [0.00, 0.00, 0.90, 0.78]
+      ],
+      "fragment": [
+        [0.028, 0.096, 0.200, 0.80],
+        [0.020, 0.070, 0.215, 0.84]
+      ]
+    },
+    "calibration": {
+      "status": "pending",
+      "message": "装备图标识别基于 data/equipment_images.csv + data/images 本地图鉴检索；低分或候选接近时返回 unknown/ambiguous，仍需 1280x720 仓库截图标注校准。"
+    }
+  },
+  "pipeline": {
+    "name_ocr_enabled": true,
+    "name_ocr_confidence_threshold": 0.55,
+    "name_resolve_min_score": 0.66,
+    "name_override_icon_confidence": 0.90,
+    "name_roi_ratio": [0.385, 0.040, 0.350, 0.235]
+  },
+  "scenes": {
+    "harbor": {
+      "description": "港区顶部玩家信息与资源栏，以及底部仓库入口。",
+      "calibration": {
+        "status": "pending",
+        "message": "港区 ROI 来自 name_about.png / market.png 当前样例，待更多真实截图校准。"
+      },
+      "rois": [
+        {
+          "name": "player_name",
+          "kind": "resource",
+          "field": "player_name",
+          "mode": "text",
+          "bbox": [86, 19, 234, 47],
+          "confidence_threshold": 0.72
+        },
+        {
+          "name": "oil",
+          "kind": "resource",
+          "field": "oil",
+          "mode": "digits",
+          "bbox": [494, 20, 146, 53],
+          "confidence_threshold": 0.82
+        },
+        {
+          "name": "coins",
+          "kind": "resource",
+          "field": "coins",
+          "mode": "digits",
+          "bbox": [658, 26, 154, 45],
+          "confidence_threshold": 0.82
+        },
+        {
+          "name": "gems",
+          "kind": "resource",
+          "field": "gems",
+          "mode": "digits",
+          "bbox": [831, 21, 153, 47],
+          "confidence_threshold": 0.82
+        },
+        {
+          "name": "warehouse_entry_button",
+          "kind": "ui_element",
+          "field": "warehouse_entry",
+          "mode": "position",
+          "bbox": [324, 646, 156, 62],
+          "confidence": 0.95,
+          "description": "底部导航栏“仓库”按钮区域，用于后续自动化点击定位。"
+        }
+      ]
+    },
+    "equipment_list": {
+      "description": "仓库页面：设计图/装备/材料底部选项、排序筛选按钮与列表区域。",
+      "calibration": {
+        "status": "pending",
+        "message": "仓库页面 ROI 来自 market_eq_x / market_frag_x 当前样例，装备卡片数量与图标识别仍需标注。"
+      },
+      "rois": [
+        {
+          "name": "warehouse_tab_design",
+          "kind": "ui_element",
+          "field": "tab_design",
+          "mode": "state",
+          "bbox": [787, 651, 155, 54],
+          "selected": true,
+          "default_value": 0,
+          "confidence": 0.76,
+          "state_rule": {
+            "color": "warm",
+            "threshold": 28,
+            "channel_order": "bgr"
+          },
+          "description": "底部“设计图”按钮；选中时偏金色。"
+        },
+        {
+          "name": "warehouse_tab_equipment",
+          "kind": "ui_element",
+          "field": "tab_equipment",
+          "mode": "state",
+          "bbox": [947, 651, 155, 54],
+          "selected": true,
+          "default_value": 0,
+          "confidence": 0.76,
+          "state_rule": {
+            "color": "warm",
+            "threshold": 28,
+            "channel_order": "bgr"
+          },
+          "description": "底部“装备”按钮；选中时偏金色。"
+        },
+        {
+          "name": "warehouse_tab_material",
+          "kind": "ui_element",
+          "field": "tab_material",
+          "mode": "state",
+          "bbox": [1106, 651, 154, 54],
+          "selected": true,
+          "default_value": 0,
+          "confidence": 0.76,
+          "state_rule": {
+            "color": "warm",
+            "threshold": 28,
+            "channel_order": "bgr"
+          },
+          "description": "底部“材料”按钮；选中时偏金色。"
+        },
+        {
+          "name": "warehouse_filter_button",
+          "kind": "ui_element",
+          "field": "filter_button",
+          "mode": "position",
+          "bbox": [790, 4, 98, 45],
+          "confidence": 0.9
+        },
+        {
+          "name": "warehouse_sort_button",
+          "kind": "ui_element",
+          "field": "sort_button",
+          "mode": "position",
+          "bbox": [934, 4, 102, 45],
+          "confidence": 0.9
+        },
+        {
+          "name": "warehouse_filter_type_button",
+          "kind": "ui_element",
+          "field": "filter_type_button",
+          "mode": "position",
+          "bbox": [1036, 4, 146, 45],
+          "confidence": 0.9,
+          "description": "右上角稀有度/可建造/数量筛选按钮。"
+        },
+        {
+          "name": "filter_option_buildable",
+          "kind": "ui_element",
+          "field": "filter_buildable",
+          "mode": "position",
+          "bbox": [1036, 48, 178, 43],
+          "confidence": 0.72
+        },
+        {
+          "name": "filter_option_rarity",
+          "kind": "ui_element",
+          "field": "filter_rarity",
+          "mode": "position",
+          "bbox": [1036, 91, 178, 43],
+          "confidence": 0.72
+        },
+        {
+          "name": "filter_option_quantity",
+          "kind": "ui_element",
+          "field": "filter_quantity",
+          "mode": "position",
+          "bbox": [1036, 134, 178, 43],
+          "confidence": 0.72
+        },
+        {
+          "name": "warehouse_card_grid",
+          "kind": "ui_element",
+          "field": "card_grid",
+          "mode": "position",
+          "bbox": [132, 72, 1098, 565],
+          "confidence": 0.9,
+          "description": "装备/设计图卡片列表主体区域；后续装备图标匹配与数量 OCR 会在此区域内细分。"
+        }
+      ]
+    },
+    "research": {
+      "description": "科研主页预留场景。",
+      "calibration": {
+        "status": "pending",
+        "message": "科研页面 ROI 待真实截图标注校准。"
+      },
+      "rois": [
+        {
+          "name": "research_phase_index",
+          "kind": "ui_element",
+          "field": "phase_index",
+          "mode": "digits",
+          "bbox": [47, 47, 160, 43],
+          "confidence_threshold": 0.8
+        },
+        {
+          "name": "research_task_timer",
+          "kind": "ui_element",
+          "field": "task_timer",
+          "mode": "digits",
+          "bbox": [973, 567, 173, 37],
+          "confidence_threshold": 0.8
+        }
+      ]
+    },
+    "phase_select": {
+      "description": "科研期数选择页预留场景。",
+      "calibration": {
+        "status": "pending",
+        "message": "科研期数选择 ROI 待真实截图标注校准。"
+      },
+      "rois": [
+        {
+          "name": "selected_phase",
+          "kind": "ui_element",
+          "field": "selected_phase",
+          "mode": "digits",
+          "bbox": [460, 92, 120, 40],
+          "confidence_threshold": 0.8
+        },
+        {
+          "name": "phase_tab_count",
+          "kind": "ui_element",
+          "field": "phase_tab_count",
+          "mode": "digits",
+          "bbox": [853, 92, 120, 40],
+          "confidence_threshold": 0.8
+        }
+      ]
+    }
+  }
+}

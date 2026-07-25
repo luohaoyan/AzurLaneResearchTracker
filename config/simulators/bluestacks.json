@@ -1,0 +1,39 @@
+{
+    "name": "BlueStacks 蓝叠",
+    "type": "bluestacks",
+    "window_class": "Qt5154QWindowOwnDCIcon",
+    "window_title": "BlueStacks",
+    "control_method": "adb",
+    "adb": {
+        "path": "C:/Program Files/BlueStacks_nxt/HD-Adb.exe",
+        "port": 5555,
+        "candidate_serials": [
+            "127.0.0.1:5555"
+        ],
+        "common_paths": [
+            "C:/Program Files/BlueStacks_nxt/HD-Adb.exe",
+            "C:/Program Files/BlueStacks/HD-Adb.exe",
+            "C:/Program Files/BlueStacks_bgp64/HD-Adb.exe"
+        ],
+        "connect_timeout": 10,
+        "auto_connect_timeout": 2,
+        "max_auto_connect_candidates": 12,
+        "reconnect_on_failure": true
+    },
+    "screen": {
+        "width": 1280,
+        "height": 720,
+        "dpi": 240,
+        "mode": "tablet",
+        "recommended_for_ocr": true
+    },
+    "performance": {
+        "click_delay": 0.5,
+        "screenshot_delay": 0.3,
+        "template_scale": 1.0
+    },
+    "custom_commands": {
+        "start_simulator": "C:/Program Files/BlueStacks_nxt/HD-Player.exe",
+        "stop_simulator": "taskkill /f /im HD-Player.exe"
+    }
+}

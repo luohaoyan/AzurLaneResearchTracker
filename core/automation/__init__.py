@@ -1,5 +1,82 @@
 """自动化相关核心接口。"""
 
+from .adb_controller import (
+    AdbAutoConnectResult,
+    AdbCommandResult,
+    AdbController,
+    AdbDevice,
+    AdbDisplayCheckResult,
+    AdbLoginResult,
+    AdbOperationSequenceResult,
+    AdbOperationStepResult,
+    AdbPackageInfo,
+    AdbPackageListResult,
+    AdbPathResolution,
+    AdbSimulatorListResult,
+    AdbSimulatorProfile,
+    AdbStateWaitResult,
+    create_adb_controller,
+)
 from .adb_task_api import AdbTaskApi, AdbTaskResult, get_adb_task_api
+from .simulator_registry import (
+    SimulatorConnectionProfile,
+    build_auto_connect_candidates,
+    get_simulator_profile,
+    list_simulator_profiles,
+    normalize_serial,
+)
+from .simulator_preferences import SimulatorPreferences, get_simulator_preferences
+from .equipment_page import (
+    EquipmentPageAdbApi,
+    EquipmentPageAdbResult,
+    EquipmentPageCaptureArtifact,
+    EquipmentPageScrollFrame,
+    EquipmentPageScrollSession,
+    get_equipment_page_adb_api,
+)
+from .research_page import (
+    ResearchPageAdbApi,
+    ResearchPageAdbResult,
+    ResearchPageCaptureArtifact as ResearchPageCaptureArtifact,
+    ResearchPageScrollSession as ResearchPageScrollSession,
+    get_research_page_adb_api,
+)
 
-__all__ = ["AdbTaskApi", "AdbTaskResult", "get_adb_task_api"]
+__all__ = [
+    "AdbCommandResult",
+    "AdbAutoConnectResult",
+    "AdbController",
+    "AdbDevice",
+    "AdbDisplayCheckResult",
+    "AdbLoginResult",
+    "AdbOperationSequenceResult",
+    "AdbOperationStepResult",
+    "AdbPackageInfo",
+    "AdbPackageListResult",
+    "AdbPathResolution",
+    "AdbSimulatorListResult",
+    "AdbSimulatorProfile",
+    "AdbStateWaitResult",
+    "AdbTaskApi",
+    "AdbTaskResult",
+    "EquipmentPageAdbApi",
+    "EquipmentPageAdbResult",
+    "EquipmentPageCaptureArtifact",
+    "EquipmentPageScrollFrame",
+    "EquipmentPageScrollSession",
+    "ResearchPageAdbApi",
+    "ResearchPageAdbResult",
+    "ResearchPageCaptureArtifact",
+    "ResearchPageScrollSession",
+    "SimulatorConnectionProfile",
+    "build_auto_connect_candidates",
+    "create_adb_controller",
+    "get_adb_task_api",
+    "get_equipment_page_adb_api",
+    "get_simulator_profile",
+    "get_research_page_adb_api",
+    "list_simulator_profiles",
+    "normalize_serial",
+    "SimulatorPreferences",
+    "get_simulator_preferences",
+]

@@ -223,6 +223,7 @@ class GuiTaskManager(QObject):
         self._process_finished_handled = False
         self._tasks: List[TaskSnapshot] = []
         self._finished_handlers: Dict[str, Callable[[Any], None]] = {}
+        self._pending_finished_results: Dict[str, Any] = {}
         self._max_history = 20
         self.taskProgressUpdated.connect(self._apply_task_progress)
         self._initialized = True
@@ -465,6 +466,7 @@ class GuiTaskManager(QObject):
         self._process_error = ""
         self._process_finished_handled = False
         self._finished_handlers.clear()
+        self._pending_finished_results.clear()
         self.taskChanged.emit()
 
     @Slot(str, object)
@@ -487,9 +489,14 @@ class GuiTaskManager(QObject):
                     snapshot.message,
                     snapshot.title,
                 )
-        finished_handler = self._finished_handlers.pop(task_id, None)
-        if finished_handler is not None:
-            finished_handler(result)
+        if self._thread is not None and task_id == self._active_task_id:
+            # 线程任务的页面回调必须等 thread.finished 清掉任务锁后再执行，
+            # 否则回调里立即启动下一步（例如“确认写入”）会被误判为并发任务。
+            self._pending_finished_results[task_id] = result
+        else:
+            finished_handler = self._finished_handlers.pop(task_id, None)
+            if finished_handler is not None:
+                finished_handler(result)
         self.taskChanged.emit()
         self.logger.info(f"后台任务已结束：{task_id}")
 
@@ -533,11 +540,17 @@ class GuiTaskManager(QObject):
 
     def _clear_thread_refs(self) -> None:
         """清理线程和 worker 引用，避免下一次任务被误判占用。"""
+        task_id = self._active_task_id
         self._active_task_id = None
         self._cancellation_token = None
         self._thread = None
         self._worker = None
         self.taskChanged.emit()
+        if task_id is not None:
+            finished_handler = self._finished_handlers.pop(task_id, None)
+            result = self._pending_finished_results.pop(task_id, None)
+            if finished_handler is not None:
+                finished_handler(result)
 
     @Slot(str, int, str, str)
     def _apply_task_progress(self, task_id: str, progress: int, message: str, detail: str) -> None:

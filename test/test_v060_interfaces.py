@@ -24,6 +24,7 @@ import pytest
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
+from core.automation.adb_controller import AdbConnectionResult, AdbDevice, AdbPathResolution
 from core.automation.adb_task_api import get_adb_task_api
 from core.recognition.ocr_task_api import get_ocr_task_api
 from core.state.runtime_state import TaskStateKind, get_runtime_state_manager
@@ -59,7 +60,36 @@ def reset_runtime_state() -> None:
 
 
 # ============================================================
-# 🧪 第三部分：测试用例
+# 🧰 第三部分：测试辅助
+# ============================================================
+
+class FakeReadyAdbController:
+    """模拟 ADB 真实连接已就绪，避免接口测试依赖本机模拟器。"""
+
+    def __init__(self, simulator_config: dict) -> None:
+        """保存模拟器配置，匹配 AdbController 工厂签名。"""
+        self.simulator_config = simulator_config
+
+    def find_adb(self) -> AdbPathResolution:
+        """模拟 ADB 可执行文件已找到。"""
+        return AdbPathResolution("C:/fake/adb.exe", "config")
+
+    def check_connection(self, **kwargs: object) -> AdbConnectionResult:
+        """模拟单台设备在线。"""
+        device = AdbDevice("127.0.0.1:7555", "device")
+        return AdbConnectionResult(
+            True,
+            "ready",
+            "ADB 设备连接正常。",
+            selected_device=device,
+            candidates=(device,),
+            adb_path="C:/fake/adb.exe",
+            adb_source="config",
+        )
+
+
+# ============================================================
+# 🧪 第四部分：测试用例
 # ============================================================
 
 def test_automation_task_spec_registry_contains_v060_tasks() -> None:
@@ -68,6 +98,7 @@ def test_automation_task_spec_registry_contains_v060_tasks() -> None:
 
     assert "crawler_update" in keys
     assert "adb_connection_check" in keys
+    assert "adb_auto_connect" in keys
     assert "adb_screenshot_capture" in keys
     assert "ocr_equipment_scan" in keys
     assert "ocr_resource_scan" in keys
@@ -114,15 +145,21 @@ def test_ocr_task_api_reports_reserved_scan_contracts() -> None:
 
 def test_automation_bridge_exposes_v060_entry_points() -> None:
     """AutomationBridge 应把 v0.6.0 预留接口统一转换成 GUI 结果。"""
+    api = get_adb_task_api()
+    original_factory = api._controller_factory
+    api._controller_factory = FakeReadyAdbController
     bridge = AutomationBridge()
 
-    adb_result = bridge.run_adb_connection_check()
-    adb_state = get_runtime_state_manager().get_full_state()["task"]
-    ocr_result = bridge.run_ocr_resource_scan()
-    ocr_state = get_runtime_state_manager().get_full_state()["task"]
+    try:
+        adb_result = bridge.run_adb_connection_check()
+        adb_state = get_runtime_state_manager().get_full_state()["task"]
+        ocr_result = bridge.run_ocr_resource_scan()
+        ocr_state = get_runtime_state_manager().get_full_state()["task"]
+    finally:
+        api._controller_factory = original_factory
 
     assert adb_result.success is True
-    assert adb_result.status == "reserved"
+    assert adb_result.status == "ready"
     assert adb_state["kind"] == "idle"
     assert adb_state["current_task"] == "ADB 连接预检"
     assert ocr_result.success is True
@@ -133,22 +170,28 @@ def test_automation_bridge_exposes_v060_entry_points() -> None:
 
 def test_automation_lab_page_exposes_v060_buttons_and_runs_tasks(qapp: QApplication) -> None:
     """自动化实验室应展示新的预检按钮，并能通过统一任务管理器执行。"""
+    api = get_adb_task_api()
+    original_factory = api._controller_factory
+    api._controller_factory = FakeReadyAdbController
     window = MainWindow(registry=get_feature_hook_registry())
     page = window.pages["automation_lab"]
 
-    assert "adb_connection_check" in page.automation_task_buttons
-    assert "ocr_resource_scan" in page.automation_task_buttons
-    assert "environment_check" in page.automation_task_buttons
+    try:
+        assert "adb_connection_check" in page.automation_task_buttons
+        assert "adb_auto_connect" in page.automation_task_buttons
+        assert "ocr_resource_scan" in page.automation_task_buttons
+        assert "environment_check" in page.automation_task_buttons
 
-    page.automation_task_buttons["adb_connection_check"].click()
-    assert _wait_until(lambda: "ADB 连接预检完成" in page.automation_task_status_label.text())
-    assert _wait_until(lambda: not page.task_manager.is_running())
+        page.automation_task_buttons["adb_connection_check"].click()
+        assert _wait_until(lambda: "ADB 设备连接正常" in page.emulator_status_label.text())
+        assert _wait_until(lambda: not page.task_manager.is_running())
 
-    page.automation_task_buttons["ocr_resource_scan"].click()
-    assert _wait_until(lambda: "资源 OCR 接口预检完成" in page.automation_task_status_label.text())
-    assert _wait_until(lambda: not page.task_manager.is_running())
-
-    window.close()
+        page.automation_task_buttons["ocr_resource_scan"].click()
+        assert _wait_until(lambda: "资源 OCR 接口预检完成" in page.automation_task_status_label.text())
+        assert _wait_until(lambda: not page.task_manager.is_running())
+    finally:
+        api._controller_factory = original_factory
+        window.close()
 
 
 def _wait_until(condition, timeout_ms: int = 2500, interval_ms: int = 25) -> bool:

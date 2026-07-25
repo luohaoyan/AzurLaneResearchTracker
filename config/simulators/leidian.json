@@ -7,12 +7,31 @@
     "adb": {
         "path": "C:/LDPlayer/LDPlayer4.0/adb.exe",
         "port": 5555,
-        "connect_timeout": 10
+        "candidate_serials": [
+            "127.0.0.1:5555"
+        ],
+        "common_paths": [
+            "C:/LDPlayer/LDPlayer9/adb.exe",
+            "C:/LDPlayer/LDPlayer4.0/adb.exe",
+            "F:/Program Files/LDPlayer9/adb.exe",
+            "D:/LDPlayer/LDPlayer9/adb.exe",
+            "D:/LDPlayer/LDPlayer4.0/adb.exe",
+            "C:/Program Files/LDPlayer/LDPlayer9/adb.exe"
+        ],
+        "connect_timeout": 10,
+        "auto_connect_timeout": 2,
+        "max_auto_connect_candidates": 12,
+        "reconnect_on_failure": true,
+        "base_resolution": {
+            "width": 1280,
+            "height": 720
+        }
     },
     "screen": {
-        "width": 1600,
-        "height": 900,
-        "dpi": 240
+        "width": 1280,
+        "height": 720,
+        "dpi": 240,
+        "recommended_for_ocr": true
     },
     "performance": {
         "click_delay": 0.5,

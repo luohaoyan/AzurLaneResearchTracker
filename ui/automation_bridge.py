@@ -153,6 +153,10 @@ class AutomationBridge:
         self,
         progress_reporter: Optional[Callable[[int, str, str], object]] = None,
         task_context: Optional[TaskExecutionContext] = None,
+        *,
+        simulator_key: Optional[str] = None,
+        serial: Optional[str] = None,
+        port: Optional[str | int] = None,
     ) -> AutomationBridgeResult:
         """
         安全执行 ADB 连接预检。
@@ -167,8 +171,47 @@ class AutomationBridge:
         return self._run_safe_api(
             TaskStateKind.AUTO_TESTING,
             "ADB 连接预检",
-            "正在检查模拟器 ADB 配置。",
-            get_adb_task_api().check_connection,
+            "正在检测模拟器 ADB 真实连接状态。",
+            lambda task_context=None: get_adb_task_api().check_connection(
+                task_context=task_context,
+                strict_status=True,
+                simulator_key=simulator_key,
+                serial=serial,
+                port=port,
+            ),
+            progress_reporter,
+            task_context,
+        )
+
+    def run_adb_auto_connect(
+        self,
+        progress_reporter: Optional[Callable[[int, str, str], object]] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+        *,
+        simulator_key: Optional[str] = None,
+        serial: Optional[str] = None,
+        port: Optional[str | int] = None,
+    ) -> AutomationBridgeResult:
+        """
+        安全执行模拟器自动连接。
+        输入：
+            progress_reporter: 兼容旧任务的进度回调。
+            task_context: v0.6.0 可取消任务上下文。
+        输出：
+            AutomationBridgeResult: 当前模拟器连接状态、候选 serial 和显示环境。
+        使用示例：
+            result = bridge.run_adb_auto_connect()
+        """
+        return self._run_safe_api(
+            TaskStateKind.AUTO_TESTING,
+            "模拟器自动连接",
+            "正在自动发现并连接当前模拟器。",
+            lambda task_context=None: get_adb_task_api().auto_connect_simulator(
+                task_context=task_context,
+                simulator_key=simulator_key,
+                serial=serial,
+                port=port,
+            ),
             progress_reporter,
             task_context,
         )
@@ -268,6 +311,119 @@ class AutomationBridge:
             progress_reporter,
             task_context,
         )
+
+    def run_quick_collection(
+        self,
+        progress_reporter: Optional[Callable[[int, str, str], object]] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> AutomationBridgeResult:
+        """
+        执行快速自动采集并返回待确认预览。
+        输入：
+            progress_reporter: 兼容旧任务的进度回调。
+            task_context: v0.6.0 可取消任务上下文。
+        输出：
+            AutomationBridgeResult: 包含 preview_id 和 equipment_records 的预览结果。
+        使用示例：
+            result = bridge.run_quick_collection()
+        """
+        return self._run_collection_api(
+            "快速自动采集",
+            "正在执行快速采集，识别结果会先进入预览。",
+            lambda context: self._collection_pipeline().run_collection("quick", task_context=context),
+            progress_reporter,
+            task_context,
+        )
+
+    def confirm_collection_preview(
+        self,
+        preview_id: str,
+        progress_reporter: Optional[Callable[[int, str, str], object]] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> AutomationBridgeResult:
+        """
+        确认写入一条自动采集预览。
+        输入：
+            preview_id: run_quick_collection 返回的预览 ID。
+            progress_reporter: 兼容旧任务的进度回调。
+            task_context: v0.6.0 可取消任务上下文。
+        输出：
+            AutomationBridgeResult: UserDataManager.update_batch 的写入结果。
+        使用示例：
+            result = bridge.confirm_collection_preview("preview_xxx")
+        """
+        clean_preview_id = str(preview_id or "").strip()
+        return self._run_collection_api(
+            "确认采集结果",
+            "正在把已确认的采集预览写入今日记录。",
+            lambda context: self._collection_pipeline().confirm_preview(clean_preview_id, task_context=context),
+            progress_reporter,
+            task_context,
+        )
+
+    def discard_collection_preview(self, preview_id: str) -> bool:
+        """
+        丢弃一条未确认采集预览。
+        输入：
+            preview_id: 待丢弃的预览 ID。
+        输出：
+            bool: 找到并丢弃返回 True。
+        使用示例：
+            bridge.discard_collection_preview("preview_xxx")
+        """
+        return self._collection_pipeline().discard_preview(str(preview_id or "").strip())
+
+    def _run_collection_api(
+        self,
+        task_name: str,
+        start_message: str,
+        api_call: Callable[[Optional[TaskExecutionContext]], StructuredTaskResult],
+        progress_reporter: Optional[Callable[[int, str, str], object]] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> AutomationBridgeResult:
+        """统一执行自动采集流水线 API，并包装成 GUI 桥接结果。"""
+        reporter = task_context.progress_reporter if task_context is not None else progress_reporter
+        self.runtime_manager.set_task_state(TaskStateKind.OCR_PROCESSING, 5, start_message, task_name)
+        if reporter is not None:
+            reporter(5, start_message, "")
+        try:
+            if task_context is not None:
+                task_context.raise_if_cancelled(f"{task_name}已取消。")
+            raw_result = api_call(task_context)
+        except TaskCancelledError as exc:
+            message = str(exc) or f"{task_name}已取消。"
+            self.runtime_manager.set_task_state(TaskStateKind.IDLE, 0, message, task_name)
+            if reporter is not None:
+                reporter(0, message, "cancelled at safe point")
+            return AutomationBridgeResult(False, "cancelled", message, "cancelled at safe point")
+        except Exception as exc:
+            message = f"{task_name}执行失败，请复制运行日志给开发者。"
+            detail = f"{type(exc).__name__}: {exc}"
+            self.runtime_manager.set_task_state(TaskStateKind.ERROR, 0, message, task_name, detail)
+            if reporter is not None:
+                reporter(0, message, detail)
+            self.logger.exception(message)
+            return AutomationBridgeResult(False, "error", message, detail)
+
+        result = self._convert_task_result(raw_result)
+        final_kind = TaskStateKind.IDLE if result.success or result.status == "cancelled" else TaskStateKind.ERROR
+        self.runtime_manager.set_task_state(
+            final_kind,
+            100 if result.success else 0,
+            result.message,
+            task_name,
+            "" if result.success else result.detail,
+        )
+        if reporter is not None:
+            reporter(100 if result.success else 0, result.message, result.detail)
+        return result
+
+    @staticmethod
+    def _collection_pipeline() -> Any:
+        """延迟导入自动采集流水线，避免 GUI 启动时过早加载 ADB/OCR 实现。"""
+        from core.integration import get_automation_collection_pipeline
+
+        return get_automation_collection_pipeline()
 
     def _run_safe_api(
         self,

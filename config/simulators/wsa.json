@@ -1,0 +1,35 @@
+{
+    "name": "Windows Subsystem for Android",
+    "type": "wsa",
+    "window_class": "ApplicationFrameWindow",
+    "window_title": "Windows Subsystem for Android",
+    "control_method": "adb",
+    "adb": {
+        "path": "adb",
+        "port": 58526,
+        "candidate_serials": [
+            "127.0.0.1:58526"
+        ],
+        "common_paths": [],
+        "connect_timeout": 10,
+        "auto_connect_timeout": 2,
+        "max_auto_connect_candidates": 4,
+        "reconnect_on_failure": true
+    },
+    "screen": {
+        "width": 1280,
+        "height": 720,
+        "dpi": 240,
+        "mode": "tablet",
+        "recommended_for_ocr": true
+    },
+    "performance": {
+        "click_delay": 0.5,
+        "screenshot_delay": 0.3,
+        "template_scale": 1.0
+    },
+    "custom_commands": {
+        "start_simulator": "",
+        "stop_simulator": ""
+    }
+}
