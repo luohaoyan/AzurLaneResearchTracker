@@ -22,7 +22,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, Signal
-from PySide6.QtGui import QGuiApplication, QTextCursor
+from PySide6.QtGui import QGuiApplication, QTextCursor, QTextOption
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -149,7 +149,8 @@ class LogDrawer(QWidget):
         self.log_text = QPlainTextEdit()
         self.log_text.setObjectName("log_text")
         self.log_text.setReadOnly(True)
-        self.log_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.log_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.log_text.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         self.log_text.setPlaceholderText("本次运行日志会显示在这里。")
 
         self.content_area = QWidget()
