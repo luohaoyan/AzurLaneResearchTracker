@@ -111,6 +111,17 @@ _TASK_DEFINITIONS: Dict[str, AutomationTaskDefinition] = {
         summary="按当前配置和常见端口尝试 adb connect，成功后读取分辨率、DPI 和前台应用。",
         cancel_supported=True,
     ),
+    "game_auto_login": AutomationTaskDefinition(
+        key="game_auto_login",
+        title="游戏自动登录",
+        kind=TaskStateKind.AUTO_TESTING,
+        start_message="正在扫描模拟器应用列表并启动碧蓝航线。",
+        bridge_method="run_game_auto_login",
+        feature_key="game_auto_login",
+        button_text="测试游戏启动",
+        summary="扫描模拟器已安装应用，匹配碧蓝航线客户端并启动游戏；服务器选择先保存，后续再接入进服操作。",
+        cancel_supported=True,
+    ),
     "adb_screenshot_capture": AutomationTaskDefinition(
         key="adb_screenshot_capture",
         title="ADB 截图预检",

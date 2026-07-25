@@ -99,6 +99,7 @@ def test_automation_task_spec_registry_contains_v060_tasks() -> None:
     assert "crawler_update" in keys
     assert "adb_connection_check" in keys
     assert "adb_auto_connect" in keys
+    assert "game_auto_login" in keys
     assert "adb_screenshot_capture" in keys
     assert "ocr_equipment_scan" in keys
     assert "ocr_resource_scan" in keys
@@ -179,6 +180,7 @@ def test_automation_lab_page_exposes_v060_buttons_and_runs_tasks(qapp: QApplicat
     try:
         assert "adb_connection_check" in page.automation_task_buttons
         assert "adb_auto_connect" in page.automation_task_buttons
+        assert "game_auto_login" in page.automation_task_buttons
         assert "ocr_resource_scan" in page.automation_task_buttons
         assert "environment_check" in page.automation_task_buttons
 

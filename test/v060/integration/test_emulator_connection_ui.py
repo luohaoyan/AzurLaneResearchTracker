@@ -27,6 +27,7 @@ from PySide6.QtWidgets import QApplication
 
 from ui.automation_bridge import AutomationBridgeResult
 from ui.main_window import MainWindow
+from core.automation.game_login_preferences import GameLoginPreferences
 from core.automation.simulator_preferences import SimulatorPreferences
 
 
@@ -201,4 +202,49 @@ def test_automation_lab_startup_connection_uses_background_task(
     assert getattr(started[0], "task_id") == "adb_auto_connect"
     assert callable(started[1])
     assert started[1](task_context=None) == "fake-result"
+    window.close()
+
+
+def test_automation_lab_game_login_selector_and_background_task(
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """游戏自动登录面板应提供版本/服务器选择，并通过后台任务启动。"""
+    monkeypatch.setattr(
+        "ui.main_window.get_game_login_preferences",
+        lambda: GameLoginPreferences(tmp_path / "config.json"),
+    )
+    window = MainWindow()
+    page = window.pages["automation_lab"]
+    started: list[object] = []
+
+    assert page.game_client_selector.findData("official_cn") >= 0
+    assert page.game_client_selector.findData("official_jp") >= 0
+    page.game_client_selector.setCurrentIndex(page.game_client_selector.findData("official_jp"))
+    assert page.game_server_selector.findData("横須賀") >= 0
+    page.game_server_selector.setCurrentIndex(page.game_server_selector.findData("横須賀"))
+
+    monkeypatch.setattr(
+        page.automation_bridge,
+        "run_game_auto_login",
+        lambda **kwargs: kwargs,
+    )
+
+    def fake_start_task(spec: object, runner: object, finished_handler: object) -> bool:
+        started.extend([spec, runner, finished_handler])
+        return True
+
+    monkeypatch.setattr(page.task_manager, "start_task", fake_start_task)
+    page.emulator_selector.setCurrentIndex(page.emulator_selector.findData("mumu"))
+    page.emulator_serial_edit.setText("127.0.0.1:7555")
+    page._start_game_auto_login()
+
+    assert started
+    assert getattr(started[0], "task_id") == "game_auto_login"
+    payload = started[1](task_context=None)
+    assert payload["client_key"] == "official_jp"
+    assert payload["server_key"] == "横須賀"
+    assert payload["simulator_key"] == "mumu"
+    assert payload["serial"] == "127.0.0.1:7555"
     window.close()

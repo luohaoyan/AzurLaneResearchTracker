@@ -66,6 +66,13 @@ class ConfigLoader:
                     "history": [],
                     "last_connection": {},
                 },
+                "game_login_preferences": {
+                    "client": "official_cn",
+                    "server": "auto",
+                    "last_package": "",
+                    "last_status": "",
+                    "last_launched_at": "",
+                },
                 "data_storage": {
                     "format": "csv",
                     "backup_enabled": True,

@@ -29,6 +29,13 @@ from core.automation.adb_controller import (
     AdbStateWaitResult,
     RECOMMENDED_SCREEN_SIZE,
 )
+from core.automation.game_login_preferences import get_game_login_preferences
+from core.automation.game_login_registry import (
+    detect_installed_azur_lane_clients,
+    get_azur_lane_client_profile,
+    get_azur_lane_server_display,
+    select_azur_lane_client,
+)
 from core.automation.simulator_preferences import get_simulator_preferences
 from core.automation.simulator_registry import get_simulator_profile, normalize_serial
 from core.utils.config_loader import get_config_loader
@@ -83,6 +90,7 @@ class AdbTaskApi:
         self.logger = get_logger()
         self.config_loader = get_config_loader()
         self.simulator_preferences = get_simulator_preferences()
+        self.game_login_preferences = get_game_login_preferences()
         self._controller_factory: Callable[[Dict[str, Any]], AdbController] = AdbController
         self._initialized = True
 
@@ -361,6 +369,123 @@ class AdbTaskApi:
         detail = f"模拟器候选数={len(detected.simulators)}；ADB来源={detected.adb_source}"
         self.logger.info(detected.message)
         return AdbTaskResult(detected.success, detected.status, detected.message, detail, payload, detected.warnings)
+
+    def run_azur_lane_auto_login(
+        self,
+        task_context: Optional[TaskExecutionContext] = None,
+        *,
+        client_key: Optional[str] = None,
+        server_key: Optional[str] = None,
+        simulator_key: Optional[str] = None,
+        serial: Optional[str] = None,
+        port: Optional[str | int] = None,
+        timeout_seconds: float = 8.0,
+        max_retries: int = 1,
+    ) -> AdbTaskResult:
+        """
+        扫描模拟器应用列表并启动用户选择的碧蓝航线客户端。
+        输入：
+            client_key: official_cn / global_en / official_jp / auto 等；
+            server_key: 用户选择的服务器，当前阶段仅保存和透传；
+            simulator_key/serial/port: 沿用模拟器连接面板选择。
+        输出：
+            AdbTaskResult，payload 包含匹配包名、Activity、服务器选择和前台验证结果。
+        使用示例：
+            result = get_adb_task_api().run_azur_lane_auto_login(client_key="official_cn")
+        """
+        if task_context is not None:
+            task_context.raise_if_cancelled("游戏自动登录任务已取消。")
+
+        selection = self.game_login_preferences.get_selection()
+        requested_client = str(client_key if client_key is not None else selection.get("client") or "official_cn").strip() or "official_cn"
+        requested_server = str(server_key if server_key is not None else selection.get("server") or "auto").strip() or "auto"
+        simulator = self._get_simulator_context(simulator_key=simulator_key, serial=serial, port=port)
+        controller = self._create_controller(simulator)
+        target_serial = simulator["device_serial"] or simulator["default_device_serial"] or None
+
+        package_result = controller.list_packages(serial=target_serial, include_system=False, task_context=task_context)
+        if not package_result.success:
+            payload = {
+                "simulator_key": simulator["key"],
+                "simulator_name": simulator["name"],
+                "client_key": requested_client,
+                "server_key": requested_server,
+                "server_display": get_azur_lane_server_display(requested_server),
+                "package_scan": package_result.to_payload(),
+                "installed_clients": [],
+            }
+            message = "读取模拟器应用列表失败，无法判断是否已安装碧蓝航线。"
+            detail = f"模拟器={simulator['name']}；状态={package_result.status}"
+            self.logger.warning(f"{message} {detail}")
+            return AdbTaskResult(False, package_result.status, message, detail, payload, package_result.warnings)
+
+        installed_clients = detect_installed_azur_lane_clients(package_result.package_names)
+        selected_profile = select_azur_lane_client(package_result.package_names, requested_client)
+        expected_profile = get_azur_lane_client_profile(requested_client)
+        if selected_profile is None:
+            expected_name = expected_profile.display_name if expected_profile is not None else "国服官服（B站）"
+            payload = {
+                "simulator_key": simulator["key"],
+                "simulator_name": simulator["name"],
+                "client_key": requested_client,
+                "server_key": requested_server,
+                "server_display": get_azur_lane_server_display(requested_server),
+                "expected_client": expected_profile.to_dict() if expected_profile is not None else None,
+                "installed_clients": [profile.to_dict() for profile in installed_clients],
+                "package_names": list(package_result.package_names),
+                "package_scan_source": package_result.source,
+            }
+            message = f"模拟器中未安装所选碧蓝航线客户端：{expected_name}。"
+            detail = f"已发现碧蓝航线客户端数={len(installed_clients)}；应用总数={len(package_result.package_names)}"
+            self.logger.info(f"{message} {detail}")
+            return AdbTaskResult(False, "package_not_installed", message, detail, payload, package_result.warnings)
+
+        login: AdbLoginResult = controller.login_game(
+            selected_profile.package_name,
+            activity_name=selected_profile.activity_name,
+            serial=target_serial,
+            timeout_seconds=timeout_seconds,
+            max_retries=max_retries,
+            login_steps=[],
+            task_context=task_context,
+        )
+        server_display = get_azur_lane_server_display(requested_server)
+        payload = {
+            "simulator_key": simulator["key"],
+            "simulator_name": simulator["name"],
+            "client_key": selected_profile.key,
+            "client_display": selected_profile.display_name,
+            "server_key": requested_server,
+            "server_display": server_display,
+            "selected_client": selected_profile.to_dict(),
+            "installed_clients": [profile.to_dict() for profile in installed_clients],
+            "package_scan_source": package_result.source,
+            **login.to_payload(),
+        }
+        self._persist_game_login_preferences(
+            controller=controller,
+            client_key=selected_profile.key,
+            server_key=requested_server,
+            package_name=selected_profile.package_name,
+            status=login.status,
+        )
+        if login.success:
+            message = f"已启动 {selected_profile.display_name}；服务器选择：{server_display}。"
+        else:
+            message = login.message
+        detail = (
+            f"客户端={selected_profile.display_name}；包={selected_profile.package_name}；"
+            f"服务器={server_display}；前台={login.foreground_package or '未知'}"
+        )
+        self.logger.info(
+            "游戏自动登录摘要：客户端=%s，服务器=%s，包=%s，状态=%s，前台=%s",
+            selected_profile.display_name,
+            server_display,
+            selected_profile.package_name,
+            login.status,
+            login.foreground_package or "未知",
+        )
+        return AdbTaskResult(login.success, login.status, message, detail, payload, login.warnings)
 
     def run_game_login(
         self,
@@ -930,6 +1055,28 @@ class AdbTaskApi:
             success=success,
             auto_selected=bool(simulator["auto_selected"]),
             message=message,
+        )
+
+    def _persist_game_login_preferences(
+        self,
+        *,
+        controller: object,
+        client_key: str,
+        server_key: str,
+        package_name: str,
+        status: str,
+    ) -> None:
+        """保存游戏登录偏好；单元测试 fake 控制器不会污染正式 config.json。"""
+        default_path = self.config_loader.config_dir / "config.json"
+        if not isinstance(controller, AdbController) and self.game_login_preferences.path == default_path:
+            self.logger.debug("检测到 fake ADB 控制器，跳过游戏登录配置写入。")
+            return
+        self.game_login_preferences.save_selection(client_key, server_key)
+        self.game_login_preferences.record_launch(
+            client_key=client_key,
+            server_key=server_key,
+            package_name=package_name,
+            status=status,
         )
 
 

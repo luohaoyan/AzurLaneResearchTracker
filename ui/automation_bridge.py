@@ -216,6 +216,43 @@ class AutomationBridge:
             task_context,
         )
 
+    def run_game_auto_login(
+        self,
+        progress_reporter: Optional[Callable[[int, str, str], object]] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+        *,
+        client_key: Optional[str] = None,
+        server_key: Optional[str] = None,
+        simulator_key: Optional[str] = None,
+        serial: Optional[str] = None,
+        port: Optional[str | int] = None,
+    ) -> AutomationBridgeResult:
+        """
+        安全执行碧蓝航线游戏自动启动。
+        输入：
+            client_key/server_key: UI 选择的游戏客户端和服务器；
+            simulator_key/serial/port: 模拟器连接面板当前选择。
+        输出：
+            AutomationBridgeResult: 已匹配客户端、服务器选择和启动结果。
+        使用示例：
+            result = bridge.run_game_auto_login(client_key="official_cn")
+        """
+        return self._run_safe_api(
+            TaskStateKind.AUTO_TESTING,
+            "游戏自动登录",
+            "正在扫描模拟器应用列表并启动碧蓝航线。",
+            lambda task_context=None: get_adb_task_api().run_azur_lane_auto_login(
+                task_context=task_context,
+                client_key=client_key,
+                server_key=server_key,
+                simulator_key=simulator_key,
+                serial=serial,
+                port=port,
+            ),
+            progress_reporter,
+            task_context,
+        )
+
     def run_adb_screenshot_capture(
         self,
         progress_reporter: Optional[Callable[[int, str, str], object]] = None,

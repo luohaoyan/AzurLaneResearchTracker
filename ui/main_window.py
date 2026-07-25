@@ -60,6 +60,13 @@ from core.calculation.trend_analyzer import get_trend_analyzer
 from core.calculation.research_progress_analyzer import get_research_progress_analyzer
 from core.calculation.luck_calculator import get_luck_calculator
 from core.calculation.user_data_manager import get_user_data_manager
+from core.automation.game_login_preferences import get_game_login_preferences
+from core.automation.game_login_registry import (
+    get_azur_lane_client_profile,
+    get_azur_lane_server_display,
+    list_azur_lane_client_profiles,
+    list_azur_lane_servers,
+)
 from core.automation.simulator_preferences import get_simulator_preferences
 from core.automation.simulator_registry import list_simulator_profiles
 from core.data.equipment_manager import get_equipment_manager
@@ -3462,6 +3469,18 @@ class AutomationLabPage(BasePage):
         self.emulator_candidates_label = QLabel("")
         self.emulator_candidates_label.setObjectName("card_caption")
         self.emulator_candidates_label.setWordWrap(True)
+        self.game_login_status_label = QLabel("待命：可先选择碧蓝航线版本和服务器，再测试游戏启动。")
+        self.game_login_status_label.setObjectName("panel_body")
+        self.game_login_status_label.setWordWrap(True)
+        self.game_client_selector = QComboBox()
+        self.game_client_selector.setObjectName("game_client_selector")
+        self.game_client_selector.currentIndexChanged.connect(self._on_game_client_selection_changed)
+        self.game_server_selector = QComboBox()
+        self.game_server_selector.setObjectName("game_server_selector")
+        self.game_server_selector.currentIndexChanged.connect(self._on_game_server_selection_changed)
+        self.game_launch_button = QPushButton("测试游戏启动")
+        self.game_launch_button.setToolTip("扫描模拟器已安装应用并启动所选碧蓝航线客户端。")
+        self.game_launch_button.clicked.connect(self._start_game_auto_login)
         grid = QGridLayout()
         grid.setSpacing(12)
         for index, (title, body) in enumerate([
@@ -3473,6 +3492,7 @@ class AutomationLabPage(BasePage):
             grid.addWidget(BasePage.build_card(title, body), index // 2, index % 2)
 
         self.root.addWidget(self._build_emulator_connection_panel())
+        self.root.addWidget(self._build_game_login_panel())
         self.root.addLayout(grid)
         self.root.addWidget(self._build_automation_task_panel())
         self.root.addWidget(self._build_collection_panel())
@@ -3576,6 +3596,137 @@ class AutomationLabPage(BasePage):
         layout.addWidget(note)
         self.emulator_candidates_label.hide()
         return panel
+
+    def _build_game_login_panel(self) -> QFrame:
+        """
+        构建游戏自动登录面板。
+        输入：
+            无。
+        输出：
+            QFrame: 客户端/服务器选择和测试启动按钮。
+        使用示例：
+            panel = self._build_game_login_panel()
+        """
+        panel = QFrame()
+        panel.setObjectName("content_panel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title = QLabel("游戏自动登录")
+        title.setObjectName("panel_title")
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        title_row.addWidget(self.game_launch_button)
+        self.automation_task_buttons["game_auto_login"] = self.game_launch_button
+
+        selection_row = QHBoxLayout()
+        client_label = QLabel("游戏版本")
+        client_label.setObjectName("card_caption")
+        server_label = QLabel("服务器")
+        server_label.setObjectName("card_caption")
+        self.game_client_selector.setMinimumWidth(220)
+        self.game_server_selector.setMinimumWidth(220)
+        self._populate_game_login_selectors()
+
+        selection_row.addWidget(client_label)
+        selection_row.addWidget(self.game_client_selector, stretch=1)
+        selection_row.addWidget(server_label)
+        selection_row.addWidget(self.game_server_selector, stretch=1)
+
+        note = QLabel("当前阶段只负责扫描已安装包并打开游戏；进入服务器的点击/识别流程后续再接入。")
+        note.setObjectName("card_caption")
+        note.setWordWrap(True)
+
+        layout.addLayout(title_row)
+        layout.addLayout(selection_row)
+        layout.addWidget(self.game_login_status_label)
+        layout.addWidget(note)
+        return panel
+
+    def _populate_game_login_selectors(self) -> None:
+        """填充游戏客户端和服务器选择，并恢复用户最近选择。"""
+        preferences = get_game_login_preferences().get_selection()
+        selected_client = str(preferences.get("client") or "official_cn")
+        selected_server = str(preferences.get("server") or "auto")
+        self.game_client_selector.blockSignals(True)
+        self.game_client_selector.clear()
+        self.game_client_selector.addItem("自动识别已安装客户端", "auto")
+        for profile in list_azur_lane_client_profiles():
+            self.game_client_selector.addItem(profile.display_name, profile.key)
+        index = self.game_client_selector.findData(selected_client)
+        self.game_client_selector.setCurrentIndex(index if index >= 0 else self.game_client_selector.findData("official_cn"))
+        self.game_client_selector.blockSignals(False)
+        self._populate_game_server_selector(selected_server)
+
+    def _populate_game_server_selector(self, preferred_server: str = "auto") -> None:
+        """按当前客户端填充服务器列表，保留自动进入当前/上次服务器选项。"""
+        client_key = str(self.game_client_selector.currentData() or "official_cn")
+        profile = get_azur_lane_client_profile(client_key)
+        servers = list_azur_lane_servers(profile.server_group if profile is not None else "cn_android")
+        self.game_server_selector.blockSignals(True)
+        self.game_server_selector.clear()
+        self.game_server_selector.addItem("自动进入当前/上次服务器", "auto")
+        for server in servers:
+            self.game_server_selector.addItem(server, server)
+        index = self.game_server_selector.findData(preferred_server)
+        self.game_server_selector.setCurrentIndex(index if index >= 0 else 0)
+        self.game_server_selector.blockSignals(False)
+        self._refresh_game_login_hint()
+
+    def _on_game_client_selection_changed(self, _index: int) -> None:
+        """切换客户端时同步服务器列表。"""
+        self._populate_game_server_selector("auto")
+
+    def _on_game_server_selection_changed(self, _index: int) -> None:
+        """切换服务器时刷新提示文字。"""
+        self._refresh_game_login_hint()
+
+    def _refresh_game_login_hint(self) -> None:
+        """用少量文字告诉用户当前选择，不展示包名细节。"""
+        client_text = self.game_client_selector.currentText() or "国服官服（B站）"
+        server_text = self.game_server_selector.currentText() or "自动进入当前/上次服务器"
+        self.game_login_status_label.setText(f"待命：将打开 {client_text}；服务器选择：{server_text}。")
+
+    def _selected_game_login_options(self) -> Dict[str, str]:
+        """读取 UI 当前游戏登录选择。"""
+        return {
+            "client_key": str(self.game_client_selector.currentData() or "official_cn"),
+            "server_key": str(self.game_server_selector.currentData() or "auto"),
+        }
+
+    def _start_game_auto_login(self) -> None:
+        """按当前选择启动游戏自动登录后台任务。"""
+        definition = get_automation_task_definition("game_auto_login")
+        if definition is None:
+            return
+        game_options = self._selected_game_login_options()
+        emulator_options = self._selected_simulator_options()
+        get_game_login_preferences().save_selection(game_options["client_key"], game_options["server_key"])
+        runner = lambda task_context=None: self.automation_bridge.run_game_auto_login(
+            task_context=task_context,
+            client_key=game_options["client_key"],
+            server_key=game_options["server_key"],
+            simulator_key=emulator_options["simulator_key"],
+            serial=emulator_options["serial"] or None,
+            port=emulator_options["port"] or None,
+        )
+        if not self.task_manager.start_task(
+            definition.to_background_spec(),
+            runner,
+            lambda result: self._on_automation_task_finished("game_auto_login", result, self.game_login_status_label),
+        ):
+            self.game_login_status_label.setText("已有任务运行中，请稍候再启动游戏。")
+            return
+        self._set_game_login_controls_enabled(False)
+        self.game_login_status_label.setText(definition.start_message)
+
+    def _set_game_login_controls_enabled(self, enabled: bool) -> None:
+        """游戏启动任务运行时冻结选择控件。"""
+        self.game_client_selector.setEnabled(enabled)
+        self.game_server_selector.setEnabled(enabled)
+        self.game_launch_button.setEnabled(enabled)
 
     def _populate_simulator_selector(self) -> None:
         """填充自动选择和内置模拟器选项，并恢复用户最近选择。"""
@@ -4039,6 +4190,8 @@ class AutomationLabPage(BasePage):
         self._set_automation_buttons_enabled(True)
         if key in {"adb_connection_check", "adb_auto_connect"}:
             self._set_emulator_controls_enabled(True)
+        if key == "game_auto_login":
+            self._set_game_login_controls_enabled(True)
         success = bool(read_bridge_result(result, "success", False))
         message = str(read_bridge_result(result, "message", "任务已结束。"))
         detail_text = str(read_bridge_result(result, "detail", ""))
@@ -4046,8 +4199,40 @@ class AutomationLabPage(BasePage):
         status_label.setText(f"{message}{detail}")
         if key in {"adb_connection_check", "adb_auto_connect"}:
             self._update_emulator_connection_status(result)
+        if key == "game_auto_login":
+            self._update_game_login_status(result)
         if key == "crawler_update":
             self.crawler_status_label.setText(f"{message}{detail}")
+
+    def _update_game_login_status(self, result: object) -> None:
+        """
+        根据游戏启动结果刷新登录面板。
+        输入：
+            result: AutomationBridgeResult 或 dict。
+        输出：
+            None。
+        使用示例：
+            self._update_game_login_status(result)
+        """
+        payload = self._bridge_payload(result)
+        success = bool(read_bridge_result(result, "success", False))
+        message = str(read_bridge_result(result, "message", "游戏启动任务已结束。"))
+        client_display = str(payload.get("client_display") or self.game_client_selector.currentText() or "碧蓝航线")
+        server_display = str(payload.get("server_display") or get_azur_lane_server_display(self.game_server_selector.currentData()))
+        selected_client = payload.get("selected_client", {})
+        selected_client_payload = selected_client if isinstance(selected_client, dict) else {}
+        package_name = str(payload.get("package_name") or selected_client_payload.get("package_name", "")).strip()
+        if success:
+            self.game_login_status_label.setText(f"已启动：{client_display}；服务器：{server_display}。")
+            self.logger.info(
+                "游戏启动摘要：客户端=%s，服务器=%s，包=%s，状态=%s",
+                client_display,
+                server_display,
+                package_name or "未知",
+                read_bridge_result(result, "status", "unknown"),
+            )
+        else:
+            self.game_login_status_label.setText(f"未启动：{message}")
 
     def _update_emulator_connection_status(self, result: object) -> None:
         """

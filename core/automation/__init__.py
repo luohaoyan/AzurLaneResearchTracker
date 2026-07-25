@@ -18,6 +18,17 @@ from .adb_controller import (
     create_adb_controller,
 )
 from .adb_task_api import AdbTaskApi, AdbTaskResult, get_adb_task_api
+from .game_login_preferences import GameLoginPreferences, get_game_login_preferences
+from .game_login_registry import (
+    AzurLaneClientProfile,
+    detect_installed_azur_lane_clients,
+    find_azur_lane_client_by_package,
+    get_azur_lane_client_profile,
+    get_azur_lane_server_display,
+    list_azur_lane_client_profiles,
+    list_azur_lane_servers,
+    select_azur_lane_client,
+)
 from .simulator_registry import (
     SimulatorConnectionProfile,
     build_auto_connect_candidates,
@@ -64,19 +75,29 @@ __all__ = [
     "EquipmentPageCaptureArtifact",
     "EquipmentPageScrollFrame",
     "EquipmentPageScrollSession",
+    "GameLoginPreferences",
     "ResearchPageAdbApi",
     "ResearchPageAdbResult",
     "ResearchPageCaptureArtifact",
     "ResearchPageScrollSession",
     "SimulatorConnectionProfile",
+    "AzurLaneClientProfile",
     "build_auto_connect_candidates",
     "create_adb_controller",
+    "detect_installed_azur_lane_clients",
+    "find_azur_lane_client_by_package",
     "get_adb_task_api",
+    "get_azur_lane_client_profile",
+    "get_azur_lane_server_display",
     "get_equipment_page_adb_api",
+    "get_game_login_preferences",
     "get_simulator_profile",
     "get_research_page_adb_api",
+    "list_azur_lane_client_profiles",
+    "list_azur_lane_servers",
     "list_simulator_profiles",
     "normalize_serial",
+    "select_azur_lane_client",
     "SimulatorPreferences",
     "get_simulator_preferences",
 ]
