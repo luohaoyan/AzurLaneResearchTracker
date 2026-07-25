@@ -2,29 +2,36 @@
 
 ---
 
-## v0.5.1（最新）— GUI+Crawler 最终整合
+## v0.5.1（最新）— 欧非公式排名制 + 4Bug修复 + 测试体系重组
 
-**测试：543/546（99.5%）**
+【测试：593/595（99.7%）— 377开发 + 216 QA】
 
-### 爬虫同步安全加固
-- _atomic_write_csv() 原子写入防半成品覆盖
-- _collect_final_rows 旧行保留合并机制
-- 爬虫同步测试 15/15 通过
+### 欧非公式排名制重构
+- 欧非值计算从固定阈值切换为排名百分比制
+- 按期汇总后取排名百分比，排名越靠前欧气越足
+- luck_calculator.py 重写核心算法
+- formula_manager.py 公式配置扩展
 
-### v0.4.0 维护补丁
-- main.py CLI 入口恢复
-- 排序键适配 G 前缀格式
-- 导出缓存自动清理
+### Bug 修复（4项）
+- BUG-003：用户数据按日分文件路径拼接错误
+- BUG-004：导出缓存未清理导致重复数据
+- BUG-005：特殊装备 CSV 编码不一致
+- BUG-006：趋势分析日期范围包含未来日期
 
-### 已知非阻断问题（3 FAIL）
+### 测试体系重组
+- 开发测试 377 项 + QA 测试 216 项
+- 测试文件按版本分目录：test/v0.1.0/ 至 test/v0.5.2_gui_luck_formula/
+- conftest.py 统一 fixture 管理
+
+### 已知非阻断问题（2 FAIL）
 - Trend 1 FAIL：offscreen 渲染时序
-- Fix Verify 2 FAIL：QTimer 测试时序
+- Fix Verify 1 FAIL：QTimer 测试时序
 
 ---
 
 ## v0.5.0 — PySide6 GUI + 装备爬虫
 
-**测试：764/766（99.7%）**
+【测试：800/804（99.5%）】
 
 ### GUI 模块（9 页面）
 - PySide6 主窗口骨架 + 9 页导航
@@ -41,82 +48,70 @@
 - 爬虫同步流程 + 原子写入
 - 68 项爬虫专项测试
 
-### 修复
-- v0.4.1：通用装备 ID 统一为 G{序号:04d} 格式（810 测试）
-- v0.4.2：3 轻微 Bug + 1 附带修复（785 测试）
-- pytest ENV-001 默认临时目录修复
+---
+
+## v0.4.2 — 代码审查修复
+
+【测试：786 项全部通过】
+
+- 3 轻微 Bug 修复 + 3 附带修复
+- 代码审查一致性对齐
+
+---
+
+## v0.4.1 — 通用装备 ID 格式修复
+
+【测试：810 项全部通过】
+
+- 通用装备 ID 统一为 G{序号:04d} 格式
+- 排序键适配 G 前缀
 
 ---
 
 ## v0.4.0 — CLI 入口 + 数据导出
 
-**测试：462 项全部通过**
+【测试：462 项全部通过】
 
-### 新增模块
 - core/cli/app.py — CLI 主体（交互菜单 + 子命令 + ASCII 折线图）
 - core/data/export_manager.py — CSV/Excel 导出（6 种类型）
-- test/test_cli_app.py、test/test_export.py
-
-### 架构变更
-- main.py 瘦身为入口壳（仅 sys.path + CLI 转发）
+- main.py 瘦身为入口壳
 - 导出层独立，GUI 可绕过 CLI 直接调用
-- CLI 支持交互菜单 + 子命令两种模式
-- record 支持非交互单条/批量录入
 
 ---
 
 ## v0.3.0 — 计算层完成
 
-**测试：195 项全部通过**
+【测试：195 项全部通过】
 
-### 新增模块
-- core/data/special_equipment_manager.py — 特殊装备管理器
-- core/calculation/formula_manager.py — 公式管理器（可配置+持久化）
-- core/calculation/user_data_manager.py — 用户数据管理器（按日分文件）
-- core/calculation/fragment_calculator.py — 碎片等值计算器（8 种装备类别）
-- core/calculation/luck_calculator.py — 欧非值计算器（按期汇总+范围均值）
-
-### 核心特性
-- 8 种装备类别碎片等值自动计算（int 整数运算）
-- 欧非值按期汇总 + 期数范围均值（Decimal 3 位小数）
+- 8 种装备类别碎片等值计算（int 整数运算）
+- 欧非值按期汇总 + 范围均值（Decimal 3 位小数）
 - 公式可配置 + 持久化写回 JSON
 - 用户数据按日分文件 + 日期范围查询
 
 ---
 
-## v0.2.1 — Bug 修复
+## v0.2.1 — 数据层热修复
 
-**测试：305 项全部通过**
+【测试：305 项全部通过】
 
-- BUG-001：parse_research_id() 新增 .strip() 防御空格的 CSV/OCR 输入
-- BUG-002：add_research_phase_equipment() 返回字段统一命名
+- BUG-001：parse_research_id() 防御空格输入
+- BUG-002：返回字段统一命名
 
 ---
 
 ## v0.2.0 — 数据层完成
 
-**测试：69 项全部通过**
+【测试：69 项全部通过】
 
-### 新增模块
-- core/data/rarity_manager.py — 稀有度管理器（单例 + CSV）
-- core/data/equipment_manager.py — 装备管理器（S{期数}-{序号:03d}）
-- core/data/research_manager.py — 科研期数管理器
-- core/data/equipment_updater.py — 批量装备添加工具
-
-### 数据文件
-- data/rarities.csv（5 种稀有度）
-- data/equipment_library.csv（12 件初始装备，S1-001 至 S6-002）
-- data/research_phases.csv（6 期科研，PR1 至 PR6）
-- data/equipment_images.csv（装备图片映射）
+- 稀有度管理器 + 装备管理器 + 科研期数管理器
+- 初始数据：5 稀有度 / 12 装备 / 6 期科研
 
 ---
 
-## v0.1.0 — 基础设施（随 v0.2.0 首发）
+## v0.1.0 — 基础设施
 
-- core/utils/logger.py — 日志系统
-- core/utils/path_manager.py — 路径管理器
-- core/utils/config_loader.py — 配置加载器
+- 日志系统 + 路径管理器 + 配置加载器
 
 ---
 
-> 内部标签：v0.5.0-p1、v0.5.0-p1-trend-version、v0.5.0-crawler-baseline-20260709 为开发里程碑，可不创建公开 Release。
+> 内部开发标签：v0.5.0-p1、v0.5.0-p1-trend-version、v0.5.0-crawler-baseline-20260709（开发里程碑，不创建公开 Release）

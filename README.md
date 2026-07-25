@@ -20,10 +20,12 @@
 - 爬虫同步安全（原子写入 + 旧行保留，防半成品覆盖正式表）
 - v0.6.0 ADB / OCR 接口预留
 
-## 当前版本：v0.5.0
+## 当前版本：v0.5.1
 
 已完成基础设施层、数据层、计算层、CLI 入口、GUI 界面和 Wiki 装备爬虫，
-800/804 项测试通过（99.5%）。
+593/595 项测试通过（99.7%）。
+
+新特性：Wiki统计学排名制欧非公式 + 测试体系版本化重组。
 
 下一步：v0.6.0 ADB 自动化 + PaddleOCR 识别。
 
@@ -63,7 +65,7 @@
 | core/recognition/ | — | 📋 | OpenCV + PaddleOCR |
 | config/ | games / simulators / ui / crawler | ✅ | 全部配置文件 |
 | data/ | CSV + user_records + exports + images | ✅ | 装备库 + 用户记录 + 导出 |
-| test/ + qa_tests/ | 800/804 项测试 | ✅ | 99.5% 通过率 |
+| test/ + qa_tests/ | 593/595 项测试 | ✅ | 99.7% 通过率 |
 
 ## 快速开始
 
