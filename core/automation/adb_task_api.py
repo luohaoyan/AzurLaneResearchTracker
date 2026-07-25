@@ -32,6 +32,7 @@ from core.automation.adb_controller import (
 from core.automation.game_login_preferences import get_game_login_preferences
 from core.automation.game_login_registry import (
     detect_installed_azur_lane_clients,
+    find_azur_lane_client_by_package,
     get_azur_lane_client_profile,
     get_azur_lane_server_display,
     select_azur_lane_client,
@@ -405,6 +406,57 @@ class AdbTaskApi:
 
         package_result = controller.list_packages(serial=target_serial, include_system=False, task_context=task_context)
         if not package_result.success:
+            selected_profile = self._fallback_game_client_profile(requested_client, selection)
+            if selected_profile is not None:
+                login = controller.login_game(
+                    selected_profile.package_name,
+                    activity_name=selected_profile.activity_name,
+                    serial=target_serial,
+                    timeout_seconds=timeout_seconds,
+                    max_retries=max_retries,
+                    login_steps=[],
+                    task_context=task_context,
+                )
+                server_display = get_azur_lane_server_display(requested_server)
+                warnings = tuple(package_result.warnings) + tuple(login.warnings) + (
+                    "读取应用列表失败，已按选择的客户端直接尝试启动。",
+                )
+                payload = {
+                    "simulator_key": simulator["key"],
+                    "simulator_name": simulator["name"],
+                    "client_key": selected_profile.key,
+                    "client_display": selected_profile.display_name,
+                    "server_key": requested_server,
+                    "server_display": server_display,
+                    "selected_client": selected_profile.to_dict(),
+                    "installed_clients": [],
+                    "package_scan": package_result.to_payload(),
+                    "package_scan_failed": True,
+                    **login.to_payload(),
+                }
+                self._persist_game_login_preferences(
+                    controller=controller,
+                    client_key=selected_profile.key,
+                    server_key=requested_server,
+                    package_name=selected_profile.package_name,
+                    status=login.status,
+                )
+                if login.success:
+                    message = f"已尝试启动 {selected_profile.display_name}；服务器选择：{server_display}。"
+                else:
+                    message = login.message
+                detail = (
+                    f"应用列表读取失败，已直接启动；客户端={selected_profile.display_name}；"
+                    f"包={selected_profile.package_name}；状态={login.status}"
+                )
+                self.logger.warning(
+                    "应用列表读取失败后直接启动：客户端=%s，包=%s，启动状态=%s",
+                    selected_profile.display_name,
+                    selected_profile.package_name,
+                    login.status,
+                )
+                return AdbTaskResult(login.success, login.status, message, detail, payload, warnings)
+
             payload = {
                 "simulator_key": simulator["key"],
                 "simulator_name": simulator["name"],
@@ -963,7 +1015,21 @@ class AdbTaskApi:
         requested_key = simulator_key if simulator_key is not None else saved_selection.get("selection") or current_key
         selection = str(requested_key or current_key).strip() or current_key
         auto_selected = selection.lower() in {"auto", "automatic", "自动选择"}
-        config_key = current_key if auto_selected else selection
+        last_connection = saved_selection.get("last_connection", {})
+        if not isinstance(last_connection, dict):
+            last_connection = {}
+        explicit_serial_arg = str(serial or "").strip()
+        explicit_port_arg = str(port or "").strip()
+        last_success = bool(last_connection.get("last_success"))
+        last_key = str(last_connection.get("simulator_key") or "").strip()
+        last_matches_selection = auto_selected or (last_key and last_key == selection)
+        use_last_connection = (
+            last_success
+            and last_matches_selection
+            and not explicit_serial_arg
+            and not explicit_port_arg
+        )
+        config_key = last_key if use_last_connection and last_key else (current_key if auto_selected else selection)
         simulator_config = self.config_loader.get_simulator_config(config_key)
         if not isinstance(simulator_config, dict) or not simulator_config:
             profile = get_simulator_profile(config_key)
@@ -976,14 +1042,16 @@ class AdbTaskApi:
         adb_config = dict(simulator_config.get("adb", {}) if isinstance(simulator_config, dict) else {})
         saved_serial = saved_selection.get("serial", "") if simulator_key is None else ""
         saved_port = saved_selection.get("port", "") if simulator_key is None else ""
+        last_serial = str(last_connection.get("serial") or "").strip() if use_last_connection else ""
+        last_port = str(last_connection.get("port") or "").strip() if use_last_connection else ""
         explicit_serial = serial if serial is not None else (
-            saved_serial or adb_config.get("serial") or adb_config.get("device_serial")
+            last_serial or saved_serial or adb_config.get("serial") or adb_config.get("device_serial")
         )
         if port is not None and str(port).strip():
             # 用户明确填写端口时，端口优先于历史 serial，避免连接到旧实例。
             explicit_serial = ""
         requested_port = port if port is not None else (
-            self._port_from_serial(explicit_serial) or saved_port or adb_config.get("port", 0)
+            self._port_from_serial(explicit_serial) or last_port or saved_port or adb_config.get("port", 0)
         )
         normalized_serial = normalize_serial(explicit_serial) if explicit_serial else ""
         safe_port = self._safe_port(requested_port)
@@ -1021,6 +1089,26 @@ class AdbTaskApi:
     def _create_controller(self, simulator_context: Dict[str, Any]) -> AdbController:
         """按当前模拟器配置创建 ADB 控制器。"""
         return self._controller_factory(simulator_context.get("config", {}))
+
+    @staticmethod
+    def _fallback_game_client_profile(
+        requested_client: str,
+        selection: Dict[str, Any],
+    ) -> Optional[Any]:
+        """
+        应用列表不可读时选择一个可尝试启动的客户端配置。
+        输入：
+            requested_client: UI/配置选择；selection: 游戏登录偏好。
+        输出：
+            AzurLaneClientProfile 或 None。
+        使用示例：
+            profile = self._fallback_game_client_profile("auto", selection)
+        """
+        requested = str(requested_client or "official_cn").strip() or "official_cn"
+        if requested != "auto":
+            return get_azur_lane_client_profile(requested) or get_azur_lane_client_profile("official_cn")
+        last_profile = find_azur_lane_client_by_package(str(selection.get("last_package") or "").strip())
+        return last_profile or get_azur_lane_client_profile("official_cn")
 
     def _persist_connection_preferences(
         self,

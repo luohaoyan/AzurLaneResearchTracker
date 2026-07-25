@@ -26,6 +26,7 @@ from core.automation.game_login_registry import (
     list_azur_lane_servers,
     select_azur_lane_client,
 )
+from core.automation.simulator_preferences import SimulatorPreferences
 
 
 # ============================================================
@@ -36,6 +37,7 @@ class FakeGameLoginController:
     """记录 API 选择的包名和 Activity，不访问真实 ADB。"""
 
     packages: tuple[str, ...] = ("com.YoStarJP.AzurLane",)
+    package_scan_success: bool = True
     login_calls: list[dict[str, Any]] = []
 
     def __init__(self, config: dict[str, Any]) -> None:
@@ -44,6 +46,13 @@ class FakeGameLoginController:
 
     def list_packages(self, **_: Any) -> AdbPackageListResult:
         """返回可控的已安装应用列表。"""
+        if not self.package_scan_success:
+            return AdbPackageListResult(
+                False,
+                "unavailable",
+                "应用列表不可用。",
+                warnings=("pm list packages 不可用",),
+            )
         return AdbPackageListResult(
             True,
             "ready",
@@ -92,6 +101,7 @@ def test_adb_task_api_scans_packages_and_launches_selected_client(tmp_path: Path
     original_factory = api._controller_factory
     original_preferences = api.game_login_preferences
     FakeGameLoginController.packages = ("com.YoStarJP.AzurLane",)
+    FakeGameLoginController.package_scan_success = True
     FakeGameLoginController.login_calls = []
     api._controller_factory = FakeGameLoginController
     api.game_login_preferences = GameLoginPreferences(tmp_path / "config.json")
@@ -124,6 +134,7 @@ def test_adb_task_api_reports_selected_client_not_installed(tmp_path: Path) -> N
     original_factory = api._controller_factory
     original_preferences = api.game_login_preferences
     FakeGameLoginController.packages = ("com.android.settings",)
+    FakeGameLoginController.package_scan_success = True
     FakeGameLoginController.login_calls = []
     api._controller_factory = FakeGameLoginController
     api.game_login_preferences = GameLoginPreferences(tmp_path / "config.json")
@@ -138,3 +149,40 @@ def test_adb_task_api_reports_selected_client_not_installed(tmp_path: Path) -> N
     assert result.payload is not None
     assert result.payload["installed_clients"] == []
     assert FakeGameLoginController.login_calls == []
+
+
+def test_adb_task_api_falls_back_to_direct_launch_when_package_scan_fails(tmp_path: Path) -> None:
+    """已连接但应用列表不可读时，应按用户选择直接尝试启动游戏。"""
+    api = get_adb_task_api()
+    original_factory = api._controller_factory
+    original_game_preferences = api.game_login_preferences
+    original_simulator_preferences = api.simulator_preferences
+    FakeGameLoginController.packages = ()
+    FakeGameLoginController.package_scan_success = False
+    FakeGameLoginController.login_calls = []
+    api._controller_factory = FakeGameLoginController
+    api.game_login_preferences = GameLoginPreferences(tmp_path / "game_config.json")
+    api.simulator_preferences = SimulatorPreferences(tmp_path / "sim_config.json")
+    api.simulator_preferences.record_connection(
+        simulator_key="mumu",
+        simulator_name="MuMu模拟器",
+        serial="127.0.0.1:7555",
+        port="7555",
+        status="ready",
+        success=True,
+        auto_selected=True,
+    )
+    try:
+        result = api.run_azur_lane_auto_login(client_key="auto", server_key="十字路口行动", simulator_key="auto")
+    finally:
+        api._controller_factory = original_factory
+        api.game_login_preferences = original_game_preferences
+        api.simulator_preferences = original_simulator_preferences
+        FakeGameLoginController.package_scan_success = True
+
+    assert result.success is True
+    assert result.payload is not None
+    assert result.payload["package_scan_failed"] is True
+    assert result.payload["client_key"] == "official_cn"
+    assert FakeGameLoginController.login_calls[0]["package_name"] == "com.bilibili.azurlane"
+    assert FakeGameLoginController.login_calls[0]["serial"] == "127.0.0.1:7555"
