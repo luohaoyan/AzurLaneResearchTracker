@@ -197,6 +197,33 @@ def _normalize_equipment_name(value: Any) -> str:
     return text.replace(" ", "").lower()
 
 
+def _normalize_equipment_name_core(value: Any) -> str:
+    """去掉版本后缀后的装备名归一化结果。"""
+    text = _normalize_equipment_name(value)
+    return re.sub(r"t\d+$", "", text)
+
+
+def _score_equipment_name_match(source_name: Any, candidate_name: Any) -> int:
+    """给两个装备名的匹配程度打分。"""
+    source_full = _normalize_equipment_name(source_name)
+    candidate_full = _normalize_equipment_name(candidate_name)
+    if not source_full or not candidate_full:
+        return 0
+
+    source_core = _normalize_equipment_name_core(source_name)
+    candidate_core = _normalize_equipment_name_core(candidate_name)
+
+    if source_full == candidate_full:
+        return 300
+    if source_core == candidate_core:
+        return 280
+    if source_core in candidate_core or candidate_core in source_core:
+        return 240
+    if source_full in candidate_full or candidate_full in source_full:
+        return 200
+    return 0
+
+
 def _load_csv_rows(csv_path: Path) -> List[Dict[str, str]]:
     """读取 CSV 为字典行列表。"""
     if not csv_path.exists():
@@ -656,24 +683,23 @@ class CrawlerDataSynchronizer:
 
     def _sync_special_equipment_file(
         self,
-        final_library_rows: Sequence[Dict[str, str]],
+        source_library_rows: Sequence[Dict[str, str]],
         warnings: List[str],
     ) -> Optional[Path]:
-        """按名称把 special_equipment.csv 的 equipment_id 对齐到最新装备库。"""
+        """?????????? special_equipment.csv ? equipment_id ????? ID?"""
         special_path = self.data_root / "special_equipment.csv"
         if not special_path.exists():
             return None
 
         special_rows = _load_csv_rows(special_path)
-        name_to_id: Dict[str, str] = {}
-        for row in final_library_rows:
-            equipment_name = _sanitize_text(row.get("name", ""))
-            equipment_id = _sanitize_text(row.get("equipment_id", ""))
-            if not equipment_name or not equipment_id:
-                continue
-            normalized_name = _normalize_equipment_name(equipment_name)
-            if normalized_name not in name_to_id:
-                name_to_id[normalized_name] = equipment_id
+        candidate_rows = [
+            (
+                _sanitize_text(row.get("equipment_id", "")),
+                _sanitize_text(row.get("name", "")),
+            )
+            for row in source_library_rows
+        ]
+        candidate_rows = [item for item in candidate_rows if item[0] and item[1]]
 
         updated_rows: List[Dict[str, str]] = []
         updated_count = 0
@@ -683,24 +709,30 @@ class CrawlerDataSynchronizer:
                 updated_rows.append(dict(row))
                 continue
 
-            normalized_name = _normalize_equipment_name(equipment_name)
-            new_equipment_id = name_to_id.get(normalized_name)
-            if not new_equipment_id:
-                warnings.append(f"特殊装备未匹配到新ID: {equipment_name}")
+            best_equipment_id = ""
+            best_score = 0
+            for candidate_equipment_id, candidate_name in candidate_rows:
+                score = _score_equipment_name_match(equipment_name, candidate_name)
+                if score > best_score:
+                    best_score = score
+                    best_equipment_id = candidate_equipment_id
+
+            if not best_equipment_id:
+                warnings.append(f"?????????ID: {equipment_name}")
                 updated_rows.append(dict(row))
                 continue
 
             updated_row = dict(row)
             old_equipment_id = _sanitize_text(updated_row.get("equipment_id", ""))
-            updated_row["equipment_id"] = new_equipment_id
+            updated_row["equipment_id"] = best_equipment_id
             updated_rows.append(updated_row)
-            if old_equipment_id != new_equipment_id:
+            if old_equipment_id != best_equipment_id:
                 updated_count += 1
-                warnings.append(f"特殊装备ID已更新: {equipment_name} {old_equipment_id} -> {new_equipment_id}")
+                warnings.append(f"????ID???: {equipment_name} {old_equipment_id} -> {best_equipment_id}")
 
         _atomic_write_csv(special_path, updated_rows, CSV_SPECIAL_FIELDNAMES)
         if updated_count:
-            self.logger.info("特殊装备表已按名称完成 ID 对齐: %s 条", updated_count)
+            self.logger.info("?????????????? ID ??: %s ?", updated_count)
         return special_path
 
     def _rarity_name_from_id(self, rarity_id: Any) -> str:
@@ -784,7 +816,7 @@ class CrawlerDataSynchronizer:
         _atomic_write_csv(research_phases_path, research_phase_rows, CSV_PHASE_FIELDNAMES)
         if progress_callback is not None:
             progress_callback(92, "正在同步特殊装备 ID。", f"特殊装备={len(preserved_special_rows)}")
-        special_equipment_path = self._sync_special_equipment_file(final_library_rows, warnings)
+        special_equipment_path = self._sync_special_equipment_file(source_library_rows, warnings)
 
         manifest_path = workspace_dir / "crawler_sync_manifest.json"
         result = CrawlerSyncResult(

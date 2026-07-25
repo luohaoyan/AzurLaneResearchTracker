@@ -270,6 +270,112 @@ def test_sync_normalizes_brace_noise_before_matching_research_ids(tmp_path: Path
     assert image_rows[0]["image_path"].replace("\\", "/").endswith("data/images/super_rare/S9-003.jpg")
 
 
+
+def test_sync_updates_special_equipment_ids_from_latest_library_rows(tmp_path: Path) -> None:
+    """special_equipment.csv ?????????????? equipment_id ???? ID?"""
+    project_root = tmp_path / "project"
+    data_root = project_root / "data"
+    workdir_root = project_root / "workdir"
+    equipment_run_dir = workdir_root / "crawler" / "runs" / "20260710_130000"
+    research_run_dir = workdir_root / "crawler" / "research" / "runs" / "20260710_140000"
+
+    _write_csv(
+        data_root / "equipment_library.csv",
+        ["equipment_id", "name", "rarity_id", "type"],
+        [
+            {"equipment_id": "G0001", "name": "BR.810 ??", "rarity_id": "4", "type": "???"},
+            {"equipment_id": "G0002", "name": "B-13 ???130mm??B-2LM#T3", "rarity_id": "4", "type": "???"},
+            {"equipment_id": "G0003", "name": "F6F???(HVAR???)#T0", "rarity_id": "4", "type": "???"},
+        ],
+    )
+    _write_csv(
+        data_root / "equipment_images.csv",
+        ["equipment_id", "image_path"],
+        [
+            {"equipment_id": "G0001", "image_path": "images/super_rare/G0001.jpg"},
+            {"equipment_id": "G0002", "image_path": "images/super_rare/G0002.jpg"},
+            {"equipment_id": "G0003", "image_path": "images/super_rare/G0003.jpg"},
+        ],
+    )
+    _write_csv(
+        data_root / "research_phases.csv",
+        ["phase_number", "name", "equipment_list"],
+        [
+            {"phase_number": "1", "name": "???", "equipment_list": "S1-001"},
+        ],
+    )
+    _write_csv(
+        data_root / "special_equipment.csv",
+        ["equipment_id", "equipment_name", "notes"],
+        [
+            {"equipment_id": "G0001", "equipment_name": "BR.810 ??(810??)", "notes": "special"},
+            {"equipment_id": "G0002", "equipment_name": "B-13", "notes": "special"},
+            {"equipment_id": "g1", "equipment_name": "F6F???(HVAR???)", "notes": "special"},
+        ],
+    )
+
+    _write_csv(
+        equipment_run_dir / "manifests" / "equipment_library_stage.csv",
+        ["equipment_id", "name", "rarity_id", "type"],
+        [
+            {"equipment_id": "G0182", "name": "BR.810#T0", "rarity_id": "4", "type": "???"},
+            {"equipment_id": "G0042", "name": "B-13 ???130mm??B-2LM#T3", "rarity_id": "4", "type": "???"},
+            {"equipment_id": "G0155", "name": "F6F???(HVAR???)#T0", "rarity_id": "4", "type": "???"},
+        ],
+    )
+    _write_csv(
+        equipment_run_dir / "manifests" / "equipment_images_stage.csv",
+        ["equipment_id", "image_path"],
+        [
+            {"equipment_id": "G0182", "image_path": str((equipment_run_dir / "images" / "super_rare" / "G0182.jpg").as_posix())},
+            {"equipment_id": "G0042", "image_path": str((equipment_run_dir / "images" / "super_rare" / "G0042.jpg").as_posix())},
+            {"equipment_id": "G0155", "image_path": str((equipment_run_dir / "images" / "super_rare" / "G0155.jpg").as_posix())},
+        ],
+    )
+    _write_bytes(equipment_run_dir / "images" / "super_rare" / "G0182.jpg", b"img-182")
+    _write_bytes(equipment_run_dir / "images" / "super_rare" / "G0042.jpg", b"img-42")
+    _write_bytes(equipment_run_dir / "images" / "super_rare" / "G0155.jpg", b"img-155")
+
+    _write_csv(
+        research_run_dir / "manifests" / "research_phases_stage.csv",
+        ["phase_number", "name", "equipment_list"],
+        [
+            {"phase_number": "1", "name": "???", "equipment_list": "S1-001"},
+        ],
+    )
+    _write_csv(
+        research_run_dir / "manifests" / "research_equipment_stage.csv",
+        ["equipment_id", "name", "phase_number", "phase_name", "source_scope", "order_index"],
+        [
+            {"equipment_id": "S1-001", "name": "????", "phase_number": "1", "phase_name": "???", "source_scope": "phase", "order_index": "1"},
+        ],
+    )
+
+    synchronizer = CrawlerDataSynchronizer(
+        config_data={
+            "source": {
+                "equipment_run_dir": str(equipment_run_dir),
+                "research_run_dir": str(research_run_dir),
+            },
+            "output": {
+                "workdir_base_dir": "workdir/crawler/sync",
+                "backup_dir_name": "backups",
+                "output_dir_name": "latest",
+                "data_images_dir_name": "images",
+                "crawler_images_dir_name": "images",
+            },
+        },
+        project_root=project_root,
+        data_root=data_root,
+        workdir_root=workdir_root,
+    )
+
+    synchronizer.sync(workspace_name="20260710_150000")
+
+    special_rows = _read_rows(data_root / "special_equipment.csv")
+    assert [row["equipment_id"] for row in special_rows] == ["G0182", "G0042", "G0155"]
+
+
 def test_sync_atomic_write_keeps_formal_tables_when_replace_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """原子写入失败时，正式 data 表应保持原样，不留下半成品。"""
     project_root = tmp_path / "project"
