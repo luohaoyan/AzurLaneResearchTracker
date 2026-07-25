@@ -4084,23 +4084,28 @@ class AutomationLabPage(BasePage):
         port = str(payload.get("port") or self._port_from_serial(device_serial) or "未设置")
         self.emulator_detail_label.setText(f"模拟器：{simulator_name}；设备：{device_serial}；端口：{port}")
 
-        # 详细字段只进入日志抽屉，避免把 ADB 路径、候选串和前台包堆在主界面。
+        candidates = payload.get("detected_simulators") or payload.get("candidates") or []
+        candidate_count = len(candidates) if isinstance(candidates, list) else 0
+        display_environment = payload.get("display_environment") if isinstance(payload.get("display_environment"), dict) else {}
+        resolution = display_environment.get("resolution") if isinstance(display_environment, dict) else None
+        if isinstance(resolution, (list, tuple)) and len(resolution) >= 2:
+            display_text = f"{display_environment.get('status', 'unknown')}({resolution[0]}x{resolution[1]})"
+        else:
+            display_text = str(display_environment.get("status", "unknown") if isinstance(display_environment, dict) else "unknown")
+
+        # 日志抽屉只保留关键摘要，完整 payload 留在桥接层返回值中，避免 UI 日志被候选设备和原始 dict 撑满。
         self.logger.info(
-            "模拟器连接详情：状态=%s，模拟器=%s，设备=%s，端口=%s，ADB=%s，来源=%s，候选=%s，"
-            "显示环境=%s，前台应用=%s，告警=%s",
+            "模拟器连接摘要：状态=%s，模拟器=%s，设备=%s，端口=%s，ADB来源=%s，候选数=%s，显示=%s，告警数=%s",
             status,
             simulator_name,
             device_serial,
             port,
-            payload.get("adb_path") or "未找到",
             payload.get("adb_source") or "missing",
-            payload.get("detected_simulators") or payload.get("candidates") or [],
-            payload.get("display_environment") or {},
-            payload.get("foreground_app") or {},
-            warning_list,
+            candidate_count,
+            display_text,
+            len(warning_list),
         )
 
-        candidates = payload.get("detected_simulators") or payload.get("candidates") or []
         if status == "multiple_devices":
             self.emulator_candidates_label.setText("发现多台设备：请填写 Serial 后重试。")
             self.emulator_candidates_label.show()

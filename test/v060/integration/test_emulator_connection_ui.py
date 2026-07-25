@@ -91,6 +91,67 @@ def test_automation_lab_updates_emulator_connection_status(qapp: QApplication) -
     window.close()
 
 
+def test_automation_lab_emulator_logger_keeps_compact_summary(
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """模拟器连接日志应只写关键摘要，不把完整 payload 塞进日志抽屉。"""
+    window = MainWindow()
+    page = window.pages["automation_lab"]
+    logs: list[str] = []
+
+    def fake_info(message: str, *args: object, **_: object) -> None:
+        """记录 logger.info 的最终文本，模拟日志抽屉看到的内容。"""
+        logs.append(message % args if args else message)
+
+    monkeypatch.setattr(page.logger, "info", fake_info)
+    result = AutomationBridgeResult(
+        True,
+        "ready",
+        "模拟器自动连接成功：127.0.0.1:7555",
+        "模拟器=MuMu模拟器；设备=127.0.0.1:7555",
+        {
+            "simulator_name": "MuMu模拟器",
+            "connection_status": "ready",
+            "device_serial": "127.0.0.1:7555",
+            "adb_path": "C:/very/long/path/to/adb.exe",
+            "adb_source": "config",
+            "display_environment": {
+                "status": "ready",
+                "resolution": [1280, 720],
+                "density": 240,
+                "characteristics": "tablet",
+            },
+            "foreground_app": {
+                "success": True,
+                "package_name": "com.bilibili.azurlane",
+                "activity": "com.bilibili.azurlane.MainActivity",
+            },
+            "detected_simulators": [
+                {
+                    "serial": "127.0.0.1:7555",
+                    "state": "device",
+                    "simulator_type": "mumu",
+                    "raw_fingerprint": "very verbose fingerprint should not enter UI logs",
+                }
+            ],
+        },
+    )
+
+    page._update_emulator_connection_status(result)
+
+    assert logs
+    summary = logs[-1]
+    assert "模拟器连接摘要" in summary
+    assert "候选数=1" in summary
+    assert "ready(1280x720)" in summary
+    assert "C:/very/long/path/to/adb.exe" not in summary
+    assert "com.bilibili.azurlane" not in summary
+    assert "raw_fingerprint" not in summary
+    assert len(summary) < 180
+    window.close()
+
+
 def test_automation_lab_exposes_simulator_selector_and_manual_endpoint(qapp: QApplication) -> None:
     """自动化实验室应提供自动选择、模拟器下拉框和手动端点输入。"""
     window = MainWindow()
