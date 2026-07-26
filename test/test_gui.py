@@ -24,7 +24,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QAbstractItemView, QFrame, QLabel, QMessageBox, QScrollArea, QSizePolicy
+from PySide6.QtWidgets import QApplication, QAbstractItemView, QFrame, QLabel, QScrollArea, QSizePolicy
 from matplotlib.colors import to_hex
 
 from core.state.runtime_state import TaskStateKind, get_runtime_state_manager
@@ -39,6 +39,17 @@ from ui.main_window import (
 )
 from ui.theme import ThemeTokens, build_stylesheet, get_theme_skin, list_theme_skins
 from ui.ui_config import get_ui_config_manager
+
+
+def _wait_until(condition: object, timeout_ms: int = 1500, interval_ms: int = 25) -> bool:
+    """在离屏 Qt 测试中等待异步信号或定时器完成。"""
+    elapsed = 0
+    while elapsed <= timeout_ms:
+        if callable(condition) and condition():
+            return True
+        QTest.qWait(interval_ms)
+        elapsed += interval_ms
+    return bool(callable(condition) and condition())
 
 
 # ============================================================
@@ -303,6 +314,43 @@ def test_research_progress_prompts_update_when_all_phases_invalid(
     window.close()
 
 
+def test_research_progress_phase_combo_refreshes_after_data_reload(
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """科研进度页应在科研期数据变化后即时重建下拉框。"""
+    import ui.main_window as main_window_module
+
+    window = MainWindow()
+    page = window.pages["research_progress"]
+
+    original_phases = [
+        {"phase_number": 2, "name": "科研2期(PR2)", "equipment_list": "S2-001,S2-002,S2-003,S2-004,S2-005,S2-006"},
+    ]
+    refreshed_phases = [
+        {"phase_number": 2, "name": "科研2期(PR2)", "equipment_list": "S2-001,S2-002,S2-003,S2-004,S2-005,S2-006"},
+        {"phase_number": 9, "name": "科研9期(PR9)", "equipment_list": "S9-001,S9-002,S9-003,S9-004,S9-005,S9-006"},
+    ]
+
+    monkeypatch.setattr(main_window_module, "get_selectable_research_progress_phases", lambda: original_phases)
+    page.refresh_phase_selection_options()
+    assert page.phase_combo.findData(9) == -1
+
+    monkeypatch.setattr(main_window_module, "get_selectable_research_progress_phases", lambda: refreshed_phases)
+    page.refresh_phase_selection_options()
+
+    assert page.phase_combo.findData(9) >= 0
+    assert "科研 9 期" in page.phase_combo.itemText(page.phase_combo.findData(9))
+    assert int(page.phase_combo.currentData() or 0) == 2
+
+    page.refresh_phase_selection_options(prefer_latest=True)
+
+    assert int(page.phase_combo.currentData() or 0) == 9
+    assert "最新可用" in page.phase_combo.currentText()
+
+    window.close()
+
+
 def test_research_progress_target_and_secretary_share_one_row(qapp: QApplication) -> None:
     """目标彩装选择和秘书舰对话应保持同一行，避免卡片出现大块空白。"""
     window = MainWindow()
@@ -511,40 +559,120 @@ def test_user_data_table_hides_internal_equipment_id(qapp: QApplication) -> None
     window.close()
 
 
-def test_user_data_main_table_refreshes_from_local_sources(
+def test_user_data_main_table_refreshes_records_without_reloading_library(
     qapp: QApplication,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """用户数据主表应能主动重新读取本地装备表和今日用户记录。"""
+    """用户数据主表刷新应只重读用户记录，不重载装备库，避免 700+ 行刷新时卡死。"""
     window = MainWindow()
     page = window.pages["user_data"]
     reload_calls: list[str] = []
-
-    refreshed_rows = [
-        {
-            "equipment_id": "S8-901",
-            "name": "刷新测试装备",
-            "rarity_id": 5,
-            "rarity_name": "海上传奇",
-            "image_path": "",
-        }
-    ]
+    first_equipment = page.all_equipment_rows[0]
 
     monkeypatch.setattr(page.equipment_manager, "reload", lambda: reload_calls.append("equipment"))
     monkeypatch.setattr(page.research_manager, "reload", lambda: reload_calls.append("research"))
-    monkeypatch.setattr(page.equipment_manager, "get_equipment_with_image", lambda: refreshed_rows)
+    monkeypatch.setattr(page.equipment_manager, "get_equipment_with_image", lambda: (_ for _ in ()).throw(AssertionError("不应重载装备库")))
+
+    class DummyUserDataManager:
+        """模拟刷新时刚读到的用户记录。"""
+
+        def get_today_or_latest_data(self) -> tuple[str, dict[str, dict[str, int]]]:
+            return "2026-07-12", {
+                str(first_equipment["equipment_id"]): {"equipment_count": 3, "fragment_count": 14},
+            }
+
+    page.user_data_manager = DummyUserDataManager()
+    page.search_input.setText(str(first_equipment["name"]))
 
     page.refresh_user_table_button.click()
-    QTest.qWait(120)
+    for _ in range(30):
+        if page.refresh_user_table_button.isEnabled():
+            break
+        QTest.qWait(100)
 
-    assert reload_calls == ["equipment", "research"]
+    assert reload_calls == []
     assert page.table.rowCount() == 1
-    assert page.table.item(0, 0).text() == "刷新测试装备"
-    assert page.table.item(0, 0).data(Qt.ItemDataRole.UserRole) == "S8-901"
-    assert page.table.item(0, 3).text() == "0"
-    assert page.table.item(0, 4).text() == "0"
+    assert page.table.item(0, 0).text() == str(first_equipment["name"])
+    assert page.table.item(0, 0).data(Qt.ItemDataRole.UserRole) == str(first_equipment["equipment_id"])
+    assert page.table.item(0, 3).text() == "3"
+    assert page.table.item(0, 4).text() == "14"
     assert page.refresh_user_table_button.isEnabled() is True
     assert "已刷新用户数据表" in page.user_data_status_label.text()
+
+    window.close()
+
+
+def test_user_data_refresh_uses_deferred_table_and_overlay_callback(
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """用户数据刷新应走分批填表，并在分批完成后关闭等待层。"""
+    window = MainWindow()
+    page = window.pages["user_data"]
+    calls: list[tuple[str, bool, bool]] = []
+    log_messages: list[str] = []
+
+    class FakeLogger:
+        """收集刷新进度日志。"""
+
+        def info(self, message: str) -> None:
+            log_messages.append(message)
+
+        def error(self, message: str) -> None:
+            log_messages.append(message)
+
+    def fake_deferred_refresh(
+        deferred: bool = False,
+        finished_callback: object = None,
+    ) -> None:
+        calls.append(("player", deferred, not page.busy_overlay.isHidden()))
+        if callable(finished_callback):
+            finished_callback()
+
+    monkeypatch.setattr(page, "refresh_equipment_table", fake_deferred_refresh)
+    monkeypatch.setattr("ui.main_window.get_logger", lambda: FakeLogger())
+
+    page.refresh_user_table_button.click()
+    QTest.qWait(80)
+
+    assert calls == [("player", True, True)]
+    assert any("本地表格刷新 0%" in message for message in log_messages)
+    assert any("本地表格刷新 25%" in message for message in log_messages)
+    assert any("本地表格刷新 100%" in message for message in log_messages)
+    assert page.refresh_user_table_button.isEnabled() is True
+    assert page.busy_overlay.isHidden() is True
+
+    window.close()
+
+
+def test_user_data_refresh_reloads_phase_filters_without_restart(
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """用户数据刷新后应立即重建科研期筛选，而不是依赖重启窗口。"""
+    window = MainWindow()
+    page = window.pages["user_data"]
+
+    original_phases = [
+        {"phase_number": 2, "name": "科研2期(PR2)", "equipment_list": "S2-001,S2-002,S2-003,S2-004,S2-005,S2-006"},
+    ]
+    refreshed_phases = [
+        {"phase_number": 2, "name": "科研2期(PR2)", "equipment_list": "S2-001,S2-002,S2-003,S2-004,S2-005,S2-006"},
+        {"phase_number": 9, "name": "科研9期(PR9)", "equipment_list": "S9-001,S9-002,S9-003,S9-004,S9-005,S9-006"},
+    ]
+
+    monkeypatch.setattr(page.research_manager, "get_all", lambda: original_phases)
+    page.reload_data_sources()
+    assert page.phase_combo.findData(9) == -1
+    assert page.library_phase_combo.findData(9) == -1
+
+    monkeypatch.setattr(page.research_manager, "get_all", lambda: refreshed_phases)
+    page.reload_data_sources()
+
+    assert page.phase_combo.findData(9) >= 0
+    assert page.library_phase_combo.findData(9) >= 0
+    assert page.phase_combo.itemText(page.phase_combo.findData(9)).startswith("科研 9 期")
+    assert page.library_phase_combo.itemText(page.library_phase_combo.findData(9)).startswith("科研 9 期")
 
     window.close()
 
@@ -672,6 +800,9 @@ def test_user_data_table_merges_today_user_records_for_fragments(qapp: QApplicat
                 str(second_equipment["equipment_id"]): {"equipment_count": 2, "fragment_count": 10},
             }
 
+        def get_today_or_latest_data(self) -> tuple[str, dict[str, dict[str, int]]]:
+            return "2026-07-12", self.get_today_data()
+
     page.user_data_manager = DummyUserDataManager()
     page.search_input.setText("")
     page.rarity_combo.setCurrentIndex(0)
@@ -692,6 +823,50 @@ def test_user_data_table_merges_today_user_records_for_fragments(qapp: QApplicat
     window.close()
 
 
+def test_user_data_table_falls_back_to_latest_record_when_today_empty(qapp: QApplication) -> None:
+    """当天没有用户记录时，用户数据表应回退显示最近一份记录，避免跨天后全 0。"""
+    window = MainWindow()
+    page = window.pages["user_data"]
+
+    s8_rows = [
+        row for row in page.all_equipment_rows
+        if str(row.get("equipment_id", "")).startswith("S8-")
+    ]
+    assert len(s8_rows) >= 2
+    first_equipment = s8_rows[0]
+    second_equipment = s8_rows[1]
+
+    class DummyUserDataManager:
+        """模拟今天为空、最近一天存在用户记录的跨天场景。"""
+
+        def get_today_or_latest_data(self) -> tuple[str, dict[str, dict[str, int]]]:
+            return "2026-07-11", {
+                str(first_equipment["equipment_id"]): {"equipment_count": 0, "fragment_count": 5},
+                str(second_equipment["equipment_id"]): {"equipment_count": 1, "fragment_count": 12},
+            }
+
+    page.user_data_manager = DummyUserDataManager()
+    page.search_input.setText("")
+    page.rarity_combo.setCurrentIndex(0)
+    page.phase_combo.setCurrentIndex(page.phase_combo.findData(8))
+    page.refresh_equipment_table()
+
+    displayed = {
+        page.table.item(row, 0).text(): (
+            page.table.item(row, 3).text(),
+            page.table.item(row, 4).text(),
+        )
+        for row in range(page.table.rowCount())
+    }
+
+    assert displayed[str(first_equipment["name"])] == ("0", "5")
+    assert displayed[str(second_equipment["name"])] == ("1", "12")
+    assert "2026-07-11" in page.user_data_status_label.text()
+    assert "最近记录" in page.user_data_status_label.text()
+
+    window.close()
+
+
 def test_user_data_missing_equipment_icon_uses_blank_pixmap(qapp: QApplication) -> None:
     """装备图片缺失时应使用固定尺寸空白图标，避免大图或缺图破坏表格布局。"""
     window = MainWindow()
@@ -707,7 +882,10 @@ def test_user_data_missing_equipment_icon_uses_blank_pixmap(qapp: QApplication) 
     window.close()
 
 
-def test_user_data_equipment_library_buttons_use_separate_update_steps(qapp: QApplication) -> None:
+def test_user_data_equipment_library_buttons_use_separate_update_steps(
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """装备库子页应区分“本地刷新 UI”和“爬虫更新正式表”两个动作。"""
     class FakeBridge:
         def __init__(self) -> None:
@@ -738,12 +916,88 @@ def test_user_data_equipment_library_buttons_use_separate_update_steps(qapp: QAp
     assert fake_bridge.called is True
     assert "资料更新完成" in page.library_status_label.text()
     assert "刷新装备表" in page.library_status_label.text()
+    assert _wait_until(lambda: page.refresh_library_button.isEnabled(), timeout_ms=3000)
+
+    def fast_refresh_library_table(
+        deferred: bool = False,
+        finished_callback: object = None,
+    ) -> None:
+        assert deferred is True
+        page.library_table.setRowCount(len(page._filtered_library_rows()))
+        if callable(finished_callback):
+            finished_callback()
+
+    monkeypatch.setattr(page, "refresh_library_table", fast_refresh_library_table)
 
     page.refresh_library_button.click()
-    QTest.qWait(100)
+    assert _wait_until(
+        lambda: "已从正式装备表载入" in page.library_status_label.text(),
+        timeout_ms=5000,
+    )
 
     assert "已从正式装备表载入" in page.library_status_label.text()
     assert page.library_table.rowCount() == len(page._filtered_library_rows())
+
+    window.close()
+
+
+def test_equipment_library_refresh_uses_deferred_table_and_keeps_icon_cache(
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """装备库刷新正式 CSV 应先显示等待层，再由后台读取完成后分批刷新表格。"""
+    window = MainWindow()
+    page = window.pages["user_data"]
+    page.view_stack.setCurrentWidget(page.library_view)
+    page._icon_cache["sentinel"] = page._load_equipment_icon("")
+    calls: list[object] = []
+    log_messages: list[str] = []
+
+    class FakeLogger:
+        """收集刷新进度日志。"""
+
+        def info(self, message: str) -> None:
+            log_messages.append(message)
+
+        def error(self, message: str) -> None:
+            log_messages.append(message)
+
+    def fake_refresh_data_dependent_pages(
+        focus_page_key: object = None,
+        prefer_latest_phase: bool = False,
+    ) -> None:
+        calls.append(("dependent", focus_page_key, prefer_latest_phase))
+
+    def fake_refresh_library_table(
+        deferred: bool = False,
+        finished_callback: object = None,
+    ) -> None:
+        calls.append(("library", deferred, not page.busy_overlay.isHidden()))
+        if callable(finished_callback):
+            finished_callback()
+
+    def fake_start_worker() -> None:
+        calls.append(("worker", not page.busy_overlay.isHidden(), page.refresh_library_button.isEnabled()))
+        page._on_equipment_sources_loaded(page.all_equipment_rows)
+
+    monkeypatch.setattr(page, "_start_equipment_sources_reload_worker", fake_start_worker)
+    monkeypatch.setattr(window, "refresh_data_dependent_pages", fake_refresh_data_dependent_pages)
+    monkeypatch.setattr(page, "refresh_library_table", fake_refresh_library_table)
+    monkeypatch.setattr("ui.main_window.get_logger", lambda: FakeLogger())
+
+    page.refresh_library_button.click()
+    QTest.qWait(80)
+
+    assert ("worker", True, False) in calls
+    assert ("dependent", "research_progress", True) in calls
+    assert ("dependent", "trend", True) in calls
+    assert ("library", True, True) in calls
+    assert any("本地表格刷新 0%" in message for message in log_messages)
+    assert any("本地表格刷新 75%" in message for message in log_messages)
+    assert any("本地表格刷新 100%" in message for message in log_messages)
+    assert "sentinel" in page._icon_cache
+    assert page.refresh_library_button.isEnabled() is True
+    assert page.busy_overlay.isHidden() is True
 
     window.close()
 
@@ -764,17 +1018,14 @@ def test_user_data_library_can_add_equipment_to_trend_lines(
     equipment_id = str(item.data(Qt.ItemDataRole.UserRole))
     equipment_name = item.text()
 
-    monkeypatch.setattr(
-        QMessageBox,
-        "question",
-        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
-    )
+    monkeypatch.setattr(user_page, "_ask_add_equipment_to_trend", lambda _name: True)
     user_page._confirm_add_equipment_to_trend(equipment_id, equipment_name)
 
     assert trend_page.trend_tabs.currentIndex() == 1
     assert trend_page._selected_equipment_lines[equipment_id] == equipment_name
     assert trend_page.selected_equipment_list.count() >= 1
     assert window.page_stack.currentWidget() is trend_page
+    assert equipment_name in user_page.user_data_status_label.text()
 
     window.close()
 
@@ -796,17 +1047,46 @@ def test_user_data_main_table_can_add_equipment_to_trend_lines(
     assert equipment_id
     assert equipment_id not in equipment_name
 
-    monkeypatch.setattr(
-        QMessageBox,
-        "question",
-        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
-    )
+    monkeypatch.setattr(user_page, "_ask_add_equipment_to_trend", lambda _name: True)
     user_page._confirm_add_equipment_to_trend(equipment_id, equipment_name)
 
     assert trend_page.trend_tabs.currentIndex() == 1
     assert trend_page._selected_equipment_lines[equipment_id] == equipment_name
     assert trend_page.selected_equipment_list.count() >= 1
     assert window.page_stack.currentWidget() is trend_page
+    assert equipment_name in user_page.user_data_status_label.text()
+
+    window.close()
+
+
+def test_user_data_can_copy_equipment_name_to_clipboard(qapp: QApplication) -> None:
+    """用户数据页应能复制装备名称，方便搜索和反馈。"""
+    window = MainWindow()
+    user_page = window.pages["user_data"]
+    item = user_page.table.item(0, 0)
+    assert item is not None
+    equipment_name = item.text()
+
+    user_page._copy_equipment_name(equipment_name, user_page.user_data_status_label)
+
+    assert QApplication.clipboard().text() == equipment_name
+    assert equipment_name in user_page.user_data_status_label.text()
+
+    window.close()
+
+
+def test_add_equipment_trend_confirm_dialog_uses_active_skin_tokens(qapp: QApplication) -> None:
+    """添加趋势确认弹窗应使用当前皮肤配色，避免深色皮肤下出现白框浅字。"""
+    tokens = get_theme_skin("iron_blood").tokens
+    window = MainWindow(theme_tokens=tokens)
+    user_page = window.pages["user_data"]
+
+    stylesheet = user_page._message_box_stylesheet()
+
+    assert tokens.surface in stylesheet
+    assert tokens.text in stylesheet
+    assert tokens.surface_soft in stylesheet
+    assert tokens.line in stylesheet
 
     window.close()
 
@@ -944,7 +1224,40 @@ def test_trend_page_builds_phase_ratio_and_equipment_fragment_series(qapp: QAppl
     assert "PR1" not in ratio_series
     assert set(ratio_series) == {"PR2", "PR3"}
     assert ratio_series["PR2"][0]["value"] == 0.5
-    assert fragment_series[-1]["value"] == 35
+    assert fragment_series[-1]["value"] == 60
+
+    window.close()
+
+
+def test_trend_page_reloads_phase_checks_after_data_refresh(qapp: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    """历史趋势页应在科研期数据变化后重建勾选列表。"""
+    import ui.main_window as main_window_module
+
+    window = MainWindow()
+    trend_page = window.pages["trend"]
+
+    original_phases = [
+        {"phase_number": 2, "name": "科研2期(PR2)", "equipment_list": "S2-001,S2-002,S2-003,S2-004,S2-005,S2-006"},
+    ]
+    refreshed_phases = [
+        {"phase_number": 2, "name": "科研2期(PR2)", "equipment_list": "S2-001,S2-002,S2-003,S2-004,S2-005,S2-006"},
+        {"phase_number": 9, "name": "科研9期(PR9)", "equipment_list": "S9-001,S9-002,S9-003,S9-004,S9-005,S9-006"},
+    ]
+
+    monkeypatch.setattr(main_window_module, "get_visible_research_phases", lambda min_phase_number=2: original_phases)
+    trend_page.refresh_research_phase_checks()
+    assert 9 not in trend_page.phase_checks
+
+    monkeypatch.setattr(main_window_module, "get_visible_research_phases", lambda min_phase_number=2: refreshed_phases)
+    trend_page.refresh_research_phase_checks()
+    assert 9 in trend_page.phase_checks
+    assert trend_page.phase_drawer_table.rowCount() == 2
+    assert trend_page._selected_phase_numbers() == []
+
+    trend_page.refresh_research_phase_checks(prefer_latest=True)
+
+    assert trend_page.phase_checks[9].isChecked() is True
+    assert trend_page._selected_phase_numbers() == [9]
 
     window.close()
 
@@ -1009,6 +1322,7 @@ def test_trend_page_searches_equipment_and_draws_lines(qapp: QApplication) -> No
     assert len(trend_page._selected_equipment_lines) == 2
     trend_page.refresh_equipment_fragment_chart()
     assert len(trend_page.trend_panel.axes.lines) == 2
+    assert trend_page.trend_panel.title_label.text() == "装备碎片总数量趋势"
 
     window.close()
 
@@ -1341,7 +1655,7 @@ def test_automation_lab_has_crawler_update_entry(qapp: QApplication) -> None:
     page.featureRequested.connect(emitted_keys.append)
 
     page.crawler_update_button.click()
-    QTest.qWait(600)
+    assert _wait_until(lambda: "formal sync done" in page.crawler_status_label.text(), timeout_ms=3000)
 
     assert emitted_keys[-1] == "crawler_update"
     assert "formal sync done" in page.crawler_status_label.text()
