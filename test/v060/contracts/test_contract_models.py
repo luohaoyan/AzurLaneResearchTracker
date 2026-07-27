@@ -48,14 +48,16 @@ def test_module_results_share_structured_task_contract() -> None:
 
 
 def test_recognition_scene_names_are_frozen() -> None:
-    """ADB 与 OCR 的场景名称必须保持四个约定值。"""
+    """ADB 与 OCR 的场景名称必须保持 v0.6.0 约定值。"""
     assert [scene.value for scene in RecognitionScene] == [
         "harbor",
         "equipment_list",
         "research",
         "phase_select",
+        "unknown",
     ]
     assert RecognitionScene.normalize("equipment_list") is RecognitionScene.EQUIPMENT_LIST
+    assert RecognitionScene.normalize("unknown") is RecognitionScene.UNKNOWN
 
     with pytest.raises(ValueError):
         RecognitionScene.normalize("unknown_scene")

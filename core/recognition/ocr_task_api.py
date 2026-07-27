@@ -15,8 +15,9 @@ from __future__ import annotations
 # 📦 第一部分：导入依赖
 # ============================================================
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.contracts import (
     RecognitionDetection,
@@ -30,7 +31,10 @@ from core.contracts import (
 )
 from core.recognition.harbor_resource_detector import HarborResourceDetector, HarborResourceResult
 from core.recognition.ocr_engine import OcrEngine
+from core.recognition.equipment_page_reader import EquipmentPageReader
+from core.recognition.research_design_reader import ResearchDesignReader
 from core.recognition.scene_analyzer import SceneAnalyzer
+from core.recognition.screen_state_detector import ScreenStateDetector, ScreenStateResult
 from core.recognition.template_matcher import TemplateMatcher
 from core.utils.config_loader import get_config_loader
 from core.utils.logger import get_logger
@@ -39,6 +43,66 @@ from core.utils.logger import get_logger
 # ============================================================
 # 🏗️ 第二部分：核心类
 # ============================================================
+
+@dataclass(frozen=True)
+class OcrDetection:
+    """
+    装备页 OCR 可写入候选。
+    输入：
+        equipment_id/equipment_count/fragment_count/confidence。
+    输出：
+        Integration 层可直接映射到 UserDataManager 的稳定字段。
+    使用示例：
+        detection = OcrDetection("S1-001", 2, 0, 0.91)
+    """
+
+    equipment_id: str
+    equipment_count: int
+    fragment_count: int
+    confidence: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换成基础 Python 字典，便于 GUI、日志和测试断言。"""
+        return {
+            "equipment_id": self.equipment_id,
+            "equipment_count": int(self.equipment_count),
+            "fragment_count": int(self.fragment_count),
+            "confidence": float(self.confidence),
+        }
+
+
+@dataclass(frozen=True)
+class OCRResult:
+    """
+    run_ocr_task 顶层返回契约。
+    输入：
+        scene/detections/success/status/message/warnings/payload。
+    输出：
+        与用户指定 OCRResult(scene="equipment_list", detections=[...]) 兼容。
+    使用示例：
+        result = run_ocr_task("shot.png", "equipment_list")
+    """
+
+    scene: str
+    detections: Tuple[OcrDetection, ...] = ()
+    success: bool = True
+    status: str = "success"
+    message: str = ""
+    warnings: Tuple[str, ...] = ()
+    payload: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换成可序列化字典。"""
+        return {
+            "success": self.success,
+            "status": self.status,
+            "message": self.message,
+            "scene": self.scene,
+            "detections": [item.to_dict() for item in self.detections],
+            "warnings": list(self.warnings),
+            "payload": self.payload,
+        }
+
 
 class OcrTaskResult(StructuredTaskResult):
     """
@@ -76,7 +140,17 @@ class OcrTaskApi:
         use_singleton = bool(kwargs.get("use_singleton", True))
         has_injection = any(
             key in kwargs and kwargs[key] is not None
-            for key in ("scene_analyzer", "ocr_engine", "template_matcher", "harbor_resource_detector", "config", "config_path")
+            for key in (
+                "scene_analyzer",
+                "ocr_engine",
+                "template_matcher",
+                "harbor_resource_detector",
+                "equipment_page_reader",
+                "research_design_reader",
+                "screen_state_detector",
+                "config",
+                "config_path",
+            )
         )
         if not use_singleton or has_injection:
             return super().__new__(cls)
@@ -90,6 +164,9 @@ class OcrTaskApi:
         ocr_engine: Optional[OcrEngine] = None,
         template_matcher: Optional[TemplateMatcher] = None,
         harbor_resource_detector: Optional[HarborResourceDetector] = None,
+        equipment_page_reader: Optional[EquipmentPageReader] = None,
+        research_design_reader: Optional[ResearchDesignReader] = None,
+        screen_state_detector: Optional[ScreenStateDetector] = None,
         config: Optional[Dict[str, Any]] = None,
         config_path: Optional[str | Path] = None,
         use_singleton: bool = True,
@@ -101,6 +178,9 @@ class OcrTaskApi:
             and ocr_engine is None
             and template_matcher is None
             and harbor_resource_detector is None
+            and equipment_page_reader is None
+            and research_design_reader is None
+            and screen_state_detector is None
             and config is None
         ):
             return
@@ -110,6 +190,9 @@ class OcrTaskApi:
         self._ocr_engine = ocr_engine
         self._template_matcher = template_matcher
         self._harbor_resource_detector = harbor_resource_detector
+        self._equipment_page_reader = equipment_page_reader
+        self._research_design_reader = research_design_reader
+        self._screen_state_detector = screen_state_detector
         self._config = config
         self._config_path = Path(config_path) if config_path is not None else None
         self._initialized = True
@@ -136,6 +219,10 @@ class OcrTaskApi:
         normalized_scene = RecognitionScene.normalize(scene)
         if screenshot_path is None:
             return self._reserved_equipment_result(normalized_scene, screenshot_path)
+        if normalized_scene is RecognitionScene.RESEARCH:
+            return self._scan_research_designs(screenshot_path, normalized_scene, task_context)
+        if normalized_scene is RecognitionScene.EQUIPMENT_LIST and self._scene_analyzer is None:
+            return self._scan_equipment_page(screenshot_path, normalized_scene, task_context)
         return self._scan_with_analyzer(
             "equipment_counts",
             screenshot_path,
@@ -171,6 +258,51 @@ class OcrTaskApi:
         return self._scan_with_analyzer(
             "resource_status",
             screenshot_path,
+            normalized_scene,
+            self._resource_result_schema(),
+            task_context,
+        )
+
+    def run_ocr_task(
+        self,
+        screenshot_path: str | Path,
+        scene: RecognitionScene | str = RecognitionScene.HARBOR,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> OcrTaskResult:
+        """
+        ADB 截图进入 OCR 层的统一任务入口。
+        输入：
+            screenshot_path: ADB 层输出的绝对截图路径。
+            scene: 期望场景；登录/加载/低置信会保守返回 unknown。
+            task_context: 可选任务上下文，用于在安全点响应取消。
+        输出：
+            OcrTaskResult，payload 中包含 screen_state 和 state_recognition。
+        使用示例：
+            result = api.run_ocr_task("G:/adb/frame_0001.png", "harbor")
+        """
+        if task_context is not None:
+            task_context.raise_if_cancelled("OCR 任务已取消。")
+        normalized_scene, scene_warning = self._safe_normalize_scene(scene)
+        path = Path(screenshot_path)
+        if not path.exists() or not path.is_file():
+            message = "截图文件不存在，无法执行 OCR。"
+            payload = self._base_scan_payload("screen_state", RecognitionScene.UNKNOWN, str(screenshot_path), self._resource_result_schema())
+            payload["screen_state"] = "unknown"
+            payload["state_recognition"] = None
+            warnings = self._merge_warnings(scene_warning, message)
+            return OcrTaskResult(False, "error", message, str(path), payload, warnings=warnings)
+
+        if normalized_scene is RecognitionScene.EQUIPMENT_LIST:
+            return self.scan_equipment_counts(str(path), normalized_scene, task_context=task_context)
+        if normalized_scene is RecognitionScene.RESEARCH:
+            return self._scan_research_designs(str(path), normalized_scene, task_context)
+        if normalized_scene is RecognitionScene.PHASE_SELECT:
+            return self._phase_select_result(str(path), scene_warning)
+        if normalized_scene in {RecognitionScene.HARBOR, RecognitionScene.UNKNOWN}:
+            return self._scan_harbor_screen_state(str(path), task_context, scene_warning)
+        return self._scan_with_analyzer(
+            "generic_scene",
+            str(path),
             normalized_scene,
             self._resource_result_schema(),
             task_context,
@@ -256,6 +388,86 @@ class OcrTaskApi:
         detail = recognition.detail or f"scene={recognition.scene.value}; detections={len(recognition.detections)}"
         return OcrTaskResult(recognition.success, status, message, detail, payload, warnings)
 
+    def _scan_research_designs(
+        self,
+        screenshot_path: str,
+        scene: RecognitionScene,
+        task_context: Optional[TaskExecutionContext],
+    ) -> OcrTaskResult:
+        """使用科研设计图专用 reader 识别单帧或 ADB manifest。"""
+        if task_context is not None:
+            task_context.raise_if_cancelled("科研设计图 OCR 任务已取消。")
+        path = Path(screenshot_path)
+        if not path.exists() or not path.is_file():
+            message = "科研设计图截图或 manifest 不存在，无法执行 OCR。"
+            payload = self._base_scan_payload("research_designs", scene, screenshot_path, self._equipment_result_schema())
+            return OcrTaskResult(False, "error", message, str(path), payload, warnings=(message,))
+
+        try:
+            recognition = self._get_research_design_reader().analyze(path, task_context=task_context)
+        except TaskCancelledError:
+            raise
+        except Exception as exc:
+            message = "科研设计图 OCR 识别执行失败，请复制运行日志给开发者。"
+            detail = f"{type(exc).__name__}: {exc}"
+            self.logger.exception(message)
+            payload = self._base_scan_payload("research_designs", scene, screenshot_path, self._equipment_result_schema())
+            return OcrTaskResult(False, "error", message, detail, payload, warnings=(detail,))
+
+        payload = self._payload_from_recognition("research_designs", self._equipment_result_schema(), recognition)
+        warnings = tuple(recognition.warnings)
+        if recognition.success:
+            status = "success"
+            message = "科研设计图 OCR 识别完成。"
+        elif self._looks_unavailable(recognition):
+            status = "unavailable"
+            message = recognition.message or "OCR 引擎不可用，无法完成科研设计图识别。"
+        else:
+            status = "needs_review"
+            message = recognition.message or "科研设计图 OCR 没有可自动写入的候选。"
+        detail = recognition.detail or f"scene={recognition.scene.value}; records={len(recognition.equipment_records)}"
+        return OcrTaskResult(recognition.success, status, message, detail, payload, warnings)
+
+    def _scan_equipment_page(
+        self,
+        screenshot_path: str,
+        scene: RecognitionScene,
+        task_context: Optional[TaskExecutionContext],
+    ) -> OcrTaskResult:
+        """使用装备页专用 reader 识别单帧或 ADB manifest。"""
+        if task_context is not None:
+            task_context.raise_if_cancelled("装备页 OCR 任务已取消。")
+        path = Path(screenshot_path)
+        if not path.exists() or not path.is_file():
+            message = "截图文件不存在，无法执行 OCR。"
+            payload = self._base_scan_payload("equipment_counts", scene, screenshot_path, self._equipment_result_schema())
+            return OcrTaskResult(False, "error", message, str(path), payload, warnings=(message,))
+
+        try:
+            recognition = self._get_equipment_page_reader().analyze(path, task_context=task_context)
+        except TaskCancelledError:
+            raise
+        except Exception as exc:
+            message = "装备页 OCR 识别执行失败，请复制运行日志给开发者。"
+            detail = f"{type(exc).__name__}: {exc}"
+            self.logger.exception(message)
+            payload = self._base_scan_payload("equipment_counts", scene, screenshot_path, self._equipment_result_schema())
+            return OcrTaskResult(False, "error", message, detail, payload, warnings=(detail,))
+
+        payload = self._payload_from_recognition("equipment_counts", self._equipment_result_schema(), recognition)
+        warnings = tuple(recognition.warnings)
+        if recognition.success:
+            status = "success"
+            message = "装备 OCR 识别完成。"
+        elif self._looks_unavailable(recognition):
+            status = "unavailable"
+            message = recognition.message or "OCR 引擎不可用，无法完成装备页识别。"
+        else:
+            status = "needs_review"
+            message = recognition.message or "装备页 OCR 没有可自动写入的候选。"
+        detail = recognition.detail or f"scene={recognition.scene.value}; records={len(recognition.equipment_records)}"
+        return OcrTaskResult(recognition.success, status, message, detail, payload, warnings)
+
     def _scan_harbor_resource_status(
         self,
         screenshot_path: str,
@@ -321,6 +533,94 @@ class OcrTaskApi:
             self._harbor_resource_detector = HarborResourceDetector(ocr_engine=self._ocr_engine)
         return self._harbor_resource_detector
 
+    def _get_screen_state_detector(self) -> ScreenStateDetector:
+        """延迟创建登录/加载/港区页面状态识别器。"""
+        if self._screen_state_detector is None:
+            self._screen_state_detector = ScreenStateDetector(config=self._full_roi_config(), ocr_engine=self._ocr_engine)
+        return self._screen_state_detector
+
+    def _scan_harbor_screen_state(
+        self,
+        screenshot_path: str,
+        task_context: Optional[TaskExecutionContext],
+        scene_warning: str = "",
+    ) -> OcrTaskResult:
+        """先判断登录/加载/港区，再决定是否执行港区资源 OCR。"""
+        state_result = self._get_screen_state_detector().detect(screenshot_path, task_context=task_context)
+        if task_context is not None:
+            task_context.raise_if_cancelled("OCR 页面状态识别后任务已取消。")
+
+        if not state_result.success:
+            payload = self._payload_from_screen_state(state_result, self._resource_result_schema())
+            warnings = self._merge_warnings(scene_warning, *state_result.warnings)
+            return OcrTaskResult(False, state_result.status, state_result.message, state_result.detail, payload, warnings)
+
+        if state_result.screen_state != "harbor":
+            payload = self._payload_from_screen_state(state_result, self._resource_result_schema())
+            status = "success" if state_result.screen_state in {"login", "loading"} else "unknown"
+            warnings = self._merge_warnings(scene_warning, *state_result.warnings)
+            return OcrTaskResult(True, status, state_result.message, state_result.detail, payload, warnings)
+
+        resource_result = self._scan_harbor_resource_status(screenshot_path, RecognitionScene.HARBOR, task_context)
+        state_payload = self._payload_from_screen_state(state_result, self._resource_result_schema())
+        payload = dict(state_payload)
+        payload.update(dict(resource_result.payload or {}))
+        payload["screen_state"] = state_result.screen_state
+        payload["scene_hint"] = state_result.screen_state
+        payload["confidence"] = float(state_result.confidence)
+        payload["state_recognition"] = state_payload["state_recognition"]
+        payload["state_detections"] = state_payload["state_detections"]
+        payload["suggested_action"] = state_result.suggested_action
+        payload["target"] = "screen_state"
+        payload["scene"] = RecognitionScene.HARBOR.value
+        payload["resource_ocr_status"] = resource_result.status
+        payload["resource_ocr_message"] = resource_result.message
+        payload["real_ocr_enabled"] = bool(resource_result.success)
+        warnings = self._merge_warnings(scene_warning, *state_result.warnings, *resource_result.warnings)
+        detail = (
+            f"screen_state=harbor; confidence={state_result.confidence:.3f}; "
+            f"resource_status={resource_result.status}; {state_result.detail}"
+        )
+        return OcrTaskResult(True, "success", "港区主界面识别完成。", detail, payload, warnings)
+
+    def _get_equipment_page_reader(self) -> EquipmentPageReader:
+        """延迟创建装备页专用识别器，避免预检阶段加载图库和 OCR 模型。"""
+        if self._equipment_page_reader is None:
+            self._equipment_page_reader = EquipmentPageReader(
+                ocr_engine=self._ocr_engine,
+                config=self._config,
+                config_path=self._config_path,
+            )
+        return self._equipment_page_reader
+
+    def _get_research_design_reader(self) -> ResearchDesignReader:
+        """延迟创建科研设计图专用识别器，避免预检阶段加载图库和 OCR 模型。"""
+        if self._research_design_reader is None:
+            self._research_design_reader = ResearchDesignReader(
+                ocr_engine=self._ocr_engine,
+                config=self._config,
+                config_path=self._config_path,
+            )
+        return self._research_design_reader
+
+    def _phase_select_result(self, screenshot_path: str, scene_warning: str = "") -> OcrTaskResult:
+        """科研期数选择页不是设计图列表，直接返回无检测结果。"""
+        message = "phase_select 是科研期数选择页，OCR 不执行科研设计图卡片识别。"
+        payload = self._base_scan_payload(
+            "phase_select",
+            RecognitionScene.PHASE_SELECT,
+            screenshot_path,
+            self._equipment_result_schema(),
+        )
+        payload["real_ocr_enabled"] = False
+        payload["phase_select_recognition"] = {
+            "scene": RecognitionScene.PHASE_SELECT.value,
+            "detections": [],
+            "equipment_records": [],
+        }
+        warnings = self._merge_warnings(scene_warning, message)
+        return OcrTaskResult(True, "reserved", message, "phase_select_no_research_detection", payload, warnings)
+
     def _recognition_from_harbor_result(
         self,
         harbor_result: HarborResourceResult,
@@ -384,6 +684,25 @@ class OcrTaskApi:
         payload["target"] = target
         payload["result_schema"] = result_schema
         payload["real_ocr_enabled"] = bool(recognition.success)
+        return payload
+
+    def _payload_from_screen_state(
+        self,
+        state_result: ScreenStateResult,
+        result_schema: List[Dict[str, str]],
+    ) -> Dict[str, Any]:
+        """把页面状态结果转换成 OCR API payload。"""
+        payload = self._base_scan_payload("screen_state", state_result.scene, state_result.screenshot_path, result_schema)
+        state_payload = state_result.to_dict()
+        payload["scene"] = state_result.scene.value
+        payload["screen_state"] = state_result.screen_state
+        payload["scene_hint"] = state_result.screen_state
+        payload["confidence"] = float(state_result.confidence)
+        payload["state_recognition"] = state_payload
+        payload["state_detections"] = state_payload["detections"]
+        payload["suggested_action"] = state_result.suggested_action
+        payload["ui_version"] = state_result.ui_version
+        payload["real_ocr_enabled"] = False
         return payload
 
     def _reserved_equipment_result(
@@ -470,17 +789,20 @@ class OcrTaskApi:
 
     def _roi_ocr_config(self) -> Dict[str, Any]:
         """读取新 ROI 配置中的 OCR 段，失败时返回空字典。"""
+        ocr_config = self._full_roi_config().get("ocr", {})
+        return ocr_config if isinstance(ocr_config, dict) else {}
+
+    def _full_roi_config(self) -> Dict[str, Any]:
+        """读取完整 ROI 配置，供页面状态探针和 OCR 引擎共用。"""
         if self._config is not None:
-            ocr_config = self._config.get("ocr", {})
-            return ocr_config if isinstance(ocr_config, dict) else {}
+            return self._config
         path = self._config_path or SceneAnalyzer.DEFAULT_CONFIG_PATH
         try:
             with open(path, "r", encoding="utf-8") as file:
                 data = __import__("json").load(file)
         except Exception:
             return {}
-        ocr_config = data.get("ocr", {}) if isinstance(data, dict) else {}
-        return ocr_config if isinstance(ocr_config, dict) else {}
+        return data if isinstance(data, dict) else {}
 
     @staticmethod
     def _looks_unavailable(recognition: RecognitionResult) -> bool:
@@ -500,6 +822,23 @@ class OcrTaskApi:
     def _clamp_confidence(value: float) -> float:
         """把置信度压回契约允许的 0.0 到 1.0 区间。"""
         return max(0.0, min(1.0, float(value)))
+
+    @staticmethod
+    def _safe_normalize_scene(scene: RecognitionScene | str) -> tuple[RecognitionScene, str]:
+        """把外部场景字符串安全转换为 RecognitionScene。"""
+        try:
+            return RecognitionScene.normalize(scene), ""
+        except ValueError:
+            return RecognitionScene.UNKNOWN, f"未知场景 {scene}，已按 unknown 处理。"
+
+    @staticmethod
+    def _merge_warnings(*items: str) -> tuple[str, ...]:
+        """合并 warning 并去重，保持原始顺序。"""
+        merged: List[str] = []
+        for item in items:
+            if item and item not in merged:
+                merged.append(item)
+        return tuple(merged)
 
     @staticmethod
     def _equipment_result_schema() -> List[Dict[str, str]]:
@@ -551,3 +890,49 @@ def get_ocr_task_api() -> OcrTaskApi:
     if _ocr_task_api is None:
         _ocr_task_api = OcrTaskApi()
     return _ocr_task_api
+
+
+def run_ocr_task(
+    screenshot_path: str | Path,
+    scene: RecognitionScene | str = RecognitionScene.HARBOR,
+    task_context: Optional[TaskExecutionContext] = None,
+) -> OCRResult:
+    """
+    OCR 顶层任务入口。
+    输入：
+        screenshot_path: ADB 输出的绝对截图路径，或装备页 manifest/scroll_session.json。
+        scene: 期望场景；登录/加载/低置信会返回 scene="unknown"。
+        task_context: 可选取消上下文。
+    输出：
+        OCRResult；payload 中保留 screen_state、资源状态和详细 warnings。
+    使用示例：
+        result = run_ocr_task("G:/adb/frame_0001.png", "harbor")
+    """
+    api = get_ocr_task_api()
+    task_result = api.run_ocr_task(screenshot_path, scene, task_context=task_context)
+
+    payload = task_result.payload or {}
+    detections: List[OcrDetection] = []
+    for record in payload.get("equipment_records", []) or []:
+        if not isinstance(record, dict):
+            continue
+        try:
+            detections.append(
+                OcrDetection(
+                    str(record["equipment_id"]),
+                    int(record["equipment_count"]),
+                    int(record["fragment_count"]),
+                    float(record["confidence"]),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return OCRResult(
+        str(payload.get("scene") or RecognitionScene.UNKNOWN.value),
+        tuple(detections),
+        bool(task_result.success),
+        task_result.status,
+        task_result.message,
+        tuple(task_result.warnings),
+        payload,
+    )

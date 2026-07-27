@@ -72,6 +72,13 @@ python nn_training_lab\pytorch_icon_training\scripts\predict_icon.py "icon.png" 
 如果 ADB 开发层已经生成：
 workdir\automation\adb_capture_runs\run_xxx\manifest.json
 
+设计图页推荐策略：
+- 设计图页不要依赖“长截图后再切块”作为主流程。
+- 先按稀有度逐步切换，每次切换后抓一张视口帧。
+- OCR 只吃这些逐帧截图，并用 manifest 的 frame_index / scroll_index / next_resume_cursor 做去重和续跑。
+- `viewport_full` 是设计图页这条链路的默认识别模式。
+- `long_screenshot` 仅用于你手上已经有一张外部拼好的长图时做兼容测试，不是这条 ADB 流的主路。
+
 最简单方式：
 双击 recognition_workbench\RUN_ADB_MANIFEST_RECOGNITION.bat
 然后把 manifest.json 完整路径粘进去。
@@ -120,3 +127,23 @@ python recognition_workbench\run_warehouse_design_tab_check.py --no-confirm
   2. design_tab_confirmed=true 表示切页后已经确认是设计图页。
   3. 如果仓库标签识别依赖不可用，会保留切页动作结果，但会写 warning。
   4. 如果确认失败，会返回非 0 退出码，方便 bat 和后续脚本判断。
+
+十、设计图页稀有度切换检查
+--------------------------------
+如果你已经停在“设计图”页，想先依次确认白/蓝/紫/金/彩几个稀有度切换动作是否能稳定执行，可以直接运行：
+
+双击：
+recognition_workbench\RUN_WAREHOUSE_DESIGN_RARITY_SWEEP.bat
+
+命令：
+python recognition_workbench\run_warehouse_design_rarity_sweep.py
+
+常用参数：
+python recognition_workbench\run_warehouse_design_rarity_sweep.py --resume-cursor 2
+python recognition_workbench\run_warehouse_design_rarity_sweep.py --json-out "G:\ALLPeoject\PythonProject\AzurLaneResearchTracker-OCR\recognition_workbench\test_out\warehouse_design_rarity_sweep.json"
+
+输出说明：
+  1. 会生成独立的 run_<session_id> 目录，里面有 frames/manifest.json/actions.log/device_info.json/summary.json。
+  2. summary.json 里的 next_resume_cursor 可以直接用于断点续跑。
+  3. frames/ 里每张图对应一次稀有度切换后的截图证据。
+  4. 如果某一步截图和上一帧完全一致，会在 warnings 里记录为疑似重复。

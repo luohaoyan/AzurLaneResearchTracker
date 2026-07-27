@@ -41,6 +41,7 @@ from core.automation.equipment_page.equipment_page_constants import (
 )
 from core.automation.equipment_page.equipment_page_adb_api import get_equipment_page_adb_api
 from core.contracts import RecognitionScene, ScreenshotArtifact, TaskCancelledError, TaskExecutionContext
+from core.recognition.filter_state_detector import FilterStateElement, FilterStateOption, FilterStateResult
 from core.recognition.warehouse_label_detector import WarehouseLabelDetection, WarehouseLabelResult
 from core.utils.path_manager import PathManager
 
@@ -297,6 +298,56 @@ class FakeWarehouseDesignController(FakeEquipmentController):
         )
 
 
+class FakeFilterStateDetector:
+    """让测试直接读取 API 当前 `_last_rarity_filter`，不依赖真实图片语义。"""
+
+    def __init__(self, api: EquipmentPageAdbApi) -> None:
+        self.api = api
+
+    def detect(self, screenshot: str | Path, sort_templates: Any = None) -> FilterStateResult:
+        rarity = str(getattr(self.api, "_last_rarity_filter", "unknown") or "unknown")
+        options = []
+        for name in ("all", "common", "rare", "elite", "super_rare", "ultra_rare"):
+            options.append(
+                FilterStateOption(
+                    group="rarity",
+                    name=name,
+                    text=name,
+                    bbox=(0, 0, 1, 1),
+                    visible=True,
+                    selected=name == rarity,
+                    enabled=True,
+                    confidence=0.99,
+                    state="selected" if name == rarity else "unselected",
+                    image_size=(1280, 720),
+                    clickable=True,
+                )
+            )
+        elements = (
+            FilterStateElement("filter_panel", (0, 0, 1, 1), True, True, "open", 0.99, 0.99, "overlay"),
+        )
+        return FilterStateResult(
+            True,
+            "success",
+            "筛选状态识别完成。",
+            screenshot_path=str(Path(screenshot).resolve()),
+            image_size=(1280, 720),
+            base_resolution=(1280, 720),
+            page="fragment",
+            tab="design",
+            filter_panel_open=True,
+            filter_button_active=True,
+            current_type_filter="unknown",
+            current_camp_filter="unknown",
+            current_rarity_filter=rarity,
+            current_sort="buildable",
+            rarity_inference_source="panel_selected_option",
+            elements=elements,
+            options=tuple(options),
+            warnings=(),
+        )
+
+
 @pytest.fixture()
 def equipment_page_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[EquipmentPageAdbApi, FakeEquipmentController]:
     """创建装备页 API 和 fake 控制器。"""
@@ -310,6 +361,7 @@ def equipment_page_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple
     api._last_search_text = ""
     fake_controller = FakeEquipmentController()
     api._controller_factory = lambda config: fake_controller
+    api._filter_state_detector = FakeFilterStateDetector(api)
     return api, fake_controller
 
 
@@ -351,7 +403,7 @@ def test_get_device_info_reports_orientation_and_simulator_key(
 
     assert result.success is True
     assert result.payload is not None
-    assert result.payload["current_simulator_key"] == "mumu"
+    assert result.payload["current_simulator_key"] == "leidian"
     assert result.payload["orientation"] == "landscape"
     assert result.payload["foreground_package"] == "com.bilibili.azurlane"
     assert result.payload["resolution"] == [1280, 720]

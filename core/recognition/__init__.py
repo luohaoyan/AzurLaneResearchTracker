@@ -31,8 +31,10 @@ from .filter_state_detector import (
 )
 from .harbor_resource_detector import HarborResourceDetector, HarborResourceResult, get_harbor_resource_detector
 from .ocr_engine import OcrEngine, OcrReadResult, OcrTextLine, normalize_number_text
-from .ocr_task_api import OcrTaskApi, OcrTaskResult, get_ocr_task_api
+from .ocr_task_api import OCRResult, OcrDetection, OcrTaskApi, OcrTaskResult, get_ocr_task_api, run_ocr_task
+from .research_design_reader import ResearchDesignCardRead, ResearchDesignReader
 from .scene_analyzer import SceneAnalyzer
+from .screen_state_detector import ScreenStateDetection, ScreenStateDetector, ScreenStateResult, get_screen_state_detector
 from .template_matcher import TemplateMatch, TemplateMatcher, TemplateMatchResult
 from .warehouse_label_detector import (
     WarehouseLabelDetection,
@@ -63,10 +65,17 @@ __all__ = [
     "HarborResourceDetector",
     "HarborResourceResult",
     "OcrEngine",
+    "OCRResult",
+    "OcrDetection",
     "OcrReadResult",
     "OcrTaskApi",
     "OcrTaskResult",
     "OcrTextLine",
+    "ResearchDesignCardRead",
+    "ResearchDesignReader",
+    "ScreenStateDetection",
+    "ScreenStateDetector",
+    "ScreenStateResult",
     "SceneAnalyzer",
     "TemplateMatch",
     "TemplateMatchResult",
@@ -75,10 +84,12 @@ __all__ = [
     "WarehouseLabelDetector",
     "WarehouseLabelResult",
     "get_ocr_task_api",
+    "run_ocr_task",
     "get_design_fragment_detector",
     "get_filter_state_detector",
     "get_equipment_name_resolver",
     "get_harbor_resource_detector",
+    "get_screen_state_detector",
     "get_warehouse_label_detector",
     "normalize_equipment_base_name",
     "normalize_equipment_name",

@@ -153,6 +153,14 @@ class DesignFragmentDetector:
             return DesignFragmentDetectionResult(False, "error", str(exc), (0, 0), warnings=(str(exc),))
 
         height, width = int(image.shape[0]), int(image.shape[1])
+        if self.detect_empty_state(image):
+            return DesignFragmentDetectionResult(
+                False,
+                "empty",
+                "当前设计图稀有度页面为空，未获得任何设计图。",
+                (width, height),
+                warnings=("检测到“暂无设计图”空状态提示，已跳过卡片识别。",),
+            )
         geometry = self._scaled_geometry(width)
         row_offset, offset_score = self._detect_row_offset(image, geometry)
         rows = self._generate_rows(height, row_offset, geometry["card_height"], geometry["row_pitch"])
@@ -177,6 +185,61 @@ class DesignFragmentDetector:
             card_size=(geometry["card_width"], geometry["card_height"]),
             candidates=tuple(candidates),
         )
+
+    def detect_empty_state(self, screenshot: str | Path | Any) -> bool:
+        """
+        判断设计图页是否显示“暂无设计图”空状态。
+
+        空页面的背景网格线很容易被普通边缘扫描误判成卡片，因此先检查：
+        右侧空状态红色警告图标，以及中部提示文字的高亮密度。
+        """
+        if self._cv2 is None or self._np is None:
+            return False
+        try:
+            image = self.load_image(screenshot) if isinstance(screenshot, (str, Path)) else screenshot
+            if image is None or not hasattr(image, "shape") or getattr(image, "size", 0) == 0:
+                return False
+            height, width = int(image.shape[0]), int(image.shape[1])
+            scale_x = width / float(self.BASE_WIDTH)
+            scale_y = height / float(self.BASE_HEIGHT)
+            x0, x1 = int(round(1040 * scale_x)), int(round(1230 * scale_x))
+            y0, y1 = int(round(285 * scale_y)), int(round(445 * scale_y))
+            x0, x1 = max(0, x0), min(width, x1)
+            y0, y1 = max(0, y0), min(height, y1)
+            if x1 <= x0 or y1 <= y0:
+                return False
+
+            hsv = self._cv2.cvtColor(image, self._cv2.COLOR_BGR2HSV)
+            red_roi = hsv[y0:y1, x0:x1]
+            red_mask = (
+                ((red_roi[:, :, 0] <= 15) | (red_roi[:, :, 0] >= 170))
+                & (red_roi[:, :, 1] >= 80)
+                & (red_roi[:, :, 2] >= 100)
+            ).astype("uint8")
+            component_count, _labels, stats, _centroids = self._cv2.connectedComponentsWithStats(red_mask, 8)
+            largest_red_component = 0
+            if component_count > 1:
+                largest_red_component = int(max(stats[1:, self._cv2.CC_STAT_AREA]))
+
+            text_x0, text_x1 = int(round(120 * scale_x)), int(round(520 * scale_x))
+            text_y0, text_y1 = int(round(315 * scale_y)), int(round(390 * scale_y))
+            text_roi = image[
+                max(0, text_y0):min(height, text_y1),
+                max(0, text_x0):min(width, text_x1),
+            ]
+            white_density = 0.0
+            if getattr(text_roi, "size", 0):
+                white_mask = (
+                    (text_roi[:, :, 0] >= 180)
+                    & (text_roi[:, :, 1] >= 180)
+                    & (text_roi[:, :, 2] >= 180)
+                )
+                white_density = float(white_mask.mean())
+
+            # 右侧红色菱形面积和左侧提示文字需同时存在，才判定为空状态。
+            return largest_red_component >= 400 and white_density >= 0.10
+        except (OSError, ValueError, TypeError):
+            return False
 
     def draw_annotations(
         self,

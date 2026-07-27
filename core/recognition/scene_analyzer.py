@@ -56,6 +56,7 @@ class SceneAnalyzer:
         ocr_engine: Optional[OcrEngine] = None,
         template_matcher: Optional[TemplateMatcher] = None,
         card_reader: Optional[EquipmentCardDigitReader] = None,
+        screen_state_detector: Optional[Any] = None,
         config: Optional[Dict[str, Any]] = None,
         config_path: Optional[str | Path] = None,
     ) -> None:
@@ -76,6 +77,7 @@ class SceneAnalyzer:
         if not isinstance(card_config, dict):
             card_config = {}
         self.card_reader = card_reader or EquipmentCardDigitReader(self.ocr_engine, config=card_config)
+        self._screen_state_detector = screen_state_detector
 
     def get_scene_config(self, scene: RecognitionScene | str) -> Dict[str, Any]:
         """
@@ -157,6 +159,26 @@ class SceneAnalyzer:
                 message="截图尺寸疑似不完整，已跳过 OCR 识别。",
                 detail=capture_warning,
             )
+
+        if self._screen_state_probe_enabled(normalized_scene):
+            state_result = self._get_screen_state_detector().detect(image, task_context=task_context)
+            if state_result.screen_state != "harbor":
+                warnings.extend(state_result.warnings)
+                warning = f"screen_state={state_result.screen_state}; confidence={state_result.confidence:.3f}"
+                warnings.append(warning)
+                return RecognitionResult(
+                    True,
+                    RecognitionScene.UNKNOWN,
+                    screenshot_path=path_text,
+                    detections=(),
+                    warnings=tuple(warnings),
+                    message=state_result.message,
+                    detail=(
+                        f"{warning}; suggested_action={state_result.suggested_action}; "
+                        f"state_detail={state_result.detail}"
+                    ),
+                )
+            warnings.extend(state_result.warnings)
 
         rois = self.get_scene_rois(normalized_scene)
         detections: List[RecognitionDetection] = []
@@ -573,6 +595,23 @@ class SceneAnalyzer:
                 f"base={base_width}x{base_height}, aspect_delta={aspect_delta:.2f}。"
             )
         return ""
+
+    def _screen_state_probe_enabled(self, scene: RecognitionScene) -> bool:
+        """判断是否在港区分析前先做登录/加载/港区状态探针。"""
+        if scene is not RecognitionScene.HARBOR:
+            return False
+        state_config = self.config.get("screen_state_detection", {})
+        if not isinstance(state_config, dict):
+            return False
+        return bool(state_config.get("enabled", False))
+
+    def _get_screen_state_detector(self) -> Any:
+        """延迟创建页面状态识别器，避免循环导入和 GUI 启动负担。"""
+        if self._screen_state_detector is None:
+            from core.recognition.screen_state_detector import ScreenStateDetector
+
+            self._screen_state_detector = ScreenStateDetector(config=self.config, ocr_engine=self.ocr_engine)
+        return self._screen_state_detector
 
     @staticmethod
     def _roi_warnings(roi_name: str, result: OcrReadResult) -> List[str]:

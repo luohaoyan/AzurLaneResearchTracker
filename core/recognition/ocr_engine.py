@@ -258,6 +258,31 @@ class OcrEngine:
             roi=safe_roi,
         )
 
+    def recognize_lines(
+        self,
+        image: Any,
+        roi: Optional[Sequence[int]] = None,
+        preprocess: bool = True,
+    ) -> Tuple[OcrTextLine, ...]:
+        """
+        识别文本行并保留坐标，供文本点击和列表匹配使用。
+        输入：
+            image: OpenCV 图像或截图路径。
+            roi: 可选裁剪区域。
+            preprocess: 是否做预处理。
+        输出：
+            Tuple[OcrTextLine, ...]：保留 OCR 原始行和坐标。
+        使用示例：
+            lines = engine.recognize_lines(image)
+        """
+        try:
+            target, _safe_roi = self._prepare_target_image(image, roi, preprocess)
+            return self._run_backend(target)
+        except OcrUnavailableError:
+            return ()
+        except Exception:
+            return ()
+
     def recognize_digits(
         self,
         image: Any,

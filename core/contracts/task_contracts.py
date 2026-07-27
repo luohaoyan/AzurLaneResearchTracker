@@ -45,6 +45,7 @@ class RecognitionScene(StrEnum):
     EQUIPMENT_LIST = "equipment_list"
     RESEARCH = "research"
     PHASE_SELECT = "phase_select"
+    UNKNOWN = "unknown"
 
     @classmethod
     def normalize(cls, value: "RecognitionScene | str") -> "RecognitionScene":

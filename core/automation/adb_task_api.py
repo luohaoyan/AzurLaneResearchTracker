@@ -16,14 +16,38 @@ from __future__ import annotations
 # ============================================================
 
 import importlib.util
-import shutil
-from pathlib import Path
-from typing import Any, Dict, Optional
+import re
+from copy import deepcopy
+from typing import Any, Callable, Dict, Optional
 
 from core.contracts import RecognitionScene, StructuredTaskResult, TaskExecutionContext
+from core.automation.adb_controller import (
+    AdbController,
+    AdbLoginResult,
+    NavigationResult,
+    AdbStateWaitResult,
+    RECOMMENDED_SCREEN_SIZE,
+)
 from core.utils.config_loader import get_config_loader
 from core.utils.logger import get_logger
 from core.utils.path_manager import PathManager
+from core.automation.game_login_preferences import get_game_login_preferences
+from core.automation.game_login_registry import (
+    detect_installed_azur_lane_clients,
+    find_azur_lane_client_by_package,
+    get_azur_lane_client_profile,
+    get_azur_lane_server_display,
+    list_azur_lane_client_profiles,
+    list_azur_lane_servers,
+    select_azur_lane_client,
+)
+from core.automation.simulator_registry import (
+    build_auto_connect_candidates,
+    get_simulator_profile,
+    list_simulator_profiles,
+    normalize_serial,
+)
+from core.automation.simulator_preferences import get_simulator_preferences
 
 
 # ============================================================
@@ -52,7 +76,7 @@ class AdbTaskApi:
     输入：
         无，内部读取 config/config.json 和 config/simulators/*.json。
     输出：
-        结构化预检结果；当前阶段不执行真实 ADB 命令。
+        结构化预检结果；真实 ADB 执行由 AdbController 负责。
     使用示例：
         api = AdbTaskApi()
         api.capture_screenshot()
@@ -72,52 +96,634 @@ class AdbTaskApi:
             return
         self.logger = get_logger()
         self.config_loader = get_config_loader()
+        self.game_login_preferences = get_game_login_preferences()
+        self.simulator_preferences = get_simulator_preferences()
+        self._controller_factory: Callable[[Dict[str, Any]], AdbController] = AdbController
         self._initialized = True
 
-    def check_connection(self, task_context: Optional[TaskExecutionContext] = None) -> AdbTaskResult:
+    def check_connection(
+        self,
+        task_context: Optional[TaskExecutionContext] = None,
+        *,
+        simulator_key: Optional[str] = None,
+        serial: Optional[str] = None,
+        port: Optional[str | int] = None,
+        strict_status: bool = False,
+    ) -> AdbTaskResult:
         """
         检查 ADB 连接配置。
         输入：
             task_context: 可选任务上下文，用于在安全点响应取消。
+            strict_status: True 时顶层 status 使用真实 ADB 状态；False 保留旧 GUI 预检兼容状态。
         输出：
-            AdbTaskResult: 当前仅校验配置和 adb 路径，不连接真实设备。
+            AdbTaskResult: payload 中包含真实设备检测结果；缺失 ADB 不向 GUI 抛异常。
         使用示例：
             result = api.check_connection()
         """
         if task_context is not None:
             task_context.raise_if_cancelled("ADB 连接检查已取消。")
-        simulator = self._get_simulator_context()
-        adb_path = str(simulator["adb"].get("path", "")).strip()
-        adb_path_exists = self._adb_path_exists(adb_path)
+        simulator = self._get_simulator_context(simulator_key=simulator_key, serial=serial, port=port)
+        controller = self._create_controller(simulator)
+        if task_context is not None and not strict_status:
+            adb_resolution = controller.find_adb()
+            payload = {
+                "simulator_key": simulator["key"],
+                "simulator_name": simulator["name"],
+                "adb_path": adb_resolution.adb_path or str(simulator["adb"].get("path", "")).strip(),
+                "adb_path_exists": adb_resolution.available,
+                "adb_source": adb_resolution.source,
+                "port": simulator["adb"].get("port"),
+                "device_serial": simulator["device_serial"] or simulator["default_device_serial"],
+                "configured_device_serial": simulator["device_serial"],
+                "device_state": None,
+                "connection_status": "not_checked",
+                "candidates": [],
+                "recommended_resolution": list(RECOMMENDED_SCREEN_SIZE),
+                "real_command_enabled": False,
+                "command": None,
+            }
+            detail = (
+                f"模拟器={payload['simulator_name']}；ADB={payload['adb_path'] or '未配置'}；"
+                f"端口={payload['port']}；后台快速预检=启用"
+            )
+            message = "ADB 连接预检完成：已完成轻量配置检查，真实设备检测可在环境检查中查看。"
+            self.logger.info(message)
+            return AdbTaskResult(True, "reserved", message, detail, payload, tuple(adb_resolution.warnings))
+
+        connection = controller.check_connection(serial=simulator["device_serial"] or None, task_context=task_context)
         payload = {
             "simulator_key": simulator["key"],
             "simulator_name": simulator["name"],
-            "adb_path": adb_path,
-            "adb_path_exists": adb_path_exists,
+            "adb_path": connection.adb_path or str(simulator["adb"].get("path", "")).strip(),
+            "adb_path_exists": bool(connection.adb_path),
+            "adb_source": connection.adb_source,
             "port": simulator["adb"].get("port"),
-            "device_serial": simulator["device_serial"],
-            "real_command_enabled": False,
+            "device_serial": connection.selected_device.serial if connection.selected_device else simulator["device_serial"],
+            "configured_device_serial": simulator["device_serial"],
+            "device_state": connection.selected_device.state if connection.selected_device else None,
+            "connection_status": connection.status,
+            "candidates": [device.to_dict() for device in connection.candidates],
+            "recommended_resolution": list(RECOMMENDED_SCREEN_SIZE),
+            "real_command_enabled": True,
+            "command": connection.command_result.to_dict() if connection.command_result else None,
         }
         detail = (
-            f"模拟器={payload['simulator_name']}；ADB={adb_path or '未配置'}；"
-            f"端口={payload['port']}；路径存在={adb_path_exists}"
+            f"模拟器={payload['simulator_name']}；ADB={payload['adb_path'] or '未配置'}；"
+            f"端口={payload['port']}；真实状态={connection.status}"
         )
-        message = "ADB 连接预检完成：已保留真实连接入口，当前阶段不启动模拟器。"
+        message = connection.message if strict_status else "ADB 连接预检完成：已接入真实设备检测，结果已写入 payload。"
         self.logger.info(message)
-        return AdbTaskResult(True, "reserved", message, detail, payload)
+        return AdbTaskResult(
+            connection.success if strict_status else True,
+            connection.status if strict_status else "reserved",
+            message,
+            detail,
+            payload,
+            tuple(connection.warnings),
+        )
+
+    def auto_connect_simulator(
+        self,
+        task_context: Optional[TaskExecutionContext] = None,
+        *,
+        include_all_profiles: bool = True,
+        max_candidates: Optional[int] = None,
+        simulator_key: Optional[str] = None,
+        serial: Optional[str] = None,
+        port: Optional[str | int] = None,
+    ) -> AdbTaskResult:
+        """
+        自动探测并连接当前配置对应的模拟器 ADB。
+        """
+        if task_context is not None:
+            task_context.raise_if_cancelled("模拟器自动连接任务已取消。")
+            task_context.report_progress(18, "正在解析当前模拟器配置。", "")
+        simulator = self._get_simulator_context(simulator_key=simulator_key, serial=serial, port=port)
+        controller = self._create_controller(simulator)
+        target_serial = simulator["device_serial"] or simulator["default_device_serial"] or None
+        if task_context is not None:
+            task_context.report_progress(32, "正在尝试 ADB 自动连接。", str(target_serial or "自动候选"))
+        connected = controller.auto_connect_simulator(
+            simulator["key"],
+            task_context=task_context,
+            include_all_profiles=include_all_profiles,
+            serial=target_serial,
+            max_candidates=max_candidates,
+        )
+        payload: Dict[str, Any] = {
+            "simulator_key": simulator["key"],
+            "simulator_name": simulator["name"],
+            "selection": simulator.get("selection", simulator["key"]),
+            "auto_selected": simulator.get("auto_selected", False),
+            "configured_device_serial": simulator["device_serial"],
+            "default_device_serial": simulator["default_device_serial"],
+            "port": simulator["adb"].get("port"),
+            "real_command_enabled": True,
+            **connected.to_payload(),
+        }
+        detected_profile = next(
+            (
+                profile
+                for profile in connected.simulator_profiles
+                if connected.selected_device is not None and profile.serial == connected.selected_device.serial
+            ),
+            None,
+        )
+        payload["detected_simulator_type"] = detected_profile.simulator_type if detected_profile is not None else ""
+        payload["detected_simulator_confidence"] = detected_profile.confidence if detected_profile is not None else 0.0
+        if detected_profile is not None and simulator.get("auto_selected"):
+            detected_key = detected_profile.simulator_type.split("_or_", 1)[0]
+            detected_config = self.config_loader.get_simulator_config(detected_key)
+            payload["simulator_key"] = detected_key
+            payload["simulator_name"] = (
+                detected_config.get("name")
+                if isinstance(detected_config, dict) and detected_config.get("name")
+                else detected_key
+            )
+        warnings = list(connected.warnings)
+        display_payload: Optional[Dict[str, Any]] = None
+        foreground_payload: Optional[Dict[str, Any]] = None
+
+        if connected.success and connected.selected_device is not None:
+            device_serial = connected.selected_device.serial
+            if task_context is not None:
+                task_context.report_progress(70, "连接成功，正在读取模拟器显示环境。", device_serial)
+            display_check = controller.check_display_environment(serial=device_serial, task_context=task_context)
+            display_payload = display_check.to_dict()
+            warnings.extend(display_check.warnings)
+            if task_context is not None:
+                task_context.report_progress(86, "正在读取当前前台应用。", device_serial)
+            foreground = controller.get_foreground_package(serial=device_serial, task_context=task_context)
+            foreground_payload = {
+                "success": foreground.success,
+                "status": foreground.status,
+                "message": foreground.message,
+                "package_name": foreground.stdout.strip() if foreground.success else "",
+                "command": foreground.to_dict(),
+            }
+            if not foreground.success:
+                warnings.append("已连接模拟器，但暂时无法解析当前前台应用包名。")
+
+        payload["display_environment"] = display_payload
+        payload["foreground_app"] = foreground_payload
+        selected_serial = payload.get("device_serial") or target_serial or "未知设备"
+        detail = (
+            f"模拟器={payload['simulator_name']}；设备={selected_serial}；"
+            f"ADB来源={payload.get('adb_source') or 'missing'}；尝试={len(payload.get('attempted_serials') or [])}"
+        )
+        message = connected.message
+        record_serial = str(payload.get("device_serial") or target_serial or "")
+        record_port = self._port_from_serial(record_serial) or str(payload.get("port") or "")
+        record_key = str(payload.get("simulator_key") or simulator["key"] or "auto")
+        self._persist_connection_preferences(
+            controller=controller,
+            simulator=simulator,
+            record_key=record_key,
+            record_serial=record_serial,
+            record_port=record_port,
+            payload=payload,
+            status=connected.status,
+            success=connected.success,
+            message=message,
+        )
+        self.logger.info(message)
+        return AdbTaskResult(
+            connected.success,
+            connected.status,
+            message,
+            detail,
+            payload,
+            tuple(dict.fromkeys(warnings)),
+        )
+
+    def list_packages(
+        self,
+        task_context: Optional[TaskExecutionContext] = None,
+        *,
+        include_system: bool = False,
+    ) -> AdbTaskResult:
+        """
+        读取当前模拟器中已安装的应用包列表。
+        输入：
+            task_context: 可选取消上下文；include_system: 是否包含系统应用。
+        输出：
+            AdbTaskResult，payload 中含 packages/package_names/source。
+        使用示例：
+            result = get_adb_task_api().list_packages()
+        """
+        if task_context is not None:
+            task_context.raise_if_cancelled("ADB 应用列表查询已取消。")
+        simulator = self._get_simulator_context()
+        controller = self._create_controller(simulator)
+        package_result = controller.list_packages(
+            serial=simulator["device_serial"] or None,
+            include_system=include_system,
+            task_context=task_context,
+        )
+        payload = {
+            "simulator_key": simulator["key"],
+            "simulator_name": simulator["name"],
+            **package_result.to_payload(),
+        }
+        detail = f"模拟器={simulator['name']}；应用数量={len(package_result.packages)}；来源={package_result.source or '无'}"
+        self.logger.info(package_result.message)
+        return AdbTaskResult(
+            package_result.success,
+            package_result.status,
+            package_result.message,
+            detail,
+            payload,
+            tuple(package_result.warnings),
+        )
+
+    def detect_simulators(
+        self,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> AdbTaskResult:
+        """
+        识别所有当前 ADB 设备的模拟器家族。
+        输入：
+            task_context: 可选取消上下文。
+        输出：
+            AdbTaskResult，payload 中保留全部候选，不在多设备时擅自选择。
+        使用示例：
+            result = get_adb_task_api().detect_simulators()
+        """
+        if task_context is not None:
+            task_context.raise_if_cancelled("模拟器识别已取消。")
+        simulator = self._get_simulator_context()
+        controller = self._create_controller(simulator)
+        detected = controller.detect_simulators(task_context=task_context)
+        payload = {
+            "simulator_key": simulator["key"],
+            "simulator_name": simulator["name"],
+            **detected.to_payload(),
+        }
+        detail = f"模拟器候选数={len(detected.simulators)}；ADB来源={detected.adb_source}"
+        self.logger.info(detected.message)
+        return AdbTaskResult(detected.success, detected.status, detected.message, detail, payload, detected.warnings)
+
+    def run_azur_lane_auto_login(
+        self,
+        task_context: Optional[TaskExecutionContext] = None,
+        *,
+        client_key: Optional[str] = None,
+        server_key: Optional[str] = None,
+        simulator_key: Optional[str] = None,
+        serial: Optional[str] = None,
+        port: Optional[str | int] = None,
+        timeout_seconds: float = 8.0,
+        max_retries: int = 1,
+    ) -> AdbTaskResult:
+        """
+        扫描模拟器应用列表并启动用户选择的碧蓝航线客户端。
+        """
+        if task_context is not None:
+            task_context.raise_if_cancelled("游戏自动登录任务已取消。")
+
+        selection = self.game_login_preferences.get_selection()
+        requested_client = str(client_key if client_key is not None else selection.get("client") or "official_cn").strip() or "official_cn"
+        requested_server = str(server_key if server_key is not None else selection.get("server") or "auto").strip() or "auto"
+        simulator = self._get_simulator_context(simulator_key=simulator_key, serial=serial, port=port)
+        controller = self._create_controller(simulator)
+        target_serial = simulator["device_serial"] or simulator["default_device_serial"] or None
+        scene_probe = self._build_game_state_probe(controller, target_serial, task_context)
+        login_steps = self._build_game_login_steps(requested_server)
+
+        package_result = controller.list_packages(serial=target_serial, include_system=False, task_context=task_context)
+        if not package_result.success:
+            selected_profile = self._fallback_game_client_profile(requested_client, selection)
+            if selected_profile is not None:
+                login = controller.login_game(
+                    selected_profile.package_name,
+                    activity_name=selected_profile.activity_name,
+                    serial=target_serial,
+                    timeout_seconds=timeout_seconds,
+                    max_retries=max_retries,
+                    login_steps=login_steps,
+                    scene_probe=scene_probe,
+                    task_context=task_context,
+                )
+                server_display = get_azur_lane_server_display(requested_server)
+                warnings = tuple(package_result.warnings) + tuple(login.warnings) + (
+                    "读取应用列表失败，已按选择的客户端直接尝试启动。",
+                )
+                payload = {
+                    "simulator_key": simulator["key"],
+                    "simulator_name": simulator["name"],
+                    "client_key": selected_profile.key,
+                    "client_display": selected_profile.display_name,
+                    "server_key": requested_server,
+                    "server_display": server_display,
+                    "selected_client": selected_profile.to_dict(),
+                    "installed_clients": [],
+                    "package_scan": package_result.to_payload(),
+                    "package_scan_failed": True,
+                    **login.to_payload(),
+                }
+                self._persist_game_login_preferences(
+                    controller=controller,
+                    client_key=selected_profile.key,
+                    server_key=requested_server,
+                    package_name=selected_profile.package_name,
+                    status=login.status,
+                )
+                message = f"已尝试启动 {selected_profile.display_name}；服务器选择：{server_display}。" if login.success else login.message
+                detail = (
+                    f"应用列表读取失败，已直接启动；客户端={selected_profile.display_name}；"
+                    f"包={selected_profile.package_name}；状态={login.status}"
+                )
+                self.logger.warning(
+                    "应用列表读取失败后直接启动：客户端=%s，包=%s，启动状态=%s",
+                    selected_profile.display_name,
+                    selected_profile.package_name,
+                    login.status,
+                )
+                return AdbTaskResult(login.success, login.status, message, detail, payload, warnings)
+
+            payload = {
+                "simulator_key": simulator["key"],
+                "simulator_name": simulator["name"],
+                "client_key": requested_client,
+                "server_key": requested_server,
+                "server_display": get_azur_lane_server_display(requested_server),
+                "package_scan": package_result.to_payload(),
+                "installed_clients": [],
+            }
+            message = "读取模拟器应用列表失败，无法判断是否已安装碧蓝航线。"
+            detail = f"模拟器={simulator['name']}；状态={package_result.status}"
+            self.logger.warning(f"{message} {detail}")
+            return AdbTaskResult(False, package_result.status, message, detail, payload, package_result.warnings)
+
+        installed_clients = detect_installed_azur_lane_clients(package_result.package_names)
+        selected_profile = select_azur_lane_client(package_result.package_names, requested_client)
+        expected_profile = get_azur_lane_client_profile(requested_client)
+        if selected_profile is None:
+            expected_name = expected_profile.display_name if expected_profile is not None else "国服官服（B站）"
+            payload = {
+                "simulator_key": simulator["key"],
+                "simulator_name": simulator["name"],
+                "client_key": requested_client,
+                "server_key": requested_server,
+                "server_display": get_azur_lane_server_display(requested_server),
+                "expected_client": expected_profile.to_dict() if expected_profile is not None else None,
+                "installed_clients": [profile.to_dict() for profile in installed_clients],
+                "package_names": list(package_result.package_names),
+                "package_scan_source": package_result.source,
+            }
+            message = f"模拟器中未安装所选碧蓝航线客户端：{expected_name}。"
+            detail = f"已发现碧蓝航线客户端数={len(installed_clients)}；应用总数={len(package_result.package_names)}"
+            self.logger.info(f"{message} {detail}")
+            return AdbTaskResult(False, "package_not_installed", message, detail, payload, package_result.warnings)
+
+        login: AdbLoginResult = controller.login_game(
+            selected_profile.package_name,
+            activity_name=selected_profile.activity_name,
+            serial=target_serial,
+            timeout_seconds=timeout_seconds,
+            max_retries=max_retries,
+            login_steps=login_steps,
+            scene_probe=scene_probe,
+            task_context=task_context,
+        )
+        server_display = get_azur_lane_server_display(requested_server)
+        payload = {
+            "simulator_key": simulator["key"],
+            "simulator_name": simulator["name"],
+            "client_key": selected_profile.key,
+            "client_display": selected_profile.display_name,
+            "server_key": requested_server,
+            "server_display": server_display,
+            "selected_client": selected_profile.to_dict(),
+            "installed_clients": [profile.to_dict() for profile in installed_clients],
+            "package_scan_source": package_result.source,
+            **login.to_payload(),
+        }
+        self._persist_game_login_preferences(
+            controller=controller,
+            client_key=selected_profile.key,
+            server_key=requested_server,
+            package_name=selected_profile.package_name,
+            status=login.status,
+        )
+        message = f"已启动 {selected_profile.display_name}；服务器选择：{server_display}。" if login.success else login.message
+        detail = (
+            f"客户端={selected_profile.display_name}；包={selected_profile.package_name}；"
+            f"服务器={server_display}；前台={login.foreground_package or '未知'}"
+        )
+        self.logger.info(
+            "游戏自动登录摘要：客户端=%s，服务器=%s，包=%s，状态=%s，前台=%s",
+            selected_profile.display_name,
+            server_display,
+            selected_profile.package_name,
+            login.status,
+            login.foreground_package or "未知",
+        )
+        return AdbTaskResult(login.success, login.status, message, detail, payload, login.warnings)
+
+    def run_azur_lane_enter_home(
+        self,
+        task_context: Optional[TaskExecutionContext] = None,
+        *,
+        client_key: Optional[str] = None,
+        server_key: Optional[str] = None,
+        simulator_key: Optional[str] = None,
+        serial: Optional[str] = None,
+        port: Optional[str | int] = None,
+        timeout_seconds: float = 45.0,
+        max_retries: int = 2,
+    ) -> AdbTaskResult:
+        """
+        从模拟器当前画面进入碧蓝航线港区主页。
+        输入：
+            client/server/simulator 选择；timeout_seconds 给登录、加载和开场动画更长窗口。
+        输出：
+            只有 OCR/状态探针确认 harbor 时 success=True；仅启动到前台会返回 needs_confirmation。
+        使用示例：
+            result = api.run_azur_lane_enter_home(server_key="莱茵演习")
+        """
+        if task_context is not None:
+            task_context.raise_if_cancelled("进入游戏主页任务已取消。")
+            task_context.report_progress(8, "正在启动进入主页流程。", "")
+        result = self.run_azur_lane_auto_login(
+            task_context=task_context,
+            client_key=client_key,
+            server_key=server_key,
+            simulator_key=simulator_key,
+            serial=serial,
+            port=port,
+            timeout_seconds=timeout_seconds,
+            max_retries=max_retries,
+        )
+        payload = dict(result.payload or {})
+        payload["enter_home_required"] = True
+        if result.success and result.status == "ready" and payload.get("screen_state") == "harbor":
+            return AdbTaskResult(
+                True,
+                "ready",
+                "已确认进入港区主页。",
+                result.detail,
+                payload,
+                result.warnings,
+            )
+        warnings = tuple(result.warnings) + (
+            "游戏可能已经启动，但尚未通过截图识别确认进入港区主页。",
+        )
+        status = "needs_confirmation" if result.success else result.status
+        message = "游戏已启动，但尚未确认进入港区主页。" if result.success else result.message
+        return AdbTaskResult(False, status, message, result.detail, payload, warnings)
+
+    def run_game_login(
+        self,
+        scene_probe: Optional[Callable[..., object]] = None,
+        state_probe: Optional[Callable[..., object]] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+        *,
+        timeout_seconds: float = 30.0,
+        max_retries: int = 2,
+        login_steps: Optional[list[Dict[str, Any]]] = None,
+    ) -> AdbTaskResult:
+        """
+        启动当前游戏并等待 OCR/模板探针确认进入港区。
+        输入：
+            scene_probe: 可注入的港区判断函数；不传时只验证应用已启动；
+            timeout_seconds/max_retries: 等待和重试控制；login_steps: 可选确认弹窗步骤。
+        输出：
+            AdbTaskResult，保留旧顶层字段并在 payload 中写入登录详情。
+        使用示例：
+            result = get_adb_task_api().run_game_login(lambda scene: scene.value == "harbor")
+        """
+        if task_context is not None:
+            task_context.raise_if_cancelled("ADB 游戏登录任务已取消。")
+        simulator = self._get_simulator_context()
+        game_config = self.config_loader.get_game_config()
+        package_name = str(game_config.get("package_name", "") or "").strip()
+        activity_name = str(game_config.get("activity_name", "") or "").strip() or None
+        controller = self._create_controller(simulator)
+        login: AdbLoginResult = controller.login_game(
+            package_name,
+            activity_name=activity_name,
+            scene_probe=scene_probe,
+            state_probe=state_probe,
+            serial=simulator["device_serial"] or None,
+            timeout_seconds=timeout_seconds,
+            max_retries=max_retries,
+            login_steps=login_steps,
+            task_context=task_context,
+        )
+        payload = {
+            "simulator_key": simulator["key"],
+            "simulator_name": simulator["name"],
+            **login.to_payload(),
+        }
+        detail = f"游戏包={package_name or '未配置'}；尝试={login.attempts}；前台={login.foreground_package or '未知'}"
+        self.logger.info(login.message)
+        return AdbTaskResult(login.success, login.status, login.message, detail, payload, login.warnings)
+
+    def launch_game(
+        self,
+        package_name: Optional[str] = None,
+        activity_name: Optional[str] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+        *,
+        serial: Optional[str] = None,
+    ) -> AdbTaskResult:
+        """
+        启动游戏但不等待登录完成。
+        输入：
+            package_name/activity_name: 可覆盖配置中的游戏入口。
+        输出：
+            AdbTaskResult，payload 中保留底层 ADB 命令详情。
+        使用示例：
+            result = api.launch_game()
+        """
+        if task_context is not None:
+            task_context.raise_if_cancelled("游戏启动任务已取消。")
+        simulator = self._get_simulator_context()
+        game_config = self.config_loader.get_game_config()
+        package = str(package_name or game_config.get("package_name", "") or "").strip()
+        activity = str(activity_name or game_config.get("activity_name", "") or "").strip() or None
+        controller = self._create_controller(simulator)
+        command = controller.launch_game(
+            package,
+            activity_name=activity,
+            serial=serial or simulator["device_serial"] or None,
+            task_context=task_context,
+        )
+        payload = {
+            "simulator_key": simulator["key"],
+            "simulator_name": simulator["name"],
+            "package_name": package,
+            "activity_name": activity,
+            "serial": serial or simulator["device_serial"] or None,
+            "command": command.to_dict(),
+        }
+        detail = f"游戏包={package or '未配置'}；Activity={activity or '主入口'}"
+        self.logger.info(command.message)
+        return AdbTaskResult(command.success, command.status, command.message, detail, payload, tuple(getattr(command, "warnings", ())))
+
+    def wait_for_state(
+        self,
+        expected_state: RecognitionScene | str,
+        state_probe: Callable[..., object],
+        task_context: Optional[TaskExecutionContext] = None,
+        *,
+        timeout_seconds: float = 8.0,
+        stable_frames: int = 2,
+        skip_first_sample: bool = True,
+        screenshot_scene: RecognitionScene | str | None = None,
+        serial: Optional[str] = None,
+    ) -> AdbTaskResult:
+        """
+        等待页面或屏幕状态稳定。
+        输入：
+            expected_state: 目标 scene 或 screen_state。
+            state_probe: 注入的状态探针。
+        输出：
+            AdbTaskResult，payload 中保留截图路径、resolution 和状态信息。
+        使用示例：
+            result = api.wait_for_state("warehouse_equipment", probe)
+        """
+        if task_context is not None:
+            task_context.raise_if_cancelled("状态等待任务已取消。")
+        simulator = self._get_simulator_context()
+        controller = self._create_controller(simulator)
+        wait_result: AdbStateWaitResult = controller.wait_for_state(
+            expected_state,
+            state_probe,
+            serial=serial or simulator["device_serial"] or None,
+            timeout_seconds=timeout_seconds,
+            stable_frames=stable_frames,
+            skip_first_sample=skip_first_sample,
+            screenshot_scene=screenshot_scene,
+            task_context=task_context,
+        )
+        payload = {
+            "simulator_key": simulator["key"],
+            "simulator_name": simulator["name"],
+            **wait_result.to_payload(),
+        }
+        detail = wait_result.detail or f"期待状态={wait_result.expected_state}；稳定帧={wait_result.stable_frames}"
+        self.logger.info(wait_result.message)
+        return AdbTaskResult(wait_result.success, wait_result.status, wait_result.message, detail, payload, wait_result.warnings)
 
     def capture_screenshot(
         self,
         scene: RecognitionScene | str = RecognitionScene.HARBOR,
         task_context: Optional[TaskExecutionContext] = None,
+        *,
+        real_capture: bool = False,
+        screen_state: Optional[str] = None,
+        scene_hint: Optional[str] = None,
     ) -> AdbTaskResult:
         """
         预检截图采集工作目录。
         输入：
             scene: 截图所属的稳定游戏场景。
             task_context: 可选任务上下文，用于在安全点响应取消。
+            real_capture: True 时执行真实 ADB 截图；False 保持旧 GUI 预检调用兼容。
         输出：
-            AdbTaskResult: 返回未来截图输出目录和命名规则。
+            AdbTaskResult: 真实执行时返回绝对 screenshot_path。
         使用示例：
             result = api.capture_screenshot()
         """
@@ -127,24 +733,64 @@ class AdbTaskApi:
         screenshot_dir = PathManager.get_work_dir() / "automation" / "screenshots"
         screenshot_dir.mkdir(parents=True, exist_ok=True)
         simulator = self._get_simulator_context()
+        controller = self._create_controller(simulator)
+
+        if real_capture:
+            screenshot = controller.capture_screenshot(
+                normalized_scene,
+                serial=simulator["device_serial"] or None,
+                output_dir=screenshot_dir,
+                screen_state=screen_state,
+                scene_hint=scene_hint,
+                task_context=task_context,
+            )
+            payload = {
+                "screenshot_dir": str(screenshot_dir),
+                "filename_pattern": "azurlane_{scene}_{timestamp}.png",
+                "real_capture_enabled": True,
+                **screenshot.to_payload(),
+            }
+            detail = screenshot.detail or f"截图目录={screenshot_dir}；采集方式={screenshot.method or '未完成'}"
+            self.logger.info(screenshot.message)
+            return AdbTaskResult(
+                screenshot.success,
+                screenshot.status,
+                screenshot.message,
+                detail,
+                payload,
+                tuple(screenshot.warnings),
+            )
+
+        adb_resolution = controller.find_adb()
         payload = {
             "screenshot_dir": str(screenshot_dir),
             "filename_pattern": "azurlane_{timestamp}.png",
             "screenshot_path": None,
             "scene": normalized_scene.value,
             "device_serial": simulator["device_serial"],
+            "adb_path": adb_resolution.adb_path or str(simulator["adb"].get("path", "")).strip(),
+            "adb_source": adb_resolution.source,
+            "adb_path_exists": adb_resolution.available,
             "real_capture_enabled": False,
+            "screen_state": screen_state or normalized_scene.value,
+            "scene_hint": scene_hint or normalized_scene.value,
         }
-        detail = f"截图目录={screenshot_dir}；设备={simulator['device_serial']}；真实截图=未启用"
-        message = "截图采集接口预检完成：已准备输出目录，真实 ADB 截图将在 v0.6.0 接入。"
+        detail = f"截图目录={screenshot_dir}；设备={simulator['device_serial']}；ADB来源={adb_resolution.source}"
+        message = "截图采集接口预检完成：真实截图能力已接入，可通过 real_capture=True 执行。"
         self.logger.info(message)
-        return AdbTaskResult(True, "reserved", message, detail, payload)
+        return AdbTaskResult(True, "reserved", message, detail, payload, tuple(adb_resolution.warnings))
 
-    def run_environment_check(self, task_context: Optional[TaskExecutionContext] = None) -> AdbTaskResult:
+    def run_environment_check(
+        self,
+        task_context: Optional[TaskExecutionContext] = None,
+        *,
+        strict_status: bool = False,
+    ) -> AdbTaskResult:
         """
         检查自动化和识别相关环境。
         输入：
             task_context: 可选任务上下文，用于在安全点响应取消。
+            strict_status: True 时缺少 ADB 返回 unavailable；False 保留旧 GUI 预检兼容状态。
         输出：
             AdbTaskResult: 汇总配置、目录和可选依赖状态。
         使用示例：
@@ -156,6 +802,12 @@ class AdbTaskApi:
         game_config = self.config_loader.get_game_config()
         work_dir = PathManager.get_work_dir()
         data_dir = PathManager.get_data_dir()
+        screenshot_dir = work_dir / "automation" / "screenshots"
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+        sequence_path = PathManager.get_config_dir() / "automation" / "sequences.json"
+        controller = self._create_controller(simulator)
+        adb_resolution = controller.find_adb()
+        display_check = controller.check_display_environment(serial=simulator["device_serial"] or None, task_context=task_context)
         dependency_status = {
             "opencv_cv2": importlib.util.find_spec("cv2") is not None,
             "paddleocr": importlib.util.find_spec("paddleocr") is not None,
@@ -168,43 +820,481 @@ class AdbTaskApi:
             "game_package": game_config.get("package_name", ""),
             "work_dir": str(work_dir),
             "data_dir": str(data_dir),
+            "screenshot_dir": str(screenshot_dir),
+            "sequence_config_path": str(sequence_path),
+            "sequence_config_exists": sequence_path.exists(),
+            **adb_resolution.to_dict(),
+            "display_environment": display_check.to_dict(),
             "dependencies": dependency_status,
-            "real_automation_enabled": False,
+            "real_automation_enabled": adb_resolution.available and display_check.status in {"ready", "warning"},
         }
+        warnings = list(adb_resolution.warnings)
+        warnings.extend(display_check.warnings)
+        if not adb_resolution.available:
+            warnings.extend(display_check.suggestions)
         ready_count = sum(1 for available in dependency_status.values() if available)
-        detail = f"依赖可用={ready_count}/{len(dependency_status)}；工作目录={work_dir}；数据目录={data_dir}"
-        message = "基础环境预检完成：配置与目录可读取，缺失依赖会在真实 OCR 接入前继续补齐。"
+        detail = (
+            f"依赖可用={ready_count}/{len(dependency_status)}；工作目录={work_dir}；"
+            f"ADB来源={adb_resolution.source}；显示环境={display_check.status}"
+        )
+        status = "ready" if adb_resolution.available and display_check.status == "ready" else "unavailable"
+        if adb_resolution.available and display_check.status == "warning":
+            status = "warning"
+        message = "基础环境预检完成：已汇总配置、ADB 和目录状态。"
         self.logger.info(message)
-        return AdbTaskResult(True, "reserved", message, detail, payload)
+        return AdbTaskResult(
+            status == "ready" if strict_status else True,
+            status if strict_status else "reserved",
+            message,
+            detail,
+            payload,
+            tuple(warnings),
+        )
 
-    def _get_simulator_context(self) -> Dict[str, Any]:
+    def run_navigation_sequence(
+        self,
+        sequence_name: str,
+        scene_probe: Callable[..., object],
+        state_probe: Optional[Callable[..., object]] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> AdbTaskResult:
+        """
+        执行 ADB 导航序列。
+        输入：
+            sequence_name: config/automation/sequences.json 中的序列名。
+            scene_probe: 页面到达判断函数，由测试或后续 OCR 整合层注入。
+            task_context: 可选任务上下文，用于在安全点响应取消。
+        输出：
+            AdbTaskResult: 导航状态、尝试次数和 warning 汇总。
+        使用示例：
+            api.run_navigation_sequence("enter_research", lambda scene: True)
+        """
+        if task_context is not None:
+            task_context.raise_if_cancelled("ADB 导航任务已取消。")
+        simulator = self._get_simulator_context()
+        controller = self._create_controller(simulator)
+        result: NavigationResult = controller.run_sequence(
+            sequence_name,
+            scene_probe,
+            state_probe=state_probe,
+            serial=simulator["device_serial"] or None,
+            task_context=task_context,
+        )
+        payload = result.to_payload()
+        detail = result.detail or f"序列={sequence_name}；尝试={result.attempts}"
+        self.logger.info(result.message)
+        return AdbTaskResult(result.success, result.status, result.message, detail, payload, tuple(result.warnings))
+
+    def return_to_harbor(
+        self,
+        scene_probe: Callable[..., object],
+        task_context: Optional[TaskExecutionContext] = None,
+        *,
+        serial: Optional[str] = None,
+    ) -> AdbTaskResult:
+        """
+        返回港区主页。
+        输入：
+            scene_probe: 港区识别探针。
+        输出：
+            AdbTaskResult，payload 中包含目标场景与截图信息。
+        使用示例：
+            result = api.return_to_harbor(probe)
+        """
+        if task_context is not None:
+            task_context.raise_if_cancelled("返回港区任务已取消。")
+        simulator = self._get_simulator_context()
+        controller = self._create_controller(simulator)
+        result = controller.return_to_harbor(
+            scene_probe,
+            serial=serial or simulator["device_serial"] or None,
+            task_context=task_context,
+        )
+        payload = {
+            "simulator_key": simulator["key"],
+            "simulator_name": simulator["name"],
+            **result.to_payload(),
+        }
+        detail = result.detail or f"序列={result.sequence_name}；尝试={result.attempts}"
+        self.logger.info(result.message)
+        return AdbTaskResult(result.success, result.status, result.message, detail, payload, tuple(result.warnings))
+
+    def enter_warehouse(
+        self,
+        scene_probe: Callable[..., object],
+        task_context: Optional[TaskExecutionContext] = None,
+        *,
+        serial: Optional[str] = None,
+    ) -> AdbTaskResult:
+        """
+        进入仓库入口页。
+        输入：
+            scene_probe: 页面识别探针。
+        输出：
+            AdbTaskResult，payload 中包含截图与状态。
+        使用示例：
+            result = api.enter_warehouse(probe)
+        """
+        if task_context is not None:
+            task_context.raise_if_cancelled("进入仓库任务已取消。")
+        simulator = self._get_simulator_context()
+        controller = self._create_controller(simulator)
+        result = controller.enter_warehouse(
+            scene_probe,
+            serial=serial or simulator["device_serial"] or None,
+            task_context=task_context,
+        )
+        payload = {
+            "simulator_key": simulator["key"],
+            "simulator_name": simulator["name"],
+            **result.to_payload(),
+        }
+        detail = result.detail or f"序列={result.sequence_name}；尝试={result.attempts}"
+        self.logger.info(result.message)
+        return AdbTaskResult(result.success, result.status, result.message, detail, payload, tuple(result.warnings))
+
+    def select_warehouse_tab(
+        self,
+        tab: str,
+        state_probe: Callable[..., object],
+        task_context: Optional[TaskExecutionContext] = None,
+        *,
+        serial: Optional[str] = None,
+    ) -> AdbTaskResult:
+        """
+        切换仓库标签页。
+        输入：
+            tab: design / equipment / material。
+            state_probe: 支持 screen_state 的状态探针。
+        输出：
+            AdbTaskResult，payload 中包含目标 screen_state。
+        使用示例：
+            result = api.select_warehouse_tab("material", probe)
+        """
+        if task_context is not None:
+            task_context.raise_if_cancelled("切换仓库标签任务已取消。")
+        simulator = self._get_simulator_context()
+        controller = self._create_controller(simulator)
+        result = controller.select_warehouse_tab(
+            tab,
+            state_probe,
+            serial=serial or simulator["device_serial"] or None,
+            task_context=task_context,
+        )
+        payload = {
+            "simulator_key": simulator["key"],
+            "simulator_name": simulator["name"],
+            **result.to_payload(),
+        }
+        detail = result.detail or f"标签={tab}；尝试={result.attempts}"
+        self.logger.info(result.message)
+        return AdbTaskResult(result.success, result.status, result.message, detail, payload, tuple(result.warnings))
+
+    def close_popup(
+        self,
+        state_probe: Optional[Callable[..., object]] = None,
+        task_context: Optional[TaskExecutionContext] = None,
+        *,
+        policy: str = "auto",
+        serial: Optional[str] = None,
+    ) -> AdbTaskResult:
+        """
+        关闭弹窗或覆盖层。
+        输入：
+            policy: auto / back / home / double_back。
+            state_probe: 可选确认探针。
+        输出：
+            AdbTaskResult，payload 中保留动作与确认信息。
+        使用示例：
+            result = api.close_popup(probe)
+        """
+        if task_context is not None:
+            task_context.raise_if_cancelled("关闭弹窗任务已取消。")
+        simulator = self._get_simulator_context()
+        controller = self._create_controller(simulator)
+        result = controller.close_popup(
+            policy=policy,
+            state_probe=state_probe,
+            serial=serial or simulator["device_serial"] or None,
+            task_context=task_context,
+        )
+        payload = {
+            "simulator_key": simulator["key"],
+            "simulator_name": simulator["name"],
+            **result.to_payload(),
+        }
+        detail = result.detail or f"策略={policy}；尝试={result.attempts}"
+        self.logger.info(result.message)
+        return AdbTaskResult(result.success, result.status, result.message, detail, payload, tuple(result.warnings))
+
+    def _get_simulator_context(
+        self,
+        simulator_key: Optional[str] = None,
+        *,
+        serial: Optional[str] = None,
+        port: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         读取当前模拟器上下文。
         输入：
-            无。
+            simulator_key: 可选的模拟器 key；serial/port: 可选显式串号和端口。
         输出：
             dict: 当前模拟器 key、名称、ADB 配置和设备串号。
         使用示例：
-            context = self._get_simulator_context()
+            context = self._get_simulator_context(simulator_key="auto")
         """
         main_config = self.config_loader.get_main_config()
-        simulator_key = str(main_config.get("current_simulator", "mumu") or "mumu")
-        simulator_config = self.config_loader.get_simulator_config(simulator_key)
-        adb_config = simulator_config.get("adb", {}) if isinstance(simulator_config, dict) else {}
-        port = adb_config.get("port", 0)
+        current_key = str(main_config.get("current_simulator", "mumu") or "mumu")
+        saved_selection = self.simulator_preferences.get_selection() if self.simulator_preferences.path.exists() else {}
+        if not isinstance(saved_selection, dict):
+            saved_selection = {}
+        requested_key = simulator_key if simulator_key is not None else saved_selection.get("selection") or current_key
+        selection = str(requested_key or current_key).strip() or current_key
+        auto_selected = selection.lower() in {"auto", "automatic", "自动选择"}
+        last_connection = saved_selection.get("last_connection", {})
+        if not isinstance(last_connection, dict):
+            last_connection = {}
+        explicit_serial_arg = str(serial or "").strip()
+        explicit_port_arg = str(port or "").strip()
+        last_success = bool(last_connection.get("last_success"))
+        last_key = str(last_connection.get("simulator_key") or "").strip()
+        last_matches_selection = auto_selected or (last_key and last_key == selection)
+        use_last_connection = (
+            last_success
+            and last_matches_selection
+            and not explicit_serial_arg
+            and not explicit_port_arg
+        )
+        config_key = last_key if use_last_connection and last_key else (current_key if auto_selected else selection)
+        simulator_config = self.config_loader.get_simulator_config(config_key)
+        if not isinstance(simulator_config, dict) or not simulator_config:
+            profile = get_simulator_profile(config_key)
+            simulator_config = {
+                "name": profile.display_name if profile is not None else config_key,
+                "type": config_key,
+                "adb": {},
+            }
+        simulator_config = deepcopy(simulator_config)
+        adb_config = dict(simulator_config.get("adb", {}) if isinstance(simulator_config, dict) else {})
+        adb_port = adb_config.get("port", 0)
+        saved_serial = saved_selection.get("serial", "") if simulator_key is None else ""
+        saved_port = saved_selection.get("port", "") if simulator_key is None else ""
+        last_serial = str(last_connection.get("serial") or "").strip() if use_last_connection else ""
+        last_port = str(last_connection.get("port") or "").strip() if use_last_connection else ""
+        explicit_serial = serial if serial is not None else (
+            last_serial or saved_serial or adb_config.get("serial") or adb_config.get("device_serial")
+        )
+        if port is not None and str(port).strip():
+            explicit_serial = ""
+        requested_port = port if port is not None and str(port).strip() else (
+            last_port or saved_port or adb_port
+        )
+        normalized_serial = normalize_serial(explicit_serial) if explicit_serial else ""
+        safe_port = self._safe_port(requested_port)
+        if normalized_serial:
+            adb_config["serial"] = normalized_serial
+        if safe_port:
+            adb_config["port"] = safe_port
+        simulator_config["adb"] = adb_config
         return {
-            "key": simulator_key,
-            "name": simulator_config.get("name", simulator_key) if isinstance(simulator_config, dict) else simulator_key,
+            "key": config_key,
+            "selection": selection,
+            "auto_selected": auto_selected,
+            "name": simulator_config.get("name", config_key) if isinstance(simulator_config, dict) else config_key,
             "adb": adb_config,
-            "device_serial": f"127.0.0.1:{port}" if port else "未配置",
+            "config": simulator_config if isinstance(simulator_config, dict) else {},
+            "device_serial": normalized_serial,
+            "default_device_serial": f"127.0.0.1:{safe_port}" if safe_port else "",
         }
 
+    def _create_controller(self, simulator_context: Dict[str, Any]) -> AdbController:
+        """按当前模拟器配置创建 ADB 控制器。"""
+        return self._controller_factory(simulator_context.get("config", {}))
+
     @staticmethod
-    def _adb_path_exists(adb_path: str) -> bool:
-        """判断 ADB 路径或命令是否存在。"""
-        if not adb_path:
-            return False
-        return Path(adb_path).exists() or shutil.which(adb_path) is not None
+    def _safe_port(value: object) -> int:
+        """把 UI 端口输入转换成合法 TCP 端口。"""
+        try:
+            port = int(str(value or "").strip())
+        except (TypeError, ValueError):
+            return 0
+        return port if 0 < port < 65536 else 0
+
+    @staticmethod
+    def _port_from_serial(serial: object) -> str:
+        """从 127.0.0.1:port 形式 serial 提取端口。"""
+        match = re.search(r":(\d+)$", str(serial or "").strip())
+        return match.group(1) if match else ""
+
+    @staticmethod
+    def _fallback_game_client_profile(
+        requested_client: str,
+        selection: Dict[str, Any],
+    ) -> Optional[Any]:
+        """应用列表不可读时选择一个可尝试启动的客户端配置。"""
+        requested = str(requested_client or "official_cn").strip() or "official_cn"
+        if requested != "auto":
+            return get_azur_lane_client_profile(requested) or get_azur_lane_client_profile("official_cn")
+        last_profile = find_azur_lane_client_by_package(str(selection.get("last_package") or "").strip())
+        return last_profile or get_azur_lane_client_profile("official_cn")
+
+    def _persist_connection_preferences(
+        self,
+        *,
+        controller: object,
+        simulator: Dict[str, Any],
+        record_key: str,
+        record_serial: str,
+        record_port: str,
+        payload: Dict[str, Any],
+        status: str,
+        success: bool,
+        message: str,
+    ) -> None:
+        """保存连接偏好；单元测试 fake 控制器不会污染正式 config.json。"""
+        default_path = PathManager.get_config_dir() / "config.json"
+        if not isinstance(controller, AdbController) and self.simulator_preferences.path == default_path:
+            return
+        self.simulator_preferences.save_selection(
+            record_key,
+            serial=record_serial,
+            port=record_port,
+            auto_select=bool(simulator.get("auto_selected")),
+        )
+        self.simulator_preferences.record_connection(
+            simulator_key=record_key,
+            simulator_name=str(payload.get("simulator_name") or simulator.get("name") or record_key),
+            serial=record_serial,
+            port=record_port,
+            status=status,
+            success=success,
+            auto_selected=bool(simulator.get("auto_selected")),
+            message=message,
+        )
+
+    def _persist_game_login_preferences(
+        self,
+        *,
+        controller: object,
+        client_key: str,
+        server_key: str,
+        package_name: str,
+        status: str,
+    ) -> None:
+        """保存最近一次游戏启动结果。"""
+        default_path = PathManager.get_config_dir() / "config.json"
+        if not isinstance(controller, AdbController) and self.game_login_preferences.path == default_path:
+            return
+        self.game_login_preferences.save_selection(client_key, server_key)
+        self.game_login_preferences.record_launch(
+            client_key=client_key,
+            server_key=server_key,
+            package_name=package_name,
+            status=status,
+        )
+
+    def _build_game_state_probe(
+        self,
+        controller: AdbController,
+        serial: Optional[str],
+        task_context: Optional[TaskExecutionContext],
+    ) -> Callable[[object], object]:
+        """构造默认游戏登录状态探针，用截图识别登录/加载/港区。"""
+        try:
+            from core.recognition.screen_state_detector import get_screen_state_detector
+            from core.contracts import RecognitionScene as _RecognitionScene
+        except Exception:
+            def fallback_probe(candidate: object = None) -> Dict[str, object]:
+                # 识别层不可用时只能报告 unknown；绝不能把“无法识别”
+                # 当作已进入港区，否则后续自动化会在错误页面继续点击。
+                return {"screen_state": "unknown", "scene": "unknown", "confidence": 0.0, "matched": False}
+
+            return fallback_probe
+
+        detector = get_screen_state_detector()
+
+        def probe(candidate: object = None) -> Dict[str, object]:
+            screenshot = controller.capture_screenshot(
+                _RecognitionScene.HARBOR,
+                serial=serial,
+                screen_state="login",
+                scene_hint="login",
+                task_context=task_context,
+            )
+            if not screenshot.success or screenshot.artifact is None:
+                return {"screen_state": "unknown", "scene": "unknown", "confidence": 0.0}
+            state_result = detector.detect(screenshot.artifact.screenshot_path, task_context=task_context)
+            payload = state_result.to_dict()
+            payload["matched"] = state_result.scene is _RecognitionScene.HARBOR
+            return payload
+
+        return probe
+
+    def _build_game_login_steps(self, server_key: str) -> list[Dict[str, Any]]:
+        """构造启动后可执行的最小登录步骤，尽量自动处理公告关闭与开始登录。"""
+        server_display = get_azur_lane_server_display(server_key)
+        steps: list[Dict[str, Any]] = [
+            {
+                "action": "tap",
+                "x": 1150,
+                "y": 74,
+                "delay": 0.3,
+                "optional": True,
+                "note": "关闭登录页可能出现的公告或弹窗。",
+            },
+        ]
+        if str(server_key or "auto").strip() != "auto":
+            steps.extend(
+                [
+                    {
+                        "action": "tap_text",
+                        "text_candidates": ["服务器", "切换服务器", "区服"],
+                        "match_mode": "contains",
+                        "delay": 0.5,
+                        "optional": True,
+                        "note": "尝试打开服务器列表。",
+                    },
+                    {
+                        "action": "tap_text",
+                        "text_candidates": [server_display, str(server_key)],
+                        "match_mode": "contains",
+                        "delay": 0.6,
+                        "optional": True,
+                        "note": "选择目标服务器。",
+                    },
+                ]
+            )
+        steps.append(
+            {
+                "action": "tap_text",
+                "text_candidates": ["开始游戏", "开始", "登录", "进入游戏"],
+                "match_mode": "contains",
+                "delay": 0.8,
+                "optional": True,
+                "note": "点击登录开始进入游戏。",
+            }
+        )
+        steps.extend(
+            [
+                {
+                    "action": "tap_text",
+                    "text_candidates": ["跳过", "skip", "确认", "确定"],
+                    "match_mode": "contains",
+                    "delay": 0.5,
+                    "optional": True,
+                    "note": "尝试跳过开场动画或确认弹窗。",
+                },
+                {
+                    "action": "tap",
+                    "x": 640,
+                    "y": 650,
+                    "delay": 0.4,
+                    "optional": True,
+                    "note": "登录页底部/剧情继续区域的兜底轻触。",
+                },
+            ]
+        )
+        return steps
 
 
 # ============================================================

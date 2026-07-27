@@ -203,6 +203,13 @@ class FeatureHookRegistry:
                 entry_point="core.recognition.ocr_task_api",
             ),
             FutureFeatureSpec(
+                key="design_chart_flow_test",
+                title="设计图功能测试",
+                summary="一键切到设计图页并按稀有度完成完整流程，适合做模拟器联调和断点续跑测试。",
+                status="planned",
+                entry_point="core.automation.equipment_page",
+            ),
+            FutureFeatureSpec(
                 key="environment_check",
                 title="自动化环境预检",
                 summary="检查自动化与 OCR 基础依赖、目录和配置，减少后续接入时的环境差异。",

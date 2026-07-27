@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, Iterable, Optional, Sequence, Tuple
 
 from core.automation.adb_controller import AdbCommandResult, AdbController
 from core.contracts import RecognitionScene, TaskExecutionContext
+from core.recognition.filter_state_detector import FilterStateDetector, FilterStateResult
 from core.recognition.warehouse_label_detector import WarehouseLabelDetector, WarehouseLabelResult
 from core.utils.config_loader import get_config_loader
 from core.utils.logger import get_logger
@@ -38,6 +39,7 @@ from .equipment_page_constants import (
     DEFAULT_SCROLL_DURATION_MS,
     DEFAULT_SCROLL_OVERLAP_HINT,
     DEFAULT_SEARCH_CLEAR_DELETE_COUNT,
+    DESIGN_FILTER_POINTS,
     EQUIPMENT_PAGE_POINTS,
     EQUIPMENT_TYPE_ALIASES,
     EQUIPMENT_TYPE_POINTS,
@@ -49,6 +51,8 @@ from .equipment_page_constants import (
 from .equipment_page_models import (
     EquipmentPageAdbResult,
     EquipmentPageCaptureArtifact,
+    EquipmentPageRaritySweepFrame,
+    EquipmentPageRaritySweepSession,
     EquipmentPageScrollFrame,
     EquipmentPageScrollSession,
 )
@@ -94,6 +98,7 @@ class EquipmentPageAdbApi:
         self._last_equipped_state = "unknown"
         self._last_search_text = ""
         self._warehouse_label_detector: Optional[WarehouseLabelDetector] = None
+        self._filter_state_detector: Optional[FilterStateDetector] = None
         self._initialized = True
 
     def capture_equipment_list(
@@ -141,6 +146,72 @@ class EquipmentPageAdbApi:
         """
         self._scene_probe = scene_probe
         self._state_probe = state_probe
+
+    @staticmethod
+    def _summarize_log_value(value: object, *, limit: int = 120) -> str:
+        """
+        把日志字段压成短而可读的一行，避免把整坨 JSON 直接打进日志。
+        输入：
+            value: 任意日志字段值。
+            limit: 单个字段允许的最大字符数。
+        输出：
+            str: 适合放到 info/warning 里的短文本。
+        使用示例：
+            text = self._summarize_log_value(["common", "rare", "elite"])
+        """
+        if value is None:
+            return "none"
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, dict):
+            items: list[str] = []
+            for index, (key, item) in enumerate(value.items()):
+                if index >= 4:
+                    items.append("...")
+                    break
+                items.append(f"{key}={EquipmentPageAdbApi._summarize_log_value(item, limit=40)}")
+            text = "{" + ", ".join(items) + "}"
+        elif isinstance(value, (list, tuple, set)):
+            seq = list(value)
+            preview = [EquipmentPageAdbApi._summarize_log_value(item, limit=40) for item in seq[:6]]
+            if len(seq) > 6:
+                preview.append("...")
+            text = "[" + ", ".join(preview) + "]"
+        else:
+            text = str(value)
+        text = text.replace("\r", " ").replace("\n", " ").strip()
+        if len(text) > limit:
+            return f"{text[: limit - 1]}…"
+        return text
+
+    def _log_design_event(self, level: str, event: str, **fields: object) -> None:
+        """
+        记录设计图相关的结构化短日志。
+        输入：
+            level: info / warning / debug / error / exception 等日志等级。
+            event: 事件标题。
+            fields: 需要附加的简短上下文字段。
+        输出：
+            无。
+        使用示例：
+            self._log_design_event("info", "设计图稀有度切换开始", rarity="ultra_rare", resume_cursor=2)
+        """
+        parts = []
+        for key, value in fields.items():
+            if value in (None, "", (), [], {}):
+                continue
+            parts.append(f"{key}={self._summarize_log_value(value)}")
+        message = f"[设计图] {event}"
+        if parts:
+            message = f"{message} | " + "；".join(parts)
+        logger_method = getattr(self.logger, level, None)
+        if not callable(logger_method):
+            logger_method = self.logger.info
+        logger_method(message)
 
     def check_connection(self, task_context: Optional[TaskExecutionContext] = None) -> EquipmentPageAdbResult:
         """
@@ -399,8 +470,17 @@ class EquipmentPageAdbApi:
         controller = self._create_controller(simulator)
         effective_state_probe = state_probe or self._state_probe or self._optimistic_warehouse_design_state_probe
         warnings: list[str] = []
+        self._log_design_event(
+            "info",
+            "仓库页切换设计图开始",
+            simulator=simulator.get("name") or simulator.get("key") or "unknown",
+            serial=serial or simulator.get("device_serial") or "",
+            confirm_with_detector=confirm_with_detector,
+            probe="custom" if state_probe is not None else ("configured" if self._state_probe is not None else "optimistic"),
+        )
         if state_probe is None and self._state_probe is None:
             warnings.append("未注入仓库设计页状态探针，先使用乐观状态等待。")
+            self._log_design_event("warning", "仓库设计图状态探针未注入，使用乐观状态等待")
 
         navigation = controller.select_warehouse_tab(
             "design",
@@ -419,6 +499,13 @@ class EquipmentPageAdbApi:
             "warehouse_label_result": None,
         }
         if not navigation.success:
+            self._log_design_event(
+                "warning",
+                "仓库页切换设计图失败",
+                status=navigation.status,
+                detail=navigation.detail or "仓库标签切换未完成",
+                attempts=navigation.attempts,
+            )
             return EquipmentPageAdbResult(
                 False,
                 navigation.status,
@@ -437,17 +524,28 @@ class EquipmentPageAdbApi:
                     label_result = detector.detect(screenshot_path)
                 except Exception as exc:
                     warnings.append(f"仓库标签截图识别失败: {type(exc).__name__}: {exc}")
+                    self._log_design_event("warning", "仓库标签截图识别异常", error=f"{type(exc).__name__}: {exc}")
             else:
                 warnings.append("切换后的截图缺失，已跳过仓库标签识别确认。")
+                self._log_design_event("warning", "切换后的截图缺失，跳过设计图页确认")
 
         if label_result is not None:
             payload["warehouse_label_result"] = label_result.to_dict()
             payload["design_tab_state"] = label_result.page_type
             if label_result.status == "unavailable":
                 warnings.append("仓库标签识别依赖不可用，已保留切页动作结果。")
+                self._log_design_event("warning", "仓库标签识别依赖不可用，保留切页结果", page_type=label_result.page_type)
                 payload["design_tab_confirmed"] = bool(navigation.success)
             else:
                 payload["design_tab_confirmed"] = bool(label_result.success and label_result.page_type == "design")
+                self._log_design_event(
+                    "info",
+                    "设计图页确认完成",
+                    confirmed=payload["design_tab_confirmed"],
+                    page_type=label_result.page_type,
+                    sort_mode=label_result.sort_mode,
+                    confidence=getattr(label_result, "confidence", None),
+                )
         else:
             payload["design_tab_confirmed"] = bool(navigation.success)
 
@@ -459,6 +557,12 @@ class EquipmentPageAdbApi:
         ):
             warnings.append(
                 f"仓库标签识别未确认设计图页: page_type={label_result.page_type} sort={label_result.sort_mode}"
+            )
+            self._log_design_event(
+                "warning",
+                "仓库标签识别未确认设计图页",
+                page_type=label_result.page_type,
+                sort_mode=label_result.sort_mode,
             )
             return EquipmentPageAdbResult(
                 False,
@@ -472,6 +576,14 @@ class EquipmentPageAdbApi:
         detail = navigation.detail or f"标签=design；尝试={navigation.attempts}"
         if payload["design_tab_confirmed"]:
             detail = f"{detail}；page_type=design"
+        self._log_design_event(
+            "info",
+            "仓库页切换设计图完成",
+            confirmed=payload["design_tab_confirmed"],
+            status=navigation.status,
+            attempts=navigation.attempts,
+            screen_state=payload["design_tab_state"],
+        )
         return EquipmentPageAdbResult(True, navigation.status, "已切换到设计图页。", detail, payload, tuple(warnings))
 
     def ensure_equipped_on(
@@ -541,32 +653,787 @@ class EquipmentPageAdbApi:
         """
         return self._tap_and_capture("filter_button", "打开装备筛选面板", task_context=task_context, scene_hint="filter_panel")
 
-    def set_rarity_filter(self, rarity: str, task_context: Optional[TaskExecutionContext] = None) -> EquipmentPageAdbResult:
+    def open_design_filter_panel(self, task_context: Optional[TaskExecutionContext] = None) -> EquipmentPageAdbResult:
         """
-        设置装备稀有度筛选。
+        打开设计图页筛选面板。
+        输入：
+            task_context: 可选取消上下文。
+        输出：
+            EquipmentPageAdbResult，payload 中包含筛选面板截图和识别结果。
+        使用示例：
+            result = api.open_design_filter_panel()
+        """
+        self._raise_if_cancelled(task_context, "设计图筛选面板已取消。")
+        warnings: list[str] = []
+        self._log_design_event("info", "打开设计图筛选面板开始")
+        command = self._tap_coordinate(DESIGN_FILTER_POINTS["filter_button"], "打开设计图筛选面板", task_context=task_context)
+        if not command.success:
+            self._log_design_event("warning", "打开设计图筛选面板失败", status=command.status, message=command.message)
+            return self._command_result(command, "open_design_filter_panel", {"point_name": "filter_button", "point": list(DESIGN_FILTER_POINTS["filter_button"])})
+        self._post_action_delay(DEFAULT_POST_ACTION_DELAY_MS, task_context)
+        artifact = self.capture_viewport(task_context=task_context)
+        warnings.extend(artifact.warnings)
+        filter_state = self._inspect_filter_state(artifact.screenshot_path)
+        if filter_state is not None:
+            warnings.extend(filter_state.warnings)
+
+        if filter_state is not None and filter_state.status != "unavailable" and not self._is_design_filter_panel_open(filter_state):
+            warnings.append("设计图筛选面板未能确认打开，已重试一次筛选按钮。")
+            self._log_design_event("warning", "设计图筛选面板确认失败，准备重试", page_type=filter_state.page_type, sort_mode=filter_state.sort_mode)
+            retry_command = self._tap_coordinate(DESIGN_FILTER_POINTS["filter_button"], "重新打开设计图筛选面板", task_context=task_context)
+            if not retry_command.success:
+                payload = artifact.to_dict()
+                payload.update(
+                    {
+                        "action": "open_design_filter_panel",
+                        "point_name": "filter_button",
+                        "point": list(DESIGN_FILTER_POINTS["filter_button"]),
+                        "command": command.to_dict(),
+                        "retry_command": retry_command.to_dict(),
+                        "filter_state_result": filter_state.to_dict(),
+                    }
+                )
+                return EquipmentPageAdbResult(False, retry_command.status, retry_command.message, "filter_panel", payload, tuple(warnings))
+            self._post_action_delay(DEFAULT_POST_ACTION_DELAY_MS, task_context)
+            artifact = self.capture_viewport(task_context=task_context)
+            warnings.extend(artifact.warnings)
+            filter_state = self._inspect_filter_state(artifact.screenshot_path)
+            if filter_state is not None:
+                warnings.extend(filter_state.warnings)
+            if filter_state is not None and filter_state.status != "unavailable" and not self._is_design_filter_panel_open(filter_state):
+                self._log_design_event(
+                    "warning",
+                    "设计图筛选面板重试后仍未确认打开",
+                    page_type=filter_state.page_type,
+                    sort_mode=filter_state.sort_mode,
+                )
+                payload = artifact.to_dict()
+                payload.update(
+                    {
+                        "action": "open_design_filter_panel",
+                        "point_name": "filter_button",
+                        "point": list(DESIGN_FILTER_POINTS["filter_button"]),
+                        "command": command.to_dict(),
+                        "retry_command": retry_command.to_dict(),
+                        "filter_state_result": filter_state.to_dict(),
+                    }
+                )
+                return EquipmentPageAdbResult(False, "not_confirmed", "设计图筛选面板未能确认打开。", "filter_panel", payload, tuple(warnings))
+
+        payload = artifact.to_dict()
+        payload.update(
+            {
+                "action": "open_design_filter_panel",
+                "point_name": "filter_button",
+                "point": list(DESIGN_FILTER_POINTS["filter_button"]),
+                "command": command.to_dict(),
+                "filter_state_result": filter_state.to_dict() if filter_state is not None else None,
+            }
+        )
+        if filter_state is not None and filter_state.status == "unavailable":
+            warnings.append("筛选状态识别依赖不可用，已保留设计图筛选面板点击结果。")
+            self._log_design_event("warning", "筛选状态识别依赖不可用，保留设计图筛选面板结果")
+        self._log_design_event(
+            "info",
+            "打开设计图筛选面板完成",
+            status=artifact.status,
+            screenshot=artifact.screenshot_path,
+            confirmed=bool(filter_state is None or filter_state.status == "unavailable" or self._is_design_filter_panel_open(filter_state)),
+        )
+        return EquipmentPageAdbResult(artifact.success, artifact.status, "设计图筛选面板已打开。" if artifact.success else artifact.message, "filter_panel", payload, tuple(warnings))
+
+    def set_rarity_filter(
+        self,
+        rarity: str,
+        task_context: Optional[TaskExecutionContext] = None,
+        *,
+        output_dir: Optional[str | Path] = None,
+    ) -> EquipmentPageAdbResult:
+        """
+        设置装备稀有度筛选，并按“打开筛选 → 重置 → 选择目标 → 确认”的完整流程执行。
         输入：
             rarity: all/common/rare/elite/super_rare/ultra_rare。
         输出：
-            EquipmentPageAdbResult，不做识别结论，只记录动作和截图。
+            EquipmentPageAdbResult，包含验证结果、动作证据和最终截图。
         使用示例：
             api.set_rarity_filter("ultra_rare")
         """
         self._raise_if_cancelled(task_context, "装备稀有度筛选已取消。")
         normalized = str(rarity or "").strip().lower()
         if normalized not in RARITY_FILTERS:
+            self._log_design_event("warning", "装备稀有度参数无效", rarity=rarity)
             return self._error_result("invalid_filter", f"未知稀有度筛选: {rarity}", {"rarity_filter": rarity})
-        open_result = self.open_filter_panel(task_context=task_context)
-        if not open_result.success:
-            return open_result
-        command = self._tap_coordinate(RARITY_FILTER_POINTS[normalized], f"选择稀有度 {normalized}", task_context=task_context)
-        if not command.success:
-            return self._command_result(command, "set_rarity_filter", {"rarity_filter": normalized})
-        self._last_rarity_filter = normalized
+        warnings: list[str] = []
+        steps: list[Dict[str, Any]] = []
+        verification_dir: Optional[Path] = None
+        if output_dir is not None:
+            verification_dir = Path(output_dir).expanduser().resolve().parent / "checks"
+            verification_dir.mkdir(parents=True, exist_ok=True)
+        self._log_design_event(
+            "info",
+            "装备稀有度筛选开始",
+            rarity=normalized,
+            output_dir=output_dir,
+            verification_dir=verification_dir,
+        )
+
+        open_command = self._tap_coordinate(EQUIPMENT_PAGE_POINTS["filter_button"], "打开装备筛选面板", task_context=task_context)
+        steps.append(open_command.to_dict())
+        if not open_command.success:
+            self._log_design_event("warning", "装备筛选面板点击失败", rarity=normalized, status=open_command.status)
+            return self._command_result(open_command, "set_rarity_filter", {"rarity_filter": normalized, "steps": steps})
         self._post_action_delay(DEFAULT_POST_ACTION_DELAY_MS, task_context)
-        artifact = self.capture_viewport(task_context=task_context)
+
+        reset_command = self._tap_coordinate(EQUIPMENT_PAGE_POINTS["filter_reset"], "筛选重置", task_context=task_context)
+        steps.append(reset_command.to_dict())
+        if not reset_command.success:
+            self._log_design_event("warning", "装备筛选重置按钮点击失败", rarity=normalized, status=reset_command.status)
+            return self._command_result(reset_command, "set_rarity_filter", {"rarity_filter": normalized, "steps": steps})
+        self._post_action_delay(DEFAULT_POST_ACTION_DELAY_MS, task_context)
+
+        all_command = self._tap_coordinate(RARITY_FILTER_POINTS["all"], "稀有度全部", task_context=task_context)
+        steps.append(all_command.to_dict())
+        if not all_command.success:
+            self._log_design_event("warning", "装备稀有度全部按钮点击失败", rarity=normalized, status=all_command.status)
+            return self._command_result(all_command, "set_rarity_filter", {"rarity_filter": normalized, "steps": steps})
+        self._post_action_delay(DEFAULT_POST_ACTION_DELAY_MS, task_context)
+
+        self._last_rarity_filter = "all"
+        all_capture = self.capture_viewport(task_context=task_context, output_dir=verification_dir) if verification_dir is not None else self.capture_viewport(task_context=task_context)
+        warnings.extend(all_capture.warnings)
+        all_check = self._inspect_filter_state(all_capture.screenshot_path)
+        if all_check is not None:
+            warnings.extend(all_check.warnings)
+        if not self._is_expected_rarity_state(all_check, "all"):
+            warnings.append("稀有度全部未能被确认，已停止继续选择目标稀有度。")
+            self._log_design_event(
+                "warning",
+                "装备稀有度全部确认失败",
+                rarity=normalized,
+                actual=getattr(all_check, "current_rarity_filter", "unknown") if all_check else "unknown",
+                screenshot=all_capture.screenshot_path,
+            )
+            self._tap_coordinate(RARITY_FILTER_POINTS["all"], "恢复稀有度全部", task_context=task_context)
+            self._last_rarity_filter = "all"
+            payload = all_capture.to_dict()
+            payload.update(
+                {
+                    "action": "set_rarity_filter",
+                    "rarity_filter": normalized,
+                    "steps": steps,
+                    "phase": "reset_check",
+                    "filter_state_result": all_check.to_dict() if all_check is not None else None,
+                }
+            )
+            return EquipmentPageAdbResult(False, "not_confirmed", "稀有度重置未通过确认。", f"rarity=all", payload, tuple(warnings))
+
+        target_command = self._tap_coordinate(RARITY_FILTER_POINTS[normalized], f"选择稀有度 {normalized}", task_context=task_context)
+        steps.append(target_command.to_dict())
+        if not target_command.success:
+            self._log_design_event("warning", "装备目标稀有度按钮点击失败", rarity=normalized, status=target_command.status)
+            return self._command_result(target_command, "set_rarity_filter", {"rarity_filter": normalized, "steps": steps})
+        self._post_action_delay(DEFAULT_POST_ACTION_DELAY_MS, task_context)
+
+        self._last_rarity_filter = normalized
+        target_capture = self.capture_viewport(task_context=task_context, output_dir=verification_dir) if verification_dir is not None else self.capture_viewport(task_context=task_context)
+        warnings.extend(target_capture.warnings)
+        target_check = self._inspect_filter_state(target_capture.screenshot_path)
+        if target_check is not None:
+            warnings.extend(target_check.warnings)
+        if not self._is_expected_rarity_state(target_check, normalized):
+            warnings.append(
+                f"稀有度选择未确认: expected={normalized}, actual={getattr(target_check, 'current_rarity_filter', 'unknown') if target_check else 'unknown'}"
+            )
+            self._log_design_event(
+                "warning",
+                "装备目标稀有度确认失败",
+                rarity=normalized,
+                actual=getattr(target_check, "current_rarity_filter", "unknown") if target_check else "unknown",
+                selected_count=self._count_selected_rarity_options(target_check),
+            )
+            self._tap_coordinate(RARITY_FILTER_POINTS["all"], "恢复稀有度全部", task_context=task_context)
+            self._last_rarity_filter = "all"
+            payload = target_capture.to_dict()
+            payload.update(
+                {
+                    "action": "set_rarity_filter",
+                    "rarity_filter": normalized,
+                    "steps": steps,
+                    "phase": "target_check",
+                    "filter_state_result": target_check.to_dict() if target_check is not None else None,
+                    "verified_rarity_filter": getattr(target_check, "current_rarity_filter", "unknown") if target_check else "unknown",
+                    "verified_selected_count": self._count_selected_rarity_options(target_check),
+                }
+            )
+            return EquipmentPageAdbResult(False, "not_confirmed", "目标稀有度未能确认，已恢复为全部。", f"rarity={normalized}", payload, tuple(warnings))
+
+        confirm_command = self._tap_coordinate(EQUIPMENT_PAGE_POINTS["filter_confirm"], "确认筛选", task_context=task_context)
+        steps.append(confirm_command.to_dict())
+        if not confirm_command.success:
+            self._log_design_event("warning", "装备筛选确认按钮点击失败", rarity=normalized, status=confirm_command.status)
+            self._tap_coordinate(RARITY_FILTER_POINTS["all"], "恢复稀有度全部", task_context=task_context)
+            self._last_rarity_filter = "all"
+            return self._command_result(confirm_command, "set_rarity_filter", {"rarity_filter": normalized, "steps": steps})
+
+        self._post_action_delay(DEFAULT_POST_ACTION_DELAY_MS, task_context)
+        artifact = self.capture_viewport(task_context=task_context, output_dir=output_dir)
+        warnings.extend(artifact.warnings)
+        final_check = self._inspect_filter_state(artifact.screenshot_path)
+        if final_check is not None:
+            warnings.extend(final_check.warnings)
         payload = artifact.to_dict()
-        payload.update({"action": "set_rarity_filter", "rarity_filter": normalized, "command": command.to_dict()})
-        return EquipmentPageAdbResult(artifact.success, artifact.status, "稀有度筛选动作已执行。", f"rarity={normalized}", payload, artifact.warnings)
+        payload.update(
+            {
+                "action": "set_rarity_filter",
+                "rarity_filter": normalized,
+                "steps": steps,
+                "phase": "confirmed",
+                "filter_state_result": final_check.to_dict() if final_check is not None else None,
+                "verified_rarity_filter": getattr(target_check, "current_rarity_filter", normalized) if target_check else normalized,
+                "verified_selected_count": self._count_selected_rarity_options(target_check),
+                "command": confirm_command.to_dict(),
+                "verification_path": all_capture.screenshot_path,
+                "verification_target_path": target_capture.screenshot_path,
+            }
+        )
+        self._log_design_event(
+            "info",
+            "装备稀有度筛选完成",
+            rarity=normalized,
+            steps=len(steps),
+            screenshot=artifact.screenshot_path,
+            verified=getattr(target_check, "current_rarity_filter", normalized) if target_check else normalized,
+        )
+        return EquipmentPageAdbResult(artifact.success, artifact.status, "稀有度筛选动作已执行。", f"rarity={normalized}", payload, tuple(warnings))
+
+    def set_design_rarity_filter(
+        self,
+        rarity: str,
+        task_context: Optional[TaskExecutionContext] = None,
+        *,
+        output_dir: Optional[str | Path] = None,
+    ) -> EquipmentPageAdbResult:
+        """
+        设置设计图页稀有度筛选，并按“打开筛选 → 全部 → 选择目标 → 确认”的完整流程执行。
+        输入：
+            rarity: all/common/rare/elite/super_rare/ultra_rare。
+        输出：
+            EquipmentPageAdbResult，包含验证结果、动作证据和最终截图。
+        使用示例：
+            api.set_design_rarity_filter("ultra_rare")
+        """
+        self._raise_if_cancelled(task_context, "设计图稀有度筛选已取消。")
+        normalized = str(rarity or "").strip().lower()
+        if normalized not in RARITY_FILTERS:
+            self._log_design_event("warning", "设计图稀有度参数无效", rarity=rarity)
+            return self._error_result("invalid_filter", f"未知稀有度筛选: {rarity}", {"rarity_filter": rarity})
+
+        warnings: list[str] = []
+        steps: list[Dict[str, Any]] = []
+        verification_dir: Optional[Path] = None
+        if output_dir is not None:
+            verification_dir = Path(output_dir).expanduser().resolve().parent / "checks"
+            verification_dir.mkdir(parents=True, exist_ok=True)
+        self._log_design_event(
+            "info",
+            "设计图稀有度筛选开始",
+            rarity=normalized,
+            output_dir=output_dir,
+            verification_dir=verification_dir,
+        )
+
+        open_result = self.open_design_filter_panel(task_context=task_context)
+        warnings.extend(open_result.warnings)
+        steps.append(open_result.payload or {})
+        if not open_result.success:
+            self._log_design_event("warning", "设计图筛选面板打开失败", rarity=normalized, status=open_result.status)
+            payload = dict(open_result.payload or {})
+            payload.update({"action": "set_design_rarity_filter", "rarity_filter": normalized, "steps": steps})
+            return EquipmentPageAdbResult(open_result.success, open_result.status, open_result.message, open_result.detail, payload, tuple(warnings))
+
+        all_command = self._tap_coordinate(DESIGN_FILTER_POINTS["rarity_all"], "设计图稀有度全部", task_context=task_context)
+        steps.append(all_command.to_dict())
+        if not all_command.success:
+            self._log_design_event("warning", "设计图稀有度全部按钮点击失败", rarity=normalized, status=all_command.status)
+            return self._command_result(all_command, "set_design_rarity_filter", {"rarity_filter": normalized, "steps": steps})
+        self._post_action_delay(DEFAULT_POST_ACTION_DELAY_MS, task_context)
+
+        self._last_rarity_filter = "all"
+        all_capture = self.capture_viewport(task_context=task_context, output_dir=verification_dir) if verification_dir is not None else self.capture_viewport(task_context=task_context)
+        warnings.extend(all_capture.warnings)
+        all_check = self._inspect_filter_state(all_capture.screenshot_path)
+        if all_check is not None:
+            warnings.extend(all_check.warnings)
+        if not self._is_expected_rarity_state(all_check, "all"):
+            warnings.append("设计图稀有度全部未能被确认，已停止继续选择目标稀有度。")
+            self._log_design_event(
+                "warning",
+                "设计图稀有度全部确认失败",
+                rarity=normalized,
+                actual=getattr(all_check, "current_rarity_filter", "unknown") if all_check else "unknown",
+                screenshot=all_capture.screenshot_path,
+            )
+            self._tap_coordinate(DESIGN_FILTER_POINTS["rarity_all"], "恢复设计图稀有度全部", task_context=task_context)
+            self._last_rarity_filter = "all"
+            payload = all_capture.to_dict()
+            payload.update(
+                {
+                    "action": "set_design_rarity_filter",
+                    "rarity_filter": normalized,
+                    "steps": steps,
+                    "phase": "reset_check",
+                    "filter_state_result": all_check.to_dict() if all_check is not None else None,
+                }
+            )
+            return EquipmentPageAdbResult(False, "not_confirmed", "设计图稀有度重置未通过确认。", "rarity=all", payload, tuple(warnings))
+
+        target_command = self._tap_coordinate(DESIGN_FILTER_POINTS[f"rarity_{normalized}"], f"选择设计图稀有度 {normalized}", task_context=task_context)
+        steps.append(target_command.to_dict())
+        if not target_command.success:
+            self._log_design_event("warning", "设计图目标稀有度按钮点击失败", rarity=normalized, status=target_command.status)
+            return self._command_result(target_command, "set_design_rarity_filter", {"rarity_filter": normalized, "steps": steps})
+        self._post_action_delay(DEFAULT_POST_ACTION_DELAY_MS, task_context)
+
+        self._last_rarity_filter = normalized
+        target_capture = self.capture_viewport(task_context=task_context, output_dir=verification_dir) if verification_dir is not None else self.capture_viewport(task_context=task_context)
+        warnings.extend(target_capture.warnings)
+        target_check = self._inspect_filter_state(target_capture.screenshot_path)
+        if target_check is not None:
+            warnings.extend(target_check.warnings)
+        if not self._is_expected_rarity_state(target_check, normalized):
+            warnings.append(
+                f"设计图稀有度选择未确认: expected={normalized}, actual={getattr(target_check, 'current_rarity_filter', 'unknown') if target_check else 'unknown'}"
+            )
+            self._log_design_event(
+                "warning",
+                "设计图目标稀有度确认失败",
+                rarity=normalized,
+                actual=getattr(target_check, "current_rarity_filter", "unknown") if target_check else "unknown",
+                selected_count=self._count_selected_rarity_options(target_check),
+            )
+            self._tap_coordinate(DESIGN_FILTER_POINTS["rarity_all"], "恢复设计图稀有度全部", task_context=task_context)
+            self._last_rarity_filter = "all"
+            payload = target_capture.to_dict()
+            payload.update(
+                {
+                    "action": "set_design_rarity_filter",
+                    "rarity_filter": normalized,
+                    "steps": steps,
+                    "phase": "target_check",
+                    "filter_state_result": target_check.to_dict() if target_check is not None else None,
+                    "verified_rarity_filter": getattr(target_check, "current_rarity_filter", "unknown") if target_check else "unknown",
+                    "verified_selected_count": self._count_selected_rarity_options(target_check),
+                }
+            )
+            return EquipmentPageAdbResult(False, "not_confirmed", "目标稀有度未能确认，已恢复为全部。", f"rarity={normalized}", payload, tuple(warnings))
+
+        confirm_command = self._tap_coordinate(DESIGN_FILTER_POINTS["filter_confirm"], "确认设计图筛选", task_context=task_context)
+        steps.append(confirm_command.to_dict())
+        if not confirm_command.success:
+            self._log_design_event("warning", "设计图筛选确认按钮点击失败", rarity=normalized, status=confirm_command.status)
+            self._tap_coordinate(DESIGN_FILTER_POINTS["rarity_all"], "恢复设计图稀有度全部", task_context=task_context)
+            self._last_rarity_filter = "all"
+            return self._command_result(confirm_command, "set_design_rarity_filter", {"rarity_filter": normalized, "steps": steps})
+
+        self._post_action_delay(DEFAULT_POST_ACTION_DELAY_MS, task_context)
+        artifact = self.capture_viewport(task_context=task_context, output_dir=output_dir)
+        warnings.extend(artifact.warnings)
+        final_check = self._inspect_filter_state(artifact.screenshot_path)
+        if final_check is not None:
+            warnings.extend(final_check.warnings)
+        payload = artifact.to_dict()
+        payload.update(
+            {
+                "action": "set_design_rarity_filter",
+                "rarity_filter": normalized,
+                "steps": steps,
+                "phase": "confirmed",
+                "filter_state_result": final_check.to_dict() if final_check is not None else None,
+                "verified_rarity_filter": getattr(target_check, "current_rarity_filter", normalized) if target_check else normalized,
+                "verified_selected_count": self._count_selected_rarity_options(target_check),
+                "command": confirm_command.to_dict(),
+                "verification_path": all_capture.screenshot_path,
+                "verification_target_path": target_capture.screenshot_path,
+            }
+        )
+        self._log_design_event(
+            "info",
+            "设计图稀有度筛选完成",
+            rarity=normalized,
+            steps=len(steps),
+            screenshot=artifact.screenshot_path,
+            verified=getattr(target_check, "current_rarity_filter", normalized) if target_check else normalized,
+        )
+        return EquipmentPageAdbResult(artifact.success, artifact.status, "设计图稀有度筛选动作已执行。", f"rarity={normalized}", payload, tuple(warnings))
+
+    def capture_design_rarity_sequence(
+        self,
+        frame_count: int = 5,
+        *,
+        rarities: Sequence[str] = ("common", "rare", "elite", "super_rare", "ultra_rare"),
+        resume_cursor: int = 0,
+        session_id: str = "",
+        output_root: Optional[str | Path] = None,
+        page_name: str = "warehouse_design",
+        page_state: str = "warehouse_design",
+        filter_state: str = "buildable",
+        sort_state: str = "buildable",
+        task_context: Optional[TaskExecutionContext] = None,
+    ) -> EquipmentPageRaritySweepSession:
+        """
+        按稀有度依次切换设计图页并采集证据截图。
+        输入：
+            frame_count: 计划采集的稀有度步骤数；rarities: 稀有度顺序；resume_cursor: 断点续跑游标。
+        输出：
+            EquipmentPageRaritySweepSession，带 run_dir/manifest/actions/summary。
+        使用示例：
+            session = api.capture_design_rarity_sequence()
+        """
+        self._raise_if_cancelled(task_context, "设计图稀有度切换已取消。")
+        safe_frame_count = int(frame_count)
+        if safe_frame_count <= 0:
+            self._log_design_event("warning", "设计图稀有度切换参数无效", frame_count=frame_count, rarities=rarities)
+            return self._invalid_rarity_session(
+                "frame_count 必须大于 0。",
+                session_id=session_id,
+                page_name=page_name,
+                page_state=page_state,
+                resume_cursor=max(0, int(resume_cursor)),
+                filter_state=filter_state,
+                sort_state=sort_state,
+                status="invalid_frame_count",
+            )
+
+        normalized_rarities = tuple(self._normalize_rarity_name(rarity) for rarity in rarities)
+        if not normalized_rarities:
+            self._log_design_event("warning", "设计图稀有度序列为空", frame_count=safe_frame_count)
+            return self._invalid_rarity_session(
+                "rarities 不能为空。",
+                session_id=session_id,
+                page_name=page_name,
+                page_state=page_state,
+                resume_cursor=max(0, int(resume_cursor)),
+                filter_state=filter_state,
+                sort_state=sort_state,
+                status="invalid_rarities",
+            )
+
+        resume_cursor = max(0, int(resume_cursor))
+        safe_session_id = self._normalize_session_id(session_id or f"design_rarity_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}")
+        run_root = Path(output_root).expanduser().resolve() if output_root is not None else self._design_rarity_root_dir()
+        run_dir = run_root / f"run_{safe_session_id}"
+        frames_dir = run_dir / "frames"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = run_dir / "manifest.json"
+        actions_log_path = run_dir / "actions.log"
+        device_info_path = run_dir / "device_info.json"
+        summary_path = run_dir / "summary.json"
+        self._log_design_event(
+            "info",
+            "设计图稀有度切换开始",
+            session_id=safe_session_id,
+            frame_count=safe_frame_count,
+            rarities=normalized_rarities,
+            resume_cursor=resume_cursor,
+            run_dir=run_dir,
+            page_name=page_name,
+            sort_state=sort_state,
+            filter_state=filter_state,
+        )
+
+        simulator = self._get_simulator_context()
+        controller = self._create_controller(simulator)
+        warnings: list[str] = []
+        action_entries: list[Dict[str, Any]] = []
+        frames: list[EquipmentPageRaritySweepFrame] = []
+        duplicate_count = 0
+        previous_sha1 = ""
+
+        connection_result, screen_info, device_payload = self._collect_design_rarity_device_info(
+            simulator,
+            controller,
+            task_context=task_context,
+        )
+        warnings.extend(device_payload.get("warnings", []))
+        self._atomic_write_json(device_info_path, device_payload)
+        if not device_payload.get("real_capture_enabled", False):
+            self._log_design_event(
+                "warning",
+                "设计图稀有度切换环境不可用",
+                status=str(device_payload.get("status", "unavailable")),
+                message=device_payload.get("message", "设计图稀有度切换环境不可用。"),
+            )
+            summary_payload = self._build_rarity_summary_payload(
+                session_id=safe_session_id,
+                run_dir=str(run_dir.resolve()),
+                page_name=page_name,
+                page_state=page_state,
+                frames=frames,
+                resume_cursor=resume_cursor,
+                next_resume_cursor=resume_cursor,
+                duplicate_frame_count=duplicate_count,
+                filter_state=filter_state,
+                rarity_state="",
+                sort_state=sort_state,
+                device_payload=device_payload,
+                warnings=warnings,
+            )
+            self._write_rarity_outputs(
+                manifest_path=manifest_path,
+                actions_log_path=actions_log_path,
+                summary_path=summary_path,
+                device_info_path=device_info_path,
+                session_id=safe_session_id,
+                page_name=page_name,
+                page_state=page_state,
+                frames=frames,
+                resume_cursor=resume_cursor,
+                next_resume_cursor=resume_cursor,
+                duplicate_frame_count=duplicate_count,
+                filter_state=filter_state,
+                sort_state=sort_state,
+                warnings=warnings,
+                action_entries=action_entries,
+                device_payload=device_payload,
+                summary_payload=summary_payload,
+            )
+            return EquipmentPageRaritySweepSession(
+                safe_session_id,
+                page_name,
+                page_state,
+                tuple(frames),
+                str(run_dir.resolve()),
+                str(frames_dir.resolve()),
+                str(manifest_path.resolve()),
+                str(actions_log_path.resolve()),
+                str(device_info_path.resolve()),
+                str(summary_path.resolve()),
+                resume_cursor,
+                resume_cursor,
+                duplicate_count,
+                False,
+                filter_state=filter_state,
+                rarity_state="",
+                sort_state=sort_state,
+                warnings=tuple(warnings),
+                success=False,
+                status=str(device_payload.get("status", "unavailable")),
+                message=device_payload.get("message", "设计图稀有度切换环境不可用。"),
+            )
+
+        if resume_cursor >= safe_frame_count:
+            warnings.append("resume_cursor 已超过或等于本次计划帧数，未执行任何切换动作。")
+            self._log_design_event(
+                "warning",
+                "设计图稀有度续跑游标超过计划帧数",
+                resume_cursor=resume_cursor,
+                frame_count=safe_frame_count,
+            )
+
+        for index, rarity in enumerate(normalized_rarities):
+            if index < resume_cursor:
+                continue
+            if len(frames) >= safe_frame_count:
+                break
+            self._raise_if_cancelled(task_context, "设计图稀有度切换已取消。")
+            self._log_design_event(
+                "info",
+                "设计图稀有度步骤开始",
+                index=index,
+                rarity=rarity,
+                resume_cursor=resume_cursor,
+            )
+            rarity_result = self.set_design_rarity_filter(rarity, task_context=task_context, output_dir=frames_dir)
+            warnings.extend(rarity_result.warnings)
+            action_entries.append(
+                self._rarity_action_entry(
+                    action_name="set_design_rarity_filter",
+                    rarity_state=rarity,
+                    result=rarity_result.status,
+                    message=rarity_result.message,
+                    page_name=page_name,
+                    page_state=page_state,
+                    scroll_index=index,
+                    scroll_offset_px=index,
+                    details=rarity_result.to_dict(),
+                )
+            )
+            if not rarity_result.success:
+                warnings.append(f"稀有度切换失败: {rarity}")
+                self._log_design_event(
+                    "warning",
+                    "设计图稀有度步骤失败",
+                    index=index,
+                    rarity=rarity,
+                    status=rarity_result.status,
+                    message=rarity_result.message,
+                )
+                break
+
+            payload = rarity_result.payload or {}
+            screenshot_path = str(payload.get("screenshot_path") or "")
+            sha1 = self._sha1_file(Path(screenshot_path)) if screenshot_path and Path(screenshot_path).is_file() else ""
+            is_duplicate_frame = bool(previous_sha1 and sha1 and sha1 == previous_sha1)
+            if is_duplicate_frame:
+                duplicate_count += 1
+                warnings.append(f"检测到稀有度 {rarity} 的截图与上一帧相同，已记录为疑似重复。")
+                self._log_design_event(
+                    "warning",
+                    "设计图稀有度截图疑似重复",
+                    index=index,
+                    rarity=rarity,
+                    screenshot=screenshot_path,
+                )
+            else:
+                self._log_design_event(
+                    "info",
+                    "设计图稀有度步骤完成",
+                    index=index,
+                    rarity=rarity,
+                    screenshot=screenshot_path,
+                )
+
+            frame = EquipmentPageRaritySweepFrame(
+                screenshot_path=screenshot_path,
+                session_id=safe_session_id,
+                frame_index=len(frames),
+                scroll_index=index,
+                scroll_offset_px=index,
+                page_name=page_name,
+                page_state=page_state,
+                filter_state=filter_state,
+                rarity_state=rarity,
+                sort_state=sort_state,
+                scene=str(payload.get("scene") or SCENE_EQUIPMENT_LIST),
+                action_name="set_design_rarity_filter",
+                action_result=str(payload.get("status") or rarity_result.status),
+                action_message=str(payload.get("message") or rarity_result.message),
+                sha1=sha1,
+                resolution=tuple(int(value) for value in (payload.get("resolution") or [1280, 720])),
+                scroll_direction="none",
+                scroll_pixels=0,
+                overlap_ratio=0.0,
+                device_serial=str(payload.get("device_serial") or simulator.get("device_serial") or ""),
+                adb_path=payload.get("adb_path"),
+                timestamp=str(payload.get("timestamp") or ""),
+                bottom_reached=False,
+                is_duplicate_frame=is_duplicate_frame,
+                duplicate_of_scroll_index=index - 1 if is_duplicate_frame else None,
+                needs_retry=is_duplicate_frame,
+                retry_count=1 if is_duplicate_frame else 0,
+                success=bool(rarity_result.success),
+                status=str(payload.get("status") or rarity_result.status),
+                message=str(payload.get("message") or rarity_result.message),
+                warnings=tuple(rarity_result.warnings),
+            )
+            frames.append(frame)
+            previous_sha1 = sha1 or previous_sha1
+
+        next_resume_cursor = min(len(normalized_rarities), resume_cursor + len(frames))
+        summary_payload = self._build_rarity_summary_payload(
+            session_id=safe_session_id,
+            run_dir=str(run_dir.resolve()),
+            page_name=page_name,
+            page_state=page_state,
+            frames=frames,
+            resume_cursor=resume_cursor,
+            next_resume_cursor=next_resume_cursor,
+            duplicate_frame_count=duplicate_count,
+            filter_state=filter_state,
+            rarity_state=frames[-1].rarity_state if frames else "",
+            sort_state=sort_state,
+            device_payload=device_payload,
+            warnings=warnings,
+        )
+        self._write_rarity_outputs(
+            manifest_path=manifest_path,
+            actions_log_path=actions_log_path,
+            summary_path=summary_path,
+            device_info_path=device_info_path,
+            session_id=safe_session_id,
+            page_name=page_name,
+            page_state=page_state,
+            frames=frames,
+            resume_cursor=resume_cursor,
+            next_resume_cursor=next_resume_cursor,
+            duplicate_frame_count=duplicate_count,
+            filter_state=filter_state,
+            sort_state=sort_state,
+            warnings=warnings,
+            action_entries=action_entries,
+            device_payload=device_payload,
+            summary_payload=summary_payload,
+        )
+        success = bool(frames) and not any("失败" in warning for warning in warnings)
+        status = "ready" if success else ("warning" if frames else "error")
+        message = "设计图稀有度切换完成。" if frames else "设计图稀有度切换失败。"
+        self._log_design_event(
+            "info" if success else "warning",
+            "设计图稀有度切换结束",
+            success=success,
+            status=status,
+            frame_count=len(frames),
+            duplicate_frame_count=duplicate_count,
+            next_resume_cursor=next_resume_cursor,
+            run_dir=run_dir,
+            summary_path=summary_path,
+        )
+        return EquipmentPageRaritySweepSession(
+            safe_session_id,
+            page_name,
+            page_state,
+            tuple(frames),
+            str(run_dir.resolve()),
+            str(frames_dir.resolve()),
+            str(manifest_path.resolve()),
+            str(actions_log_path.resolve()),
+            str(device_info_path.resolve()),
+            str(summary_path.resolve()),
+            resume_cursor,
+            next_resume_cursor,
+            duplicate_count,
+            False,
+            filter_state=filter_state,
+            rarity_state=frames[-1].rarity_state if frames else "",
+            sort_state=sort_state,
+            warnings=tuple(warnings),
+            success=success,
+            status=status,
+            message=message,
+        )
+
+    def load_design_rarity_resume_cursor(self, summary_path: str | Path) -> int:
+        """
+        从设计图稀有度会话的 summary.json 读取下一次可续跑的稀有度游标。
+        输入：
+            summary_path: capture_design_rarity_sequence 写出的 summary.json。
+        输出：
+            下一次可传入的 resume_cursor；文件不存在或字段异常时返回 0。
+        使用示例：
+            cursor = api.load_design_rarity_resume_cursor(session.summary_path)
+        """
+        path = Path(summary_path)
+        if not path.exists():
+            self._log_design_event("debug", "设计图断点 summary 不存在", summary_path=path)
+            return 0
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                payload = json.load(file)
+        except Exception as exc:
+            self._log_design_event("warning", "设计图断点 summary 读取失败", summary_path=path, error=f"{type(exc).__name__}: {exc}")
+            return 0
+        if not isinstance(payload, dict):
+            self._log_design_event("warning", "设计图断点 summary 结构异常", summary_path=path)
+            return 0
+        next_cursor = payload.get("next_resume_cursor", payload.get("resume_cursor", 0))
+        try:
+            cursor = max(0, int(next_cursor))
+        except (TypeError, ValueError):
+            self._log_design_event("warning", "设计图断点游标字段无效", summary_path=path, raw_value=next_cursor)
+            return 0
+        self._log_design_event("debug", "设计图断点游标读取完成", summary_path=path, next_resume_cursor=cursor)
+        return cursor
 
     def set_type_filter(self, equipment_type: str, task_context: Optional[TaskExecutionContext] = None) -> EquipmentPageAdbResult:
         """
@@ -734,6 +1601,7 @@ class EquipmentPageAdbApi:
         self,
         session_id: str = "",
         frame_index: int = 0,
+        output_dir: Optional[str | Path] = None,
         task_context: Optional[TaskExecutionContext] = None,
     ) -> EquipmentPageCaptureArtifact:
         """
@@ -747,12 +1615,13 @@ class EquipmentPageAdbApi:
         """
         self._raise_if_cancelled(task_context, "装备页 viewport 截图已取消。")
         safe_session_id = self._normalize_session_id(session_id)
-        output_dir = self._session_dir(safe_session_id)
+        output_path = Path(output_dir).expanduser().resolve() if output_dir is not None else self._session_dir(safe_session_id)
+        output_path.mkdir(parents=True, exist_ok=True)
         controller = self._controller()
         screenshot = controller.capture_screenshot(
             RecognitionScene.EQUIPMENT_LIST,
             serial=self._serial(),
-            output_dir=output_dir,
+            output_dir=output_path,
             screen_state=SCENE_EQUIPMENT_LIST,
             scene_hint="equipment_viewport",
             task_context=task_context,
@@ -1181,6 +2050,12 @@ class EquipmentPageAdbApi:
             self._warehouse_label_detector = WarehouseLabelDetector()
         return self._warehouse_label_detector
 
+    def _get_filter_state_detector(self) -> FilterStateDetector:
+        """延迟创建筛选状态识别器，避免启动时加载 OpenCV 依赖。"""
+        if self._filter_state_detector is None:
+            self._filter_state_detector = FilterStateDetector()
+        return self._filter_state_detector
+
     def _controller(self) -> AdbController:
         """创建一次当前配置的底层控制器，避免装备页门面缓存过期配置。"""
         return self._create_controller(self._get_simulator_context())
@@ -1419,6 +2294,35 @@ class EquipmentPageAdbApi:
             return "on" if probe_result else "off"
         return str(probe_result).strip().lower() if probe_result is not None else ""
 
+    def _inspect_filter_state(self, screenshot_path: str | Path) -> Optional[FilterStateResult]:
+        """读取设计图筛选面板截图，确认稀有度是否真的选中了目标项。"""
+        try:
+            return self._get_filter_state_detector().detect(Path(screenshot_path))
+        except Exception as exc:
+            self.logger.warning(f"筛选状态确认失败: {type(exc).__name__}: {exc}")
+            return None
+
+    @staticmethod
+    def _count_selected_rarity_options(result: Optional[FilterStateResult]) -> int:
+        """统计筛选面板里被选中的稀有度选项数量。"""
+        if result is None:
+            return 0
+        return sum(1 for item in result.options if item.group == "rarity" and item.selected)
+
+    def _is_expected_rarity_state(self, result: Optional[FilterStateResult], rarity: str) -> bool:
+        """判断筛选状态识别结果是否和目标稀有度一致。"""
+        if result is None or not result.success:
+            return False
+        selected_count = self._count_selected_rarity_options(result)
+        if selected_count != 1:
+            return False
+        return str(result.current_rarity_filter).strip().lower() == str(rarity).strip().lower()
+
+    @staticmethod
+    def _is_design_filter_panel_open(result: Optional[FilterStateResult]) -> bool:
+        """判断设计图筛选面板是否真的打开。"""
+        return bool(result is not None and result.success and result.filter_panel_open)
+
     @staticmethod
     def _optimistic_scene_probe(scene: object = None) -> bool:
         """未注入识别层时的乐观探针：只让配置序列执行完成，不假装做 OCR。"""
@@ -1473,6 +2377,12 @@ class EquipmentPageAdbApi:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def _design_rarity_root_dir(self) -> Path:
+        """返回设计图稀有度切换会话的根目录。"""
+        path = PathManager.get_work_dir() / "automation" / "equipment_page" / "design_rarity_runs"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     @staticmethod
     def _normalize_session_id(session_id: str) -> str:
         """生成或清洗 session_id，避免路径中出现不安全字符。"""
@@ -1482,6 +2392,39 @@ class EquipmentPageAdbApi:
         return "".join(char if char.isalnum() or char in {"_", "-"} else "_" for char in raw)
 
     @staticmethod
+    def _normalize_rarity_name(rarity: str) -> str:
+        """把中英文/颜色别名统一成筛选按钮使用的标准 key。"""
+        raw = str(rarity or "").strip().lower()
+        aliases = {
+            "white": "common",
+            "common": "common",
+            "blue": "rare",
+            "rare": "rare",
+            "purple": "elite",
+            "elite": "elite",
+            "gold": "super_rare",
+            "super_rare": "super_rare",
+            "rainbow": "ultra_rare",
+            "ultra_rare": "ultra_rare",
+            "all": "all",
+        }
+        chinese_aliases = {
+            "白": "common",
+            "白色": "common",
+            "蓝": "rare",
+            "蓝色": "rare",
+            "紫": "elite",
+            "紫色": "elite",
+            "金": "super_rare",
+            "金色": "super_rare",
+            "彩": "ultra_rare",
+            "彩色": "ultra_rare",
+            "全部": "all",
+            "全览": "all",
+        }
+        return aliases.get(raw, chinese_aliases.get(raw, raw))
+
+    @staticmethod
     def _sha1_file(path: Path) -> str:
         """计算文件 sha1，作为滚动去重和 manifest 元数据。"""
         digest = hashlib.sha1()
@@ -1489,6 +2432,248 @@ class EquipmentPageAdbApi:
             for chunk in iter(lambda: file.read(1024 * 1024), b""):
                 digest.update(chunk)
         return digest.hexdigest()
+
+    def _collect_design_rarity_device_info(
+        self,
+        simulator: Dict[str, Any],
+        controller: AdbController,
+        *,
+        task_context: Optional[TaskExecutionContext],
+    ) -> Tuple[object, Dict[str, Any], Dict[str, Any]]:
+        """收集设计图稀有度会话所需的设备信息。"""
+        adb_resolution = controller.find_adb()
+        connection = controller.check_connection(serial=simulator["device_serial"] or None, task_context=task_context)
+        screen_info = controller.get_screen_info(
+            serial=connection.selected_device.serial if connection.selected_device else simulator["device_serial"] or None,
+            task_context=task_context,
+        ) if connection.success else {"resolution": controller.screen_size, "density": None}
+        payload = self._base_payload(
+            simulator,
+            controller,
+            adb_path=adb_resolution.adb_path if adb_resolution.available else connection.adb_path,
+            adb_ready=connection.success,
+            device_serial=connection.selected_device.serial if connection.selected_device else simulator.get("device_serial") or simulator.get("default_device_serial") or None,
+            resolution=screen_info.get("resolution") or controller.screen_size,
+        )
+        payload.update(
+            {
+                "adb_source": connection.adb_source,
+                "connection_status": connection.status,
+                "device_state": connection.selected_device.state if connection.selected_device else None,
+                "screen_info": screen_info,
+                "density": screen_info.get("density"),
+                "real_capture_enabled": bool(connection.success),
+                "warnings": list(connection.warnings),
+            }
+        )
+        return connection, screen_info, payload
+
+    def _build_rarity_summary_payload(
+        self,
+        *,
+        session_id: str,
+        run_dir: str,
+        page_name: str,
+        page_state: str,
+        frames: Sequence[EquipmentPageRaritySweepFrame],
+        resume_cursor: int,
+        next_resume_cursor: int,
+        duplicate_frame_count: int,
+        filter_state: str,
+        rarity_state: str,
+        sort_state: str,
+        device_payload: Dict[str, Any],
+        warnings: Sequence[str],
+    ) -> Dict[str, Any]:
+        """构建设计图稀有度会话 summary.json 内容。"""
+        return {
+            "session_id": session_id,
+            "page_name": page_name,
+            "page_state": page_state,
+            "frame_count": len(frames),
+            "duplicate_frame_count": int(duplicate_frame_count),
+            "bottom_reached": False,
+            "resume_cursor": int(resume_cursor),
+            "next_resume_cursor": int(next_resume_cursor),
+            "scroll_step_px": 0,
+            "overlap_ratio": 0.0,
+            "real_capture_enabled": bool(device_payload.get("real_capture_enabled", False)),
+            "filter_state": filter_state,
+            "rarity_state": rarity_state,
+            "sort_state": sort_state,
+            "run_dir": run_dir,
+            "warnings": list(warnings),
+            "device_info": dict(device_payload),
+        }
+
+    def _write_rarity_outputs(
+        self,
+        *,
+        manifest_path: Path,
+        actions_log_path: Path,
+        summary_path: Path,
+        device_info_path: Path,
+        session_id: str,
+        page_name: str,
+        page_state: str,
+        frames: Sequence[EquipmentPageRaritySweepFrame],
+        resume_cursor: int,
+        next_resume_cursor: int,
+        duplicate_frame_count: int,
+        filter_state: str,
+        sort_state: str,
+        warnings: Sequence[str],
+        action_entries: Sequence[Dict[str, Any]],
+        device_payload: Dict[str, Any],
+        summary_payload: Dict[str, Any],
+    ) -> None:
+        """写出设计图稀有度会话的 manifest / actions / summary。"""
+        manifest_payload = {
+            "session_id": session_id,
+            "page_name": page_name,
+            "page_state": page_state,
+            "filter_state": filter_state,
+            "sort_state": sort_state,
+            "resume_cursor": int(resume_cursor),
+            "next_resume_cursor": int(next_resume_cursor),
+            "duplicate_frame_count": int(duplicate_frame_count),
+            "warnings": list(warnings),
+            "frames": [frame.to_dict() for frame in frames],
+            "device_info": dict(device_payload),
+            "run_dir": str(manifest_path.parent.resolve()),
+            "frames_dir": str(manifest_path.parent.joinpath("frames").resolve()),
+            "manifest_path": str(manifest_path.resolve()),
+            "actions_log_path": str(actions_log_path.resolve()),
+            "device_info_path": str(device_info_path.resolve()),
+            "summary_path": str(summary_path.resolve()),
+        }
+        device_info_path.parent.mkdir(parents=True, exist_ok=True)
+        self._atomic_write_json(device_info_path, dict(device_payload))
+        self._atomic_write_json(manifest_path, manifest_payload)
+        actions_log_path.parent.mkdir(parents=True, exist_ok=True)
+        action_lines = [json.dumps(entry, ensure_ascii=False) for entry in action_entries]
+        actions_log_path.write_text("\n".join(action_lines), encoding="utf-8")
+        summary_payload = dict(summary_payload)
+        summary_payload.update(
+            {
+                "run_dir": str(manifest_path.parent.resolve()),
+                "frames_dir": str(manifest_path.parent.joinpath("frames").resolve()),
+                "manifest_path": str(manifest_path.resolve()),
+                "actions_log_path": str(actions_log_path.resolve()),
+                "device_info_path": str(device_info_path.resolve()),
+                "summary_path": str(summary_path.resolve()),
+            }
+        )
+        self._atomic_write_json(summary_path, summary_payload)
+
+    def _rarity_action_entry(
+        self,
+        *,
+        action_name: str,
+        rarity_state: str,
+        result: str,
+        message: str,
+        page_name: str,
+        page_state: str,
+        scroll_index: int,
+        scroll_offset_px: int,
+        details: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """构造稀有度切换动作日志。"""
+        return {
+            "action_name": action_name,
+            "rarity_state": rarity_state,
+            "action_result": result,
+            "action_message": message,
+            "page_name": page_name,
+            "page_state": page_state,
+            "scroll_index": int(scroll_index),
+            "scroll_offset_px": int(scroll_offset_px),
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "details": details,
+        }
+
+    def _invalid_rarity_session(
+        self,
+        message: str,
+        *,
+        session_id: str,
+        page_name: str,
+        page_state: str,
+        resume_cursor: int,
+        filter_state: str,
+        sort_state: str,
+        status: str,
+    ) -> EquipmentPageRaritySweepSession:
+        """返回一个参数无效的设计图稀有度会话结果。"""
+        safe_session_id = self._normalize_session_id(session_id or f"design_rarity_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}")
+        run_root = self._design_rarity_root_dir()
+        run_dir = run_root / f"run_{safe_session_id}"
+        frames_dir = run_dir / "frames"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = run_dir / "manifest.json"
+        actions_log_path = run_dir / "actions.log"
+        device_info_path = run_dir / "device_info.json"
+        summary_path = run_dir / "summary.json"
+        warnings = (message,)
+        summary_payload = self._build_rarity_summary_payload(
+            session_id=safe_session_id,
+            run_dir=str(run_dir.resolve()),
+            page_name=page_name,
+            page_state=page_state,
+            frames=(),
+            resume_cursor=resume_cursor,
+            next_resume_cursor=resume_cursor,
+            duplicate_frame_count=0,
+            filter_state=filter_state,
+            rarity_state="",
+            sort_state=sort_state,
+            device_payload={"real_capture_enabled": False, "warnings": []},
+            warnings=warnings,
+        )
+        self._write_rarity_outputs(
+            manifest_path=manifest_path,
+            actions_log_path=actions_log_path,
+            summary_path=summary_path,
+            device_info_path=device_info_path,
+            session_id=safe_session_id,
+            page_name=page_name,
+            page_state=page_state,
+            frames=(),
+            resume_cursor=resume_cursor,
+            next_resume_cursor=resume_cursor,
+            duplicate_frame_count=0,
+            filter_state=filter_state,
+            sort_state=sort_state,
+            warnings=warnings,
+            action_entries=(),
+            device_payload={"real_capture_enabled": False, "warnings": []},
+            summary_payload=summary_payload,
+        )
+        return EquipmentPageRaritySweepSession(
+            safe_session_id,
+            page_name,
+            page_state,
+            (),
+            str(run_dir.resolve()),
+            str(frames_dir.resolve()),
+            str(manifest_path.resolve()),
+            str(actions_log_path.resolve()),
+            str(device_info_path.resolve()),
+            str(summary_path.resolve()),
+            resume_cursor,
+            resume_cursor,
+            0,
+            False,
+            filter_state=filter_state,
+            rarity_state="",
+            sort_state=sort_state,
+            warnings=warnings,
+            success=False,
+            status=status,
+            message=message,
+        )
 
     @staticmethod
     def _artifact_with_scroll(

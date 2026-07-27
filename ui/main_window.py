@@ -18,12 +18,12 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from matplotlib import rcParams
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from PySide6.QtCore import QEasingCurve, QEvent, QObject, QParallelAnimationGroup, QDate, QPropertyAnimation, Qt, QTimer, Signal
+from PySide6.QtCore import QEasingCurve, QEvent, QObject, QParallelAnimationGroup, QDate, QPropertyAnimation, QThread, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QIcon, QMovie, QPixmap, QResizeEvent, QTextCharFormat, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -61,6 +61,15 @@ from core.calculation.luck_calculator import get_luck_calculator
 from core.calculation.user_data_manager import get_user_data_manager
 from core.data.equipment_manager import get_equipment_manager
 from core.data.research_manager import get_research_manager
+from core.automation.game_login_preferences import get_game_login_preferences
+from core.automation.game_login_registry import (
+    get_azur_lane_client_profile,
+    get_azur_lane_server_display,
+    list_azur_lane_client_profiles,
+    list_azur_lane_servers,
+)
+from core.automation.simulator_preferences import get_simulator_preferences
+from core.automation.simulator_registry import list_simulator_profiles
 from core.state.runtime_state import TaskStateKind, get_runtime_state_manager
 from core.utils.config_loader import get_config_loader
 from core.utils.logger import get_logger
@@ -235,11 +244,17 @@ class BusyOverlay(QWidget):
 
     def show_busy(self, message: str) -> None:
         """显示等待层并开始转动提示。"""
-        self.message_label.setText(message)
+        self.set_message(message)
         self.setGeometry(self.parentWidget().rect() if self.parentWidget() else self.geometry())
         self.raise_()
         self.show()
         self._timer.start()
+        QApplication.processEvents()
+
+    def set_message(self, message: str) -> None:
+        """更新等待层文字，让长流程能展示当前阶段。"""
+        self.message_label.setText(message)
+        self.message_label.repaint()
 
     def hide_busy(self) -> None:
         """隐藏等待层并停止动画。"""
@@ -250,6 +265,46 @@ class BusyOverlay(QWidget):
         """推进转动字符。"""
         self._frame_index = (self._frame_index + 1) % len(self._frames)
         self.spinner_label.setText(self._frames[self._frame_index])
+
+
+class LocalDataReloadWorker(QObject):
+    """
+    本地 CSV 重载 worker。
+    输入：
+        equipment_manager/research_manager: 当前页面使用的数据管理器。
+    输出：
+        dataLoaded 信号携带最新装备行；failed 信号携带错误信息。
+    使用示例：
+        worker.moveToThread(thread)
+    """
+
+    dataLoaded = Signal(list)
+    progressChanged = Signal(int, str)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, equipment_manager: object, research_manager: object) -> None:
+        """保存数据管理器引用，等待线程启动后执行重载。"""
+        super().__init__()
+        self.equipment_manager = equipment_manager
+        self.research_manager = research_manager
+
+    @Slot()
+    def run(self) -> None:
+        """在线程中重读正式 CSV，避免阻塞 GUI 主线程动画。"""
+        try:
+            self.progressChanged.emit(10, "正在准备读取正式装备表。")
+            self.equipment_manager.reload()
+            self.progressChanged.emit(35, "正式装备表与图片映射读取完成。")
+            self.research_manager.reload()
+            self.progressChanged.emit(55, "科研期数表读取完成。")
+            rows = self.equipment_manager.get_equipment_with_image()
+            self.progressChanged.emit(70, f"装备数据合并完成，共 {len(rows)} 条。")
+            self.dataLoaded.emit(rows)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        finally:
+            self.finished.emit()
 
 
 def get_visible_research_phases(min_phase_number: int = 2) -> List[Dict[str, Any]]:
@@ -1218,6 +1273,15 @@ class UserDataPage(BasePage):
         self.task_manager = get_gui_task_manager()
         self.all_equipment_rows: List[Dict[str, object]] = self.equipment_manager.get_equipment_with_image()
         self._icon_cache: Dict[str, QIcon] = {}
+        # 大型装备表刷新采用分批定时器，避免 GUI 主线程长时间阻塞。
+        self._table_refresh_chunk_size = 24
+        self._player_table_refresh_generation = 0
+        self._library_table_refresh_generation = 0
+        self._pending_player_table_refresh: Optional[Callable[[], None]] = None
+        self._pending_library_table_refresh: Optional[Callable[[], None]] = None
+        self._data_reload_thread: Optional[QThread] = None
+        self._data_reload_worker: Optional[LocalDataReloadWorker] = None
+        self._refresh_log_buckets: Dict[str, set[int]] = {}
         self._build_views()
         self.busy_overlay = BusyOverlay(self)
 
@@ -1377,58 +1441,175 @@ class UserDataPage(BasePage):
         self.library_table.customContextMenuRequested.connect(self._show_library_table_context_menu)
         parent_layout.addWidget(self.library_table, stretch=1)
 
-    def refresh_equipment_table(self) -> None:
+    def refresh_equipment_table(
+        self,
+        deferred: bool = False,
+        finished_callback: Optional[Callable[[], None]] = None,
+    ) -> None:
         """
         按当前筛选条件刷新玩家装备数据展示。
         输入：
-            无。
+            deferred: 是否分批填表；用于按钮刷新时保持等待动画可动。
+            finished_callback: 分批刷新完成后的回调。
         输出：
             None。
         使用示例：
             page.refresh_equipment_table()
         """
         equipments = self._filtered_equipment_rows()
+        if deferred:
+            self._populate_player_table_deferred(equipments, finished_callback)
+            return
+        self._player_table_refresh_generation += 1
         self.table.setUpdatesEnabled(False)
         try:
             self.table.setRowCount(len(equipments))
             for row, equipment in enumerate(equipments):
-                phase = self._phase_from_public_data(str(equipment.get("equipment_id", "")))
-                name_item = self._build_name_icon_item(equipment)
-                name_item.setData(Qt.ItemDataRole.UserRole, str(equipment.get("equipment_id", "")))
-                self.table.setItem(row, 0, name_item)
-                values = [
-                    equipment.get("rarity_name", "未知"),
-                    phase,
-                    self._display_count(equipment, "equipment_count"),
-                    self._display_count(equipment, "fragment_count"),
-                ]
-                for column, value in enumerate(values):
-                    item = QTableWidgetItem(str(value))
-                    if column >= 2:
-                        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    self.table.setItem(row, column + 1, item)
+                self._populate_player_table_row(row, equipment)
         finally:
             self.table.setUpdatesEnabled(True)
+        self._update_user_data_status(len(equipments))
+        if finished_callback is not None:
+            finished_callback()
 
-    def refresh_library_table(self) -> None:
+    def refresh_library_table(
+        self,
+        deferred: bool = False,
+        finished_callback: Optional[Callable[[], None]] = None,
+    ) -> None:
         """刷新基础装备库表，只展示公开列。"""
         equipments = self._filtered_library_rows()
+        if deferred:
+            self._populate_library_table_deferred(equipments, finished_callback)
+            return
+        self._library_table_refresh_generation += 1
         self.library_table.setUpdatesEnabled(False)
         try:
             self.library_table.setRowCount(len(equipments))
             for row, equipment in enumerate(equipments):
-                phase = self._phase_from_public_data(str(equipment.get("equipment_id", "")))
-                name_item = self._build_name_icon_item(equipment)
-                name_item.setData(Qt.ItemDataRole.UserRole, str(equipment.get("equipment_id", "")))
-                self.library_table.setItem(row, 0, name_item)
-                for column, value in enumerate([equipment.get("rarity_name", "未知"), phase], start=1):
-                    self.library_table.setItem(row, column, QTableWidgetItem(str(value)))
+                self._populate_library_table_row(row, equipment)
         finally:
             self.library_table.setUpdatesEnabled(True)
+        if finished_callback is not None:
+            finished_callback()
+
+    def _populate_player_table_row(self, row: int, equipment: Dict[str, object]) -> None:
+        """填充用户数据主表的一行。"""
+        phase = self._phase_from_public_data(str(equipment.get("equipment_id", "")))
+        name_item = self._build_name_icon_item(equipment)
+        name_item.setData(Qt.ItemDataRole.UserRole, str(equipment.get("equipment_id", "")))
+        self.table.setItem(row, 0, name_item)
+        values = [
+            equipment.get("rarity_name", "未知"),
+            phase,
+            self._display_count(equipment, "equipment_count"),
+            self._display_count(equipment, "fragment_count"),
+        ]
+        for column, value in enumerate(values):
+            item = QTableWidgetItem(str(value))
+            if column >= 2:
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(row, column + 1, item)
+
+    def _populate_library_table_row(self, row: int, equipment: Dict[str, object]) -> None:
+        """填充装备库表的一行。"""
+        phase = self._phase_from_public_data(str(equipment.get("equipment_id", "")))
+        name_item = self._build_name_icon_item(equipment)
+        name_item.setData(Qt.ItemDataRole.UserRole, str(equipment.get("equipment_id", "")))
+        self.library_table.setItem(row, 0, name_item)
+        for column, value in enumerate([equipment.get("rarity_name", "未知"), phase], start=1):
+            self.library_table.setItem(row, column, QTableWidgetItem(str(value)))
+
+    def _populate_player_table_deferred(
+        self,
+        equipments: List[Dict[str, object]],
+        finished_callback: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """分批填充用户数据主表，让等待动画在大表刷新期间保持响应。"""
+        self._player_table_refresh_generation += 1
+        generation = self._player_table_refresh_generation
+        self.table.setUpdatesEnabled(False)
+        self.table.setRowCount(len(equipments))
+
+        def consume_chunk(start_index: int = 0) -> None:
+            if generation != self._player_table_refresh_generation:
+                return
+            try:
+                end_index = min(start_index + self._table_refresh_chunk_size, len(equipments))
+                for row in range(start_index, end_index):
+                    self._populate_player_table_row(row, equipments[row])
+                if not self.busy_overlay.isHidden():
+                    self.busy_overlay.set_message(f"正在刷新用户数据表 {end_index}/{len(equipments)}，请稍候。")
+                    self._log_local_refresh_progress(
+                        "user_table",
+                        25 + round(end_index * 70 / max(1, len(equipments))),
+                        f"正在分批导入用户数据表 {end_index}/{len(equipments)}。",
+                    )
+                if end_index < len(equipments):
+                    self._pending_player_table_refresh = lambda next_index=end_index: consume_chunk(next_index)
+                    QTimer.singleShot(1, self._pending_player_table_refresh)
+                    return
+                self.table.setUpdatesEnabled(True)
+                self._pending_player_table_refresh = None
+                self._update_user_data_status(len(equipments))
+                if finished_callback is not None:
+                    finished_callback()
+            except Exception as exc:
+                self.table.setUpdatesEnabled(True)
+                self._pending_player_table_refresh = None
+                self.user_data_status_label.setText(f"用户数据表刷新失败：{exc}")
+                if finished_callback is not None:
+                    finished_callback()
+
+        self._pending_player_table_refresh = lambda: consume_chunk(0)
+        QTimer.singleShot(0, self._pending_player_table_refresh)
+
+    def _populate_library_table_deferred(
+        self,
+        equipments: List[Dict[str, object]],
+        finished_callback: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """分批填充装备库表，避免一次性渲染 700+ 行导致动画停住。"""
+        self._library_table_refresh_generation += 1
+        generation = self._library_table_refresh_generation
+        self.library_table.setUpdatesEnabled(False)
+        self.library_table.setRowCount(len(equipments))
+
+        def consume_chunk(start_index: int = 0) -> None:
+            if generation != self._library_table_refresh_generation:
+                return
+            try:
+                end_index = min(start_index + self._table_refresh_chunk_size, len(equipments))
+                for row in range(start_index, end_index):
+                    self._populate_library_table_row(row, equipments[row])
+                if not self.busy_overlay.isHidden():
+                    self.busy_overlay.set_message(f"正在刷新装备库表 {end_index}/{len(equipments)}，请稍候。")
+                    self._log_local_refresh_progress(
+                        "library_table",
+                        75 + round(end_index * 20 / max(1, len(equipments))),
+                        f"正在分批导入装备库表 {end_index}/{len(equipments)}。",
+                    )
+                if end_index < len(equipments):
+                    self._pending_library_table_refresh = lambda next_index=end_index: consume_chunk(next_index)
+                    QTimer.singleShot(1, self._pending_library_table_refresh)
+                    return
+                self.library_table.setUpdatesEnabled(True)
+                self._pending_library_table_refresh = None
+                if finished_callback is not None:
+                    finished_callback()
+            except Exception as exc:
+                self.library_table.setUpdatesEnabled(True)
+                self._pending_library_table_refresh = None
+                self.library_status_label.setText(f"装备库表刷新失败：{exc}")
+                if finished_callback is not None:
+                    finished_callback()
+
+        self._pending_library_table_refresh = lambda: consume_chunk(0)
+        QTimer.singleShot(0, self._pending_library_table_refresh)
 
     def _show_user_table_context_menu(self, position: object) -> None:
         """
-        在用户数据主表中弹出右键菜单，把当前装备加入历史趋势折线。
+        在用户数据主表中弹出右键菜单，支持复制装备名称和加入历史趋势折线。
         输入：
             position: 表格视口坐标。
         输出：
@@ -1447,15 +1628,20 @@ class UserDataPage(BasePage):
         if not equipment_id:
             return
         menu = QMenu(self.table)
+        copy_action = menu.addAction("复制装备名称")
+        menu.addSeparator()
         add_action = menu.addAction("添加到历史趋势折线")
         selected_action = menu.exec(self.table.viewport().mapToGlobal(position))
+        if selected_action == copy_action:
+            self._copy_equipment_name(equipment_name, self.user_data_status_label)
+            return
         if selected_action != add_action:
             return
-        self._confirm_add_equipment_to_trend(equipment_id, equipment_name)
+        self._confirm_add_equipment_to_trend(equipment_id, equipment_name, self.user_data_status_label)
 
     def _show_library_table_context_menu(self, position: object) -> None:
         """
-        在装备库表中弹出右键菜单，支持把装备加入历史趋势折线。
+        在装备库表中弹出右键菜单，支持复制装备名称和加入历史趋势折线。
         输入：
             position: 表格视口坐标。
         输出：
@@ -1474,34 +1660,110 @@ class UserDataPage(BasePage):
         if not equipment_id:
             return
         menu = QMenu(self.library_table)
+        copy_action = menu.addAction("复制装备名称")
+        menu.addSeparator()
         add_action = menu.addAction("添加到历史趋势折线")
         selected_action = menu.exec(self.library_table.viewport().mapToGlobal(position))
+        if selected_action == copy_action:
+            self._copy_equipment_name(equipment_name, self.library_status_label)
+            return
         if selected_action != add_action:
             return
-        self._confirm_add_equipment_to_trend(equipment_id, equipment_name)
+        self._confirm_add_equipment_to_trend(equipment_id, equipment_name, self.library_status_label)
 
-    def _confirm_add_equipment_to_trend(self, equipment_id: str, equipment_name: str) -> None:
+    def _copy_equipment_name(self, equipment_name: str, status_label: Optional[QLabel] = None) -> None:
+        """
+        复制装备名称到剪贴板，并在当前视图显示状态提示。
+        输入：
+            equipment_name: 用户可见装备名称。
+            status_label: 当前视图的状态标签。
+        输出：
+            None。
+        使用示例：
+            page._copy_equipment_name("试作型装备", page.user_data_status_label)
+        """
+        if not equipment_name:
+            return
+        QApplication.clipboard().setText(equipment_name)
+        target_status_label = status_label or self.user_data_status_label
+        target_status_label.setText(f"已复制装备名称：{equipment_name}")
+
+    def _confirm_add_equipment_to_trend(
+        self,
+        equipment_id: str,
+        equipment_name: str,
+        status_label: Optional[QLabel] = None,
+    ) -> None:
         """
         二次确认后发送装备趋势添加请求。
         输入：
             equipment_id: 装备内部 ID，仅用于程序内部定位。
             equipment_name: 用户可见装备名称。
+            status_label: 当前视图的状态标签。
         输出：
             None。
         使用示例：
             page._confirm_add_equipment_to_trend("S8-001", "试作型装备")
         """
-        reply = QMessageBox.question(
-            self,
-            "添加装备趋势",
-            f"确认把“{equipment_name}”添加到历史趋势折线吗？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
+        if not self._ask_add_equipment_to_trend(equipment_name):
             return
         self.equipmentTrendRequested.emit(equipment_id, equipment_name)
-        self.library_status_label.setText(f"已添加“{equipment_name}”到历史趋势折线。")
+        target_status_label = status_label or self.user_data_status_label
+        target_status_label.setText(f"已添加“{equipment_name}”到历史趋势折线。")
+
+    def _ask_add_equipment_to_trend(self, equipment_name: str) -> bool:
+        """
+        显示添加趋势确认框，使用项目主题令牌避免系统弹窗颜色割裂。
+        输入：
+            equipment_name: 用户可见装备名称。
+        输出：
+            bool: 用户确认返回 True。
+        使用示例：
+            confirmed = page._ask_add_equipment_to_trend("试作型装备")
+        """
+        message_box = QMessageBox(self)
+        message_box.setIcon(QMessageBox.Icon.Question)
+        message_box.setWindowTitle("添加装备趋势")
+        message_box.setText(f"确认把“{equipment_name}”添加到历史趋势折线吗？")
+        message_box.setInformativeText("添加后会自动跳转到历史趋势页，方便查看该装备的装备碎片总数量变化。")
+        message_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        message_box.setDefaultButton(QMessageBox.StandardButton.Yes)
+        yes_button = message_box.button(QMessageBox.StandardButton.Yes)
+        no_button = message_box.button(QMessageBox.StandardButton.No)
+        if yes_button is not None:
+            yes_button.setText("确认添加")
+        if no_button is not None:
+            no_button.setText("取消")
+        message_box.setStyleSheet(self._message_box_stylesheet())
+        return message_box.exec() == QMessageBox.StandardButton.Yes
+
+    def _message_box_stylesheet(self) -> str:
+        """返回确认弹窗的本地样式，避免深色皮肤下出现浅色系统弹窗。"""
+        tokens = getattr(self.window(), "theme_tokens", ThemeTokens())
+        return f"""
+        QMessageBox {{
+            background: {tokens.surface};
+            color: {tokens.text};
+        }}
+        QMessageBox QLabel {{
+            color: {tokens.text};
+            background: transparent;
+            font-family: {tokens.font_family};
+            font-size: 13px;
+        }}
+        QMessageBox QPushButton {{
+            background: {tokens.surface_soft};
+            color: {tokens.text};
+            border: 1px solid {tokens.line};
+            border-radius: {tokens.radius}px;
+            padding: 7px 14px;
+            min-width: 72px;
+        }}
+        QMessageBox QPushButton:hover {{
+            border-color: {tokens.azure};
+            background: {tokens.surface_glow};
+        }}
+        """
 
     def _show_library_view(self) -> None:
         """切换到基础装备库表视图。"""
@@ -1511,6 +1773,15 @@ class UserDataPage(BasePage):
     def _show_player_data_view(self) -> None:
         """切回玩家当前装备数据视图。"""
         self.view_stack.setCurrentWidget(self.player_data_view)
+
+    def _update_user_data_status(self, visible_count: Optional[int] = None) -> None:
+        """更新用户数据页状态栏，说明当前筛选后的可见装备数量。"""
+        if not hasattr(self, "user_data_status_label"):
+            return
+        count = self.table.rowCount() if visible_count is None else int(visible_count)
+        self.user_data_status_label.setText(
+            f"当前展示已载入的本地用户数据；显示 {count} / {len(self.all_equipment_rows)} 件装备。"
+        )
 
     def _refresh_user_data_table_from_local(self) -> None:
         """
@@ -1522,6 +1793,8 @@ class UserDataPage(BasePage):
         使用示例：
             page._refresh_user_data_table_from_local()
         """
+        self._begin_local_refresh_log("user_table")
+        self._log_local_refresh_progress("user_table", 0, "用户数据表刷新开始。")
         self.busy_overlay.show_busy("正在重新整理指挥官的装备账本，请稍候。")
         self.refresh_user_table_button.setEnabled(False)
         QTimer.singleShot(30, self._perform_refresh_user_data_table_from_local)
@@ -1529,19 +1802,36 @@ class UserDataPage(BasePage):
     def _perform_refresh_user_data_table_from_local(self) -> None:
         """执行用户数据主表的本地重载，并恢复按钮状态。"""
         try:
-            self.equipment_manager.reload()
-            self.research_manager.reload()
-            self.all_equipment_rows = self.equipment_manager.get_equipment_with_image()
-            self.user_data_manager = get_user_data_manager()
-            # 主表刷新主要用于重新读取用户记录；保留已有图标缓存，避免大量图片重复缩放导致界面卡顿。
-            self._reload_phase_filters()
-            self.refresh_equipment_table()
-            self.user_data_status_label.setText(f"已刷新用户数据表：当前载入 {len(self.all_equipment_rows)} 件装备。")
+            self._log_local_refresh_progress("user_table", 25, "用户记录读取完成，正在分批导入表格。")
+            self.refresh_equipment_table(deferred=True, finished_callback=self._finish_user_data_table_refresh)
         except Exception as exc:
+            get_logger().error(f"用户数据表刷新失败: {exc}")
             self.user_data_status_label.setText(f"用户数据表刷新失败：{exc}")
-        finally:
             self.refresh_user_table_button.setEnabled(True)
             self.busy_overlay.hide_busy()
+
+    def _finish_user_data_table_refresh(self) -> None:
+        """用户数据表分批刷新完成后恢复按钮和等待层。"""
+        self._log_local_refresh_progress("user_table", 100, "用户数据表刷新完成。")
+        self.user_data_status_label.setText(
+            f"已刷新用户数据表：当前载入 {self.table.rowCount()} / {len(self.all_equipment_rows)} 件装备。"
+        )
+        self.refresh_user_table_button.setEnabled(True)
+        self.busy_overlay.hide_busy()
+
+    def _begin_local_refresh_log(self, scope: str) -> None:
+        """初始化一次本地刷新日志进度去重状态。"""
+        self._refresh_log_buckets[scope] = set()
+
+    def _log_local_refresh_progress(self, scope: str, progress: int, message: str) -> None:
+        """按 25% 桶记录本地刷新进度，避免日志被每批填表刷爆。"""
+        safe_progress = max(0, min(100, int(progress)))
+        bucket = 100 if safe_progress >= 100 else (safe_progress // 25) * 25
+        logged_buckets = self._refresh_log_buckets.setdefault(scope, set())
+        if bucket in logged_buckets:
+            return
+        logged_buckets.add(bucket)
+        get_logger().info(f"本地表格刷新 {safe_progress}%：{message}")
 
     def _update_library_from_crawler(self) -> None:
         """
@@ -1573,6 +1863,9 @@ class UserDataPage(BasePage):
         self.busy_overlay.hide_busy()
         self.update_library_button.setEnabled(True)
         self.refresh_library_button.setEnabled(True)
+        # 让后台任务回调先返回事件循环，再最终恢复按钮状态，避免连续点击时仍被旧状态拦截。
+        QTimer.singleShot(0, lambda: self.refresh_library_button.setEnabled(True))
+        QTimer.singleShot(0, lambda: self.update_library_button.setEnabled(True))
         success = bool(read_bridge_result(result, "success", False))
         message = str(read_bridge_result(result, "message", "资料更新已结束。"))
         detail_text = str(read_bridge_result(result, "detail", ""))
@@ -1592,20 +1885,72 @@ class UserDataPage(BasePage):
         使用示例：
             page._refresh_equipment_sources_from_local()
         """
+        if self._data_reload_thread is not None and self._data_reload_thread.isRunning():
+            self.library_status_label.setText("装备表正在刷新中，请等待当前刷新完成。")
+            return
+        self._begin_local_refresh_log("library_table")
+        self._log_local_refresh_progress("library_table", 0, "装备库表刷新开始。")
         self.busy_overlay.show_busy("正在把最新装备档案搬进表格，马上就好。")
         self.refresh_library_button.setEnabled(False)
-        QTimer.singleShot(30, self._perform_refresh_equipment_sources_from_local)
+        QTimer.singleShot(30, self._start_equipment_sources_reload_worker)
 
-    def _perform_refresh_equipment_sources_from_local(self) -> None:
-        """执行正式 CSV 重新载入，并在结束后关闭等待层。"""
-        self.equipment_manager.reload()
-        self.research_manager.reload()
-        self.all_equipment_rows = self.equipment_manager.get_equipment_with_image()
-        self._icon_cache.clear()
-        self._reload_phase_filters()
-        self.refresh_equipment_table()
-        if self.view_stack.currentWidget() is self.library_view:
-            self.refresh_library_table()
+    def _start_equipment_sources_reload_worker(self) -> None:
+        """启动后台线程读取正式 CSV，避免等待动画被主线程重载卡住。"""
+        self.busy_overlay.set_message("正在后台读取正式装备表和科研期数，请稍候。")
+        thread = QThread(self)
+        worker = LocalDataReloadWorker(self.equipment_manager, self.research_manager)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progressChanged.connect(self._on_equipment_sources_reload_progress)
+        worker.dataLoaded.connect(self._on_equipment_sources_loaded)
+        worker.failed.connect(self._on_equipment_sources_failed)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_equipment_sources_reload_worker)
+        self._data_reload_thread = thread
+        self._data_reload_worker = worker
+        thread.start()
+
+    def _on_equipment_sources_reload_progress(self, progress: int, message: str) -> None:
+        """接收后台 CSV 读取进度，更新遮罩并写入日志。"""
+        self.busy_overlay.set_message(message)
+        self._log_local_refresh_progress("library_table", progress, message)
+
+    def _clear_equipment_sources_reload_worker(self) -> None:
+        """后台重载线程结束后释放页面引用。"""
+        self._data_reload_thread = None
+        self._data_reload_worker = None
+
+    def _on_equipment_sources_loaded(self, rows: List[Dict[str, object]]) -> None:
+        """正式 CSV 后台读取完成后，在主线程刷新当前表格。"""
+        try:
+            self.busy_overlay.set_message("正式装备表已读取，正在刷新筛选项和表格。")
+            self._log_local_refresh_progress("library_table", 75, "正式装备表已读取，正在刷新关联页面。")
+            self.all_equipment_rows = list(rows)
+            self.user_data_manager = get_user_data_manager()
+            self._reload_phase_filters()
+            QApplication.processEvents()
+            if self.view_stack.currentWidget() is self.library_view:
+                self.refresh_library_table(deferred=True, finished_callback=self._finish_equipment_sources_refresh)
+            else:
+                self.refresh_equipment_table(deferred=True, finished_callback=self._finish_equipment_sources_refresh)
+        except Exception as exc:
+            self._on_equipment_sources_failed(str(exc))
+
+    def _on_equipment_sources_failed(self, message: str) -> None:
+        """后台重载失败时恢复按钮和等待层。"""
+        get_logger().error(f"装备库表刷新失败: {message}")
+        self.library_status_label.setText(f"装备表刷新失败：{message}")
+        self.refresh_library_button.setEnabled(True)
+        self.busy_overlay.hide_busy()
+
+    def _finish_equipment_sources_refresh(self) -> None:
+        """正式装备表分批刷新完成后恢复按钮和等待层。"""
+        self._log_local_refresh_progress("library_table", 100, "装备库表刷新完成。")
+        self.library_status_label.setText(f"已从正式装备表载入 {len(self.all_equipment_rows)} 条装备数据。")
+        self.refresh_library_button.setEnabled(True)
+        self.busy_overlay.hide_busy()
         self.library_status_label.setText(f"已从正式装备表载入 {len(self.all_equipment_rows)} 条装备数据。")
         self.refresh_library_button.setEnabled(True)
         self.busy_overlay.hide_busy()
@@ -3437,6 +3782,7 @@ class AutomationLabPage(BasePage):
     def __init__(self, registry: FeatureHookRegistry, parent: Optional[QWidget] = None) -> None:
         """创建自动化实验室页面。"""
         super().__init__("自动化实验室", "检查模拟器连接、截图采集、OCR 识别和关键环境，帮助判断程序是否能正常运行。", parent)
+        self.logger = get_logger()
         self.registry = registry
         self.automation_bridge = get_automation_bridge()
         self.task_manager = get_gui_task_manager()
@@ -3444,9 +3790,86 @@ class AutomationLabPage(BasePage):
         self.automation_task_status_label.setObjectName("card_caption")
         self.automation_task_status_label.setWordWrap(True)
         self.automation_task_buttons: Dict[str, QPushButton] = {}
+        self.emulator_status_label = QLabel("正在准备连接检测。")
+        self.emulator_status_label.setObjectName("panel_body")
+        self.emulator_status_label.setWordWrap(True)
+        self.emulator_status_badge = QLabel("● 未检测")
+        self.emulator_status_badge.setObjectName("panel_title")
+        self.emulator_status_badge.setProperty("connectionState", "unknown")
+        self.emulator_detail_label = QLabel("模拟器：自动选择；设备：未连接；端口：未设置")
+        self.emulator_detail_label.setObjectName("card_caption")
+        self.emulator_detail_label.setWordWrap(True)
+        self.emulator_candidates_label = QLabel("")
+        self.emulator_candidates_label.setObjectName("card_caption")
+        self.emulator_candidates_label.setWordWrap(True)
+        self.game_login_status_label = QLabel("待命：可先选择碧蓝航线版本和服务器，再测试游戏启动。")
+        self.game_login_status_label.setObjectName("panel_body")
+        self.game_login_status_label.setWordWrap(True)
+        self.game_client_selector = QComboBox()
+        self.game_client_selector.setObjectName("game_client_selector")
+        self.game_client_selector.currentIndexChanged.connect(self._on_game_client_selection_changed)
+        self.game_server_selector = QComboBox()
+        self.game_server_selector.setObjectName("game_server_selector")
+        self.game_server_selector.currentIndexChanged.connect(self._on_game_server_selection_changed)
+        self.game_launch_button = QPushButton("测试游戏启动")
+        self.game_launch_button.setToolTip("扫描模拟器已安装应用并启动所选碧蓝航线客户端。")
+        self.game_launch_button.clicked.connect(self._start_game_auto_login)
+        self.game_enter_home_button = QPushButton("进入游戏主页")
+        self.game_enter_home_button.setToolTip("从模拟器当前画面进入碧蓝航线港区主页，并用截图识别确认。")
+        self.game_enter_home_button.clicked.connect(self._start_game_enter_home)
+        self.design_flow_status_label = QLabel("待命：可一键执行设计图完整流程，支持按上次 summary 断点续跑。")
+        self.design_flow_status_label.setObjectName("panel_body")
+        self.design_flow_status_label.setWordWrap(True)
+        self.design_flow_rarities_edit = QLineEdit("common rare elite super_rare ultra_rare")
+        self.design_flow_rarities_edit.setClearButtonEnabled(True)
+        self.design_flow_rarities_edit.setPlaceholderText("例如：rare elite super_rare ultra_rare")
+        self.design_flow_resume_cursor_edit = QLineEdit("0")
+        self.design_flow_resume_cursor_edit.setClearButtonEnabled(True)
+        self.design_flow_resume_cursor_edit.setMaximumWidth(96)
+        self.design_scan_status_label = QLabel("待命：选择一个稀有度后，可从当前设计图页开始分帧扫图并识别。")
+        self.design_scan_status_label.setObjectName("panel_body")
+        self.design_scan_status_label.setWordWrap(True)
+        self.design_scan_rarity_edit = QLineEdit("super_rare")
+        self.design_scan_rarity_edit.setClearButtonEnabled(True)
+        self.design_scan_rarity_edit.setPlaceholderText("common / rare / elite / super_rare / ultra_rare")
+        self.design_scan_resume_cursor_edit = QLineEdit("0")
+        self.design_scan_resume_cursor_edit.setClearButtonEnabled(True)
+        self.design_scan_resume_cursor_edit.setMaximumWidth(76)
+        self.design_scan_scroll_step_edit = QLineEdit("0")
+        self.design_scan_scroll_step_edit.setClearButtonEnabled(True)
+        self.design_scan_scroll_step_edit.setMaximumWidth(76)
+        self.design_scan_until_bottom_check = QCheckBox("扫到底部")
+        self.design_scan_until_bottom_check.setChecked(True)
+        self.design_scan_enforce_rarity_check = QCheckBox("稀有度硬过滤")
+        self.design_scan_enforce_rarity_check.setChecked(False)
+        self.design_scan_preview_check = QCheckBox("生成预览")
+        self.design_scan_preview_check.setChecked(False)
+        self.emulator_selector = QComboBox()
+        self.emulator_selector.setObjectName("emulator_selector")
+        self.emulator_selector.currentIndexChanged.connect(self._on_simulator_selection_changed)
+        self.emulator_serial_edit = QLineEdit()
+        self.emulator_serial_edit.setPlaceholderText("可选，如 127.0.0.1:5555")
+        self.emulator_serial_edit.setClearButtonEnabled(True)
+        self.emulator_serial_edit.setMinimumWidth(170)
+        self.emulator_port_edit = QLineEdit()
+        self.emulator_port_edit.setPlaceholderText("可选，如 5555")
+        self.emulator_port_edit.setClearButtonEnabled(True)
+        self.emulator_port_edit.setMaximumWidth(110)
+        self.design_flow_button = QPushButton("设计图功能测试")
+        self.design_flow_button.setToolTip("自动切到设计图页并按稀有度执行完整流程；会尝试读取最近一次 summary 作为断点。")
+        self.design_flow_button.clicked.connect(self._start_design_chart_flow)
+        self.design_flow_start_button = QPushButton("测试筛选")
+        self.design_flow_start_button.setToolTip("开始执行当前的设计图稀有度筛选测试。")
+        self.design_flow_start_button.clicked.connect(self._start_design_chart_flow)
+        self.design_scan_button = QPushButton("扫图识别")
+        self.design_scan_button.setToolTip("在当前设计图页按指定稀有度逐帧截图，并使用 OpenCV + OCR + ONNX/PyTorch assist 识别。")
+        self.design_scan_button.clicked.connect(self._start_design_fragment_scan)
+        self.automation_task_buttons["design_chart_flow_test"] = self.design_flow_button
+        self.automation_task_buttons["design_chart_flow_start"] = self.design_flow_start_button
+        self.automation_task_buttons["design_fragment_scan"] = self.design_scan_button
+        self._startup_connection_queued = False
         grid = QGridLayout()
         grid.setSpacing(12)
-        self.root.addLayout(grid, stretch=1)
         for index, (title, body) in enumerate([
             ("模拟器连接", "后续用于检测 ADB、设备在线状态和游戏窗口。"),
             ("登录截图", "后续用于采集当前画面，确认截图链路可用。"),
@@ -3455,6 +3878,10 @@ class AutomationLabPage(BasePage):
         ]):
             grid.addWidget(BasePage.build_card(title, body), index // 2, index % 2)
 
+        self.root.addWidget(self._build_emulator_connection_panel())
+        self.root.addWidget(self._build_game_login_panel())
+        self.root.addWidget(self._build_design_chart_flow_panel())
+        self.root.addLayout(grid)
         self.root.addWidget(self._build_automation_task_panel())
         self.crawler_status_label = QLabel("待命：资料爬取入口已接入，可从这里更新装备表、图片表和科研期数表。")
         self.crawler_status_label.setObjectName("panel_body")
@@ -3477,6 +3904,630 @@ class AutomationLabPage(BasePage):
                 feature_layout.addWidget(button)
         self.root.addWidget(feature_panel)
         self.busy_overlay = BusyOverlay(self)
+        self._populate_simulator_selector()
+        self._populate_game_login_selectors()
+
+    def _build_emulator_connection_panel(self) -> QFrame:
+        """
+        构建模拟器连接状态面板。
+        """
+        panel = QFrame()
+        panel.setObjectName("content_panel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title = QLabel("模拟器连接")
+        title.setObjectName("panel_title")
+        self.emulator_refresh_button = QPushButton("刷新状态")
+        self.emulator_refresh_button.setToolTip("在后台检测当前选择对应的 ADB 设备。")
+        self.emulator_refresh_button.clicked.connect(self._start_selected_connection_check)
+        self.emulator_connect_button = QPushButton("连接并测试")
+        self.emulator_connect_button.setToolTip("按下方选择连接模拟器，并读取一次显示环境。")
+        self.emulator_connect_button.clicked.connect(self._start_selected_connection)
+        self.emulator_auto_connect_button = self.emulator_connect_button
+        self.automation_task_buttons["adb_connection_check"] = self.emulator_refresh_button
+        self.automation_task_buttons["adb_auto_connect"] = self.emulator_connect_button
+
+        title_row.addWidget(title)
+        title_row.addWidget(self.emulator_status_badge)
+        title_row.addStretch(1)
+        title_row.addWidget(self.emulator_refresh_button)
+        title_row.addWidget(self.emulator_connect_button)
+
+        selection_row = QHBoxLayout()
+        simulator_label = QLabel("模拟器")
+        simulator_label.setObjectName("card_caption")
+        serial_label = QLabel("Serial")
+        serial_label.setObjectName("card_caption")
+        port_label = QLabel("端口")
+        port_label.setObjectName("card_caption")
+        self.emulator_serial_edit.setPlaceholderText("可选，如 127.0.0.1:5555")
+        self.emulator_port_edit.setPlaceholderText("可选，如 5555")
+        self.emulator_port_edit.setMaximumWidth(110)
+        self.emulator_selector.setMinimumWidth(220)
+        selection_row.addWidget(simulator_label)
+        selection_row.addWidget(self.emulator_selector, stretch=1)
+        selection_row.addWidget(serial_label)
+        selection_row.addWidget(self.emulator_serial_edit)
+        selection_row.addWidget(port_label)
+        selection_row.addWidget(self.emulator_port_edit)
+
+        note = QLabel("连接区域只负责 ADB 状态与设备环境测试；请先选择模拟器/Serial/端口，再点击“连接并测试”。")
+        note.setObjectName("card_caption")
+        note.setWordWrap(True)
+        layout.addLayout(title_row)
+        layout.addLayout(selection_row)
+        layout.addWidget(self.emulator_status_label)
+        layout.addWidget(self.emulator_detail_label)
+        layout.addWidget(self.emulator_candidates_label)
+        layout.addWidget(note)
+        self.emulator_candidates_label.hide()
+        return panel
+
+    def _build_design_chart_flow_panel(self) -> QFrame:
+        """
+        构建设计图功能测试面板。
+        输入：
+            无。
+        输出：
+            QFrame: 让用户能直接输入稀有度序列、断点游标并点击开始。
+        使用示例：
+            panel = self._build_design_chart_flow_panel()
+        """
+        panel = QFrame()
+        panel.setObjectName("content_panel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title = QLabel("设计图功能测试")
+        title.setObjectName("panel_title")
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        title_row.addWidget(self.design_flow_start_button)
+
+        form_row = QHBoxLayout()
+        rarity_label = QLabel("稀有度序列")
+        rarity_label.setObjectName("card_caption")
+        resume_label = QLabel("断点游标")
+        resume_label.setObjectName("card_caption")
+        self.design_flow_rarities_edit.setMinimumWidth(360)
+        form_row.addWidget(rarity_label)
+        form_row.addWidget(self.design_flow_rarities_edit, stretch=1)
+        form_row.addWidget(resume_label)
+        form_row.addWidget(self.design_flow_resume_cursor_edit)
+
+        hint = QLabel("示例：common rare elite super_rare ultra_rare；若要从稀有开始，可填 rare elite super_rare ultra_rare，游标填 0。")
+        hint.setObjectName("card_caption")
+        hint.setWordWrap(True)
+
+        scan_title_row = QHBoxLayout()
+        scan_title = QLabel("设计图扫图识别")
+        scan_title.setObjectName("panel_title")
+        scan_title_row.addWidget(scan_title)
+        scan_title_row.addStretch(1)
+        scan_title_row.addWidget(self.design_scan_button)
+
+        scan_form_row = QHBoxLayout()
+        scan_rarity_label = QLabel("稀有度")
+        scan_rarity_label.setObjectName("card_caption")
+        scan_resume_label = QLabel("断点")
+        scan_resume_label.setObjectName("card_caption")
+        scan_step_label = QLabel("步长(px)")
+        scan_step_label.setObjectName("card_caption")
+        self.design_scan_rarity_edit.setMinimumWidth(180)
+        scan_form_row.addWidget(scan_rarity_label)
+        scan_form_row.addWidget(self.design_scan_rarity_edit)
+        scan_form_row.addWidget(scan_resume_label)
+        scan_form_row.addWidget(self.design_scan_resume_cursor_edit)
+        scan_form_row.addWidget(scan_step_label)
+        scan_form_row.addWidget(self.design_scan_scroll_step_edit)
+        scan_form_row.addWidget(self.design_scan_until_bottom_check)
+        scan_form_row.addWidget(self.design_scan_enforce_rarity_check)
+        scan_form_row.addWidget(self.design_scan_preview_check)
+
+        scan_hint = QLabel(
+            "扫图从当前已打开的设计图页开始，不负责切换稀有度；建议先点“测试筛选”确认筛选正确，再点“扫图识别”。"
+            "默认使用 OpenCV + OCR + ONNX/PyTorch assist，预览默认关闭。"
+        )
+        scan_hint.setObjectName("card_caption")
+        scan_hint.setWordWrap(True)
+
+        layout.addLayout(title_row)
+        layout.addLayout(form_row)
+        layout.addWidget(self.design_flow_status_label)
+        layout.addWidget(hint)
+        layout.addLayout(scan_title_row)
+        layout.addLayout(scan_form_row)
+        layout.addWidget(self.design_scan_status_label)
+        layout.addWidget(scan_hint)
+        return panel
+
+    def _build_game_login_panel(self) -> QFrame:
+        """构建游戏自动登录面板。"""
+        panel = QFrame()
+        panel.setObjectName("content_panel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title = QLabel("游戏自动登录")
+        title.setObjectName("panel_title")
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        title_row.addWidget(self.game_launch_button)
+        title_row.addWidget(self.game_enter_home_button)
+        self.automation_task_buttons["game_auto_login"] = self.game_launch_button
+        self.automation_task_buttons["game_enter_home"] = self.game_enter_home_button
+
+        selection_row = QHBoxLayout()
+        client_label = QLabel("游戏版本")
+        client_label.setObjectName("card_caption")
+        server_label = QLabel("服务器")
+        server_label.setObjectName("card_caption")
+        self.game_client_selector.setMinimumWidth(220)
+        self.game_server_selector.setMinimumWidth(220)
+        selection_row.addWidget(client_label)
+        selection_row.addWidget(self.game_client_selector, stretch=1)
+        selection_row.addWidget(server_label)
+        selection_row.addWidget(self.game_server_selector, stretch=1)
+
+        note = QLabel("“测试游戏启动”用于验证包名和启动链路；“进入游戏主页”会尝试选服、关闭公告、跳过开场并确认港区主页。")
+        note.setObjectName("card_caption")
+        note.setWordWrap(True)
+
+        layout.addLayout(title_row)
+        layout.addLayout(selection_row)
+        layout.addWidget(self.game_login_status_label)
+        layout.addWidget(note)
+        return panel
+
+    def _populate_game_login_selectors(self) -> None:
+        """填充游戏客户端和服务器选择，并恢复用户最近选择。"""
+        preferences = get_game_login_preferences().get_selection()
+        selected_client = str(preferences.get("client") or "official_cn")
+        selected_server = str(preferences.get("server") or "auto")
+        self.game_client_selector.blockSignals(True)
+        self.game_client_selector.clear()
+        self.game_client_selector.addItem("自动识别已安装客户端", "auto")
+        for profile in list_azur_lane_client_profiles():
+            self.game_client_selector.addItem(profile.display_name, profile.key)
+        index = self.game_client_selector.findData(selected_client)
+        self.game_client_selector.setCurrentIndex(index if index >= 0 else self.game_client_selector.findData("official_cn"))
+        self.game_client_selector.blockSignals(False)
+        self._populate_game_server_selector(selected_server)
+
+    def _populate_game_server_selector(self, preferred_server: str = "auto") -> None:
+        """按当前客户端填充服务器列表，保留自动进入当前/上次服务器选项。"""
+        client_key = str(self.game_client_selector.currentData() or "official_cn")
+        profile = get_azur_lane_client_profile(client_key)
+        servers = list_azur_lane_servers(profile.server_group if profile is not None else "cn_android")
+        self.game_server_selector.blockSignals(True)
+        self.game_server_selector.clear()
+        self.game_server_selector.addItem("自动进入当前/上次服务器", "auto")
+        for server in servers:
+            self.game_server_selector.addItem(server, server)
+        index = self.game_server_selector.findData(preferred_server)
+        self.game_server_selector.setCurrentIndex(index if index >= 0 else 0)
+        self.game_server_selector.blockSignals(False)
+        self._refresh_game_login_hint()
+
+    def _on_game_client_selection_changed(self, _index: int) -> None:
+        """切换客户端时同步服务器列表。"""
+        self._populate_game_server_selector("auto")
+
+    def _on_game_server_selection_changed(self, _index: int) -> None:
+        """切换服务器时刷新提示文字。"""
+        self._refresh_game_login_hint()
+
+    def _refresh_game_login_hint(self) -> None:
+        """用少量文字告诉用户当前选择，不展示包名细节。"""
+        client_text = self.game_client_selector.currentText() or "国服官服（B站）"
+        server_text = self.game_server_selector.currentText() or "自动进入当前/上次服务器"
+        self.game_login_status_label.setText(f"待命：将打开 {client_text}；服务器选择：{server_text}。")
+
+    def _selected_game_login_options(self) -> Dict[str, str]:
+        """读取 UI 当前游戏登录选择。"""
+        return {
+            "client_key": str(self.game_client_selector.currentData() or "official_cn"),
+            "server_key": str(self.game_server_selector.currentData() or "auto"),
+        }
+
+    def _start_game_auto_login(self) -> None:
+        """按当前选择启动游戏自动登录后台任务。"""
+        self._start_game_login_task("game_auto_login", enter_home=False)
+
+    def _start_game_enter_home(self) -> None:
+        """按当前选择执行进入港区主页的完整检测。"""
+        self._start_game_login_task("game_enter_home", enter_home=True)
+
+    def _start_game_login_task(self, task_key: str, *, enter_home: bool) -> None:
+        """启动游戏登录相关后台任务，按按钮区分启动检测和主页确认。"""
+        definition = get_automation_task_definition("game_auto_login")
+        if enter_home:
+            definition = get_automation_task_definition("game_enter_home")
+        if definition is None:
+            self.game_login_status_label.setText("未找到游戏自动登录任务定义。")
+            return
+        game_options = self._selected_game_login_options()
+        emulator_options = self._selected_simulator_options()
+        get_game_login_preferences().save_selection(game_options["client_key"], game_options["server_key"])
+        bridge_method = self.automation_bridge.run_game_enter_home if enter_home else self.automation_bridge.run_game_auto_login
+        runner = lambda task_context=None: bridge_method(
+            task_context=task_context,
+            client_key=game_options["client_key"],
+            server_key=game_options["server_key"],
+            simulator_key=emulator_options["simulator_key"],
+            serial=emulator_options["serial"] or None,
+            port=emulator_options["port"] or None,
+        )
+        self._set_game_login_controls_enabled(False)
+        self.busy_overlay.show_busy(definition.start_message)
+        self.game_login_status_label.setText(definition.start_message)
+        if not self.task_manager.start_task(
+            definition.to_background_spec(),
+            runner,
+            lambda result: self._on_automation_task_finished(task_key, result, self.game_login_status_label),
+        ):
+            self.busy_overlay.hide_busy()
+            self._set_game_login_controls_enabled(True)
+            self.game_login_status_label.setText("已有任务运行中，请稍候再启动游戏。")
+            return
+
+    def _start_design_chart_flow(self) -> None:
+        """执行设计图完整流程测试，并自动尝试从最近一次 summary 续跑。"""
+        definition = get_automation_task_definition("design_chart_flow_test")
+        if definition is None:
+            self.design_flow_status_label.setText("未找到设计图功能测试任务定义。")
+            return
+        rarity_text = str(self.design_flow_rarities_edit.text() or "").strip()
+        rarity_tokens = [token.strip() for token in rarity_text.replace("，", " ").replace(",", " ").split() if token.strip()]
+        if not rarity_tokens:
+            self.design_flow_status_label.setText("稀有度序列为空，请先输入至少一个稀有度。")
+            return
+        resume_text = str(self.design_flow_resume_cursor_edit.text() or "").strip()
+        try:
+            resume_cursor = max(0, int(resume_text or 0))
+        except ValueError:
+            self.design_flow_status_label.setText("断点游标不是有效数字，请改成 0、1、2 这种整数。")
+            return
+        self.logger.info(
+            f"[设计图] UI 发起测试筛选 | rarities={' '.join(rarity_tokens)}；resume_cursor={resume_cursor}"
+        )
+        self._set_design_flow_controls_enabled(False)
+        self.busy_overlay.show_busy(definition.start_message)
+        self.design_flow_status_label.setText(
+            f"{definition.start_message}；稀有度序列：{' '.join(rarity_tokens)}；resume_cursor={resume_cursor}"
+        )
+        if not self.task_manager.start_task(
+            definition.to_background_spec(),
+            lambda task_context=None, rarities=tuple(rarity_tokens), cursor=resume_cursor: self.automation_bridge.run_design_chart_flow(
+                task_context=task_context,
+                rarities=rarities,
+                resume_cursor=cursor,
+            ),
+            lambda result: self._on_automation_task_finished("design_chart_flow_test", result, self.design_flow_status_label),
+        ):
+            self.busy_overlay.hide_busy()
+            self._set_design_flow_controls_enabled(True)
+            self.design_flow_status_label.setText("已有任务运行中，请稍候再启动设计图测试。")
+            return
+        self.featureRequested.emit(definition.feature_key)
+
+    def _start_design_fragment_scan(self) -> None:
+        """按设计图扫图参数启动后台分帧采集与识别任务。"""
+        definition = get_automation_task_definition("design_fragment_scan")
+        if definition is None:
+            self.design_scan_status_label.setText("未找到设计图扫图识别任务定义。")
+            return
+
+        rarity_aliases = {
+            "白": "common",
+            "白装": "common",
+            "common": "common",
+            "蓝": "rare",
+            "蓝装": "rare",
+            "rare": "rare",
+            "紫": "elite",
+            "紫装": "elite",
+            "elite": "elite",
+            "金": "super_rare",
+            "金装": "super_rare",
+            "super_rare": "super_rare",
+            "彩": "ultra_rare",
+            "彩装": "ultra_rare",
+            "ultra_rare": "ultra_rare",
+        }
+        raw_rarity = str(self.design_scan_rarity_edit.text() or "").strip().lower()
+        rarity_tokens = [token for token in raw_rarity.replace("，", " ").replace(",", " ").split() if token]
+        if len(rarity_tokens) != 1 or rarity_tokens[0] not in rarity_aliases:
+            self.design_scan_status_label.setText(
+                "稀有度必须填写一个有效值：common、rare、elite、super_rare、ultra_rare（也支持白/蓝/紫/金/彩）。"
+            )
+            return
+        rarity_state = rarity_aliases[rarity_tokens[0]]
+
+        try:
+            resume_cursor = max(0, int(str(self.design_scan_resume_cursor_edit.text() or "0").strip() or 0))
+            scroll_step_px = max(0, int(str(self.design_scan_scroll_step_edit.text() or "0").strip() or 0))
+        except ValueError:
+            self.design_scan_status_label.setText("断点和滚动步长必须是非负整数，例如 0、280。")
+            return
+
+        until_bottom = bool(self.design_scan_until_bottom_check.isChecked())
+        enforce_rarity_filter = bool(self.design_scan_enforce_rarity_check.isChecked())
+        generate_preview = bool(self.design_scan_preview_check.isChecked())
+        self.logger.info(
+            "[设计图扫图] UI 发起任务 | rarity=%s；resume_cursor=%s；scroll_step_px=%s；"
+            "until_bottom=%s；enforce_rarity_filter=%s；generate_preview=%s",
+            rarity_state,
+            resume_cursor,
+            scroll_step_px,
+            until_bottom,
+            enforce_rarity_filter,
+            generate_preview,
+        )
+        self._set_design_scan_controls_enabled(False)
+        self.busy_overlay.show_busy(definition.start_message)
+        self.design_scan_status_label.setText(
+            f"{definition.start_message}；稀有度：{rarity_state}；断点：{resume_cursor}"
+        )
+        runner = lambda task_context=None: self.automation_bridge.run_design_fragment_scan(
+            task_context=task_context,
+            rarity_state=rarity_state,
+            resume_cursor=resume_cursor,
+            scroll_step_px=scroll_step_px,
+            until_bottom=until_bottom,
+            enforce_rarity_filter=enforce_rarity_filter,
+            generate_preview=generate_preview,
+        )
+        if not self.task_manager.start_task(
+            definition.to_background_spec(),
+            runner,
+            lambda result: self._on_automation_task_finished(
+                "design_fragment_scan",
+                result,
+                self.design_scan_status_label,
+            ),
+        ):
+            self.busy_overlay.hide_busy()
+            self._set_design_scan_controls_enabled(True)
+            self.design_scan_status_label.setText("已有任务运行中，请稍候再启动设计图扫图。")
+            return
+        self.featureRequested.emit(definition.feature_key)
+
+    def _set_design_flow_controls_enabled(self, enabled: bool) -> None:
+        """统一启用或禁用设计图测试相关控件。"""
+        self.design_flow_button.setEnabled(enabled)
+        self.design_flow_start_button.setEnabled(enabled)
+        self.design_flow_rarities_edit.setEnabled(enabled)
+        self.design_flow_resume_cursor_edit.setEnabled(enabled)
+
+    def _set_design_scan_controls_enabled(self, enabled: bool) -> None:
+        """统一启用或禁用设计图扫图相关控件。"""
+        self.design_scan_button.setEnabled(enabled)
+        self.design_scan_rarity_edit.setEnabled(enabled)
+        self.design_scan_resume_cursor_edit.setEnabled(enabled)
+        self.design_scan_scroll_step_edit.setEnabled(enabled)
+        self.design_scan_until_bottom_check.setEnabled(enabled)
+        self.design_scan_enforce_rarity_check.setEnabled(enabled)
+        self.design_scan_preview_check.setEnabled(enabled)
+
+    def _set_game_login_controls_enabled(self, enabled: bool) -> None:
+        """游戏启动任务运行时冻结选择控件。"""
+        self.game_client_selector.setEnabled(enabled)
+        self.game_server_selector.setEnabled(enabled)
+        self.game_launch_button.setEnabled(enabled)
+        self.game_enter_home_button.setEnabled(enabled)
+
+    def _populate_simulator_selector(self) -> None:
+        """填充自动选择和内置模拟器选项，并恢复用户最近选择。"""
+        self.emulator_selector.clear()
+        self.emulator_selector.addItem("自动选择", "auto")
+        known_keys = {"auto"}
+        for profile in list_simulator_profiles():
+            self.emulator_selector.addItem(profile.display_name, profile.key)
+            known_keys.add(profile.key)
+        for key in get_config_loader().list_available_simulators():
+            if key in known_keys:
+                continue
+            config = get_config_loader().get_simulator_config(key)
+            self.emulator_selector.addItem(str(config.get("name", key)), key)
+        selection = get_simulator_preferences().get_selection()
+        selected_key = str(selection.get("selection") or "auto")
+        index = self.emulator_selector.findData(selected_key)
+        self.emulator_selector.setCurrentIndex(index if index >= 0 else 0)
+        self.emulator_serial_edit.setText(str(selection.get("serial") or ""))
+        self.emulator_port_edit.setText(str(selection.get("port") or ""))
+
+    def _on_simulator_selection_changed(self, _index: int) -> None:
+        """切换模拟器时保留手动 serial/端口输入，不擅自覆盖用户字段。"""
+        self.emulator_selector.setToolTip(f"当前选择：{self.emulator_selector.currentText()}")
+
+    def _selected_simulator_options(self) -> Dict[str, str]:
+        """读取 UI 当前模拟器、serial 和端口选择。"""
+        return {
+            "simulator_key": str(self.emulator_selector.currentData() or "auto"),
+            "serial": str(self.emulator_serial_edit.text()).strip(),
+            "port": str(self.emulator_port_edit.text()).strip(),
+        }
+
+    def _start_startup_connection_check(self) -> None:
+        """程序启动后异步执行一次连接检测，不阻塞 Qt 主线程。"""
+        if self._startup_connection_queued:
+            return
+        self._startup_connection_queued = True
+        self._start_selected_connection(startup=True)
+
+    def _start_selected_connection_check(self) -> None:
+        """按当前 UI 选择执行一次严格连接检查。"""
+        self._start_selected_connection(check_only=True)
+
+    def _start_selected_connection(self, startup: bool = False, check_only: bool = False) -> None:
+        """按 UI 选择启动后台连接或连接测试任务。"""
+        options = self._selected_simulator_options()
+        preferences = get_simulator_preferences()
+        preferences.save_selection(
+            options["simulator_key"],
+            serial=options["serial"],
+            port=options["port"],
+            auto_select=options["simulator_key"] == "auto",
+        )
+        if check_only:
+            definition = get_automation_task_definition("adb_connection_check")
+            runner = lambda task_context=None: self.automation_bridge.run_adb_connection_check(
+                task_context=task_context,
+                simulator_key=options["simulator_key"],
+                serial=options["serial"] or None,
+                port=options["port"] or None,
+            )
+            task_key = "adb_connection_check"
+        else:
+            definition = get_automation_task_definition("adb_auto_connect")
+            runner = lambda task_context=None: self.automation_bridge.run_adb_auto_connect(
+                task_context=task_context,
+                simulator_key=options["simulator_key"],
+                serial=options["serial"] or None,
+                port=options["port"] or None,
+            )
+            task_key = "adb_auto_connect"
+        if definition is None:
+            self.emulator_status_label.setText("未找到对应的自动化任务定义。")
+            return
+        if not startup:
+            self.emulator_status_label.setText(definition.start_message)
+        if not self.task_manager.start_task(
+            definition.to_background_spec(),
+            runner,
+            lambda result, key=task_key: self._on_automation_task_finished(key, result, self.emulator_status_label),
+        ):
+            if not startup:
+                self.emulator_status_label.setText("已有任务运行中，请稍候再检测。")
+            return
+        self._set_emulator_controls_enabled(False)
+
+    def _set_emulator_controls_enabled(self, enabled: bool) -> None:
+        """统一启用或禁用模拟器连接相关控件。"""
+        self.emulator_selector.setEnabled(enabled)
+        self.emulator_serial_edit.setEnabled(enabled)
+        self.emulator_port_edit.setEnabled(enabled)
+        self.emulator_refresh_button.setEnabled(enabled)
+        self.emulator_connect_button.setEnabled(enabled)
+
+    def _update_game_login_status(self, result: object) -> None:
+        """根据游戏启动结果刷新登录面板。"""
+        payload = read_bridge_result(result, "payload", {})
+        payload = payload if isinstance(payload, dict) else {}
+        success = bool(read_bridge_result(result, "success", False))
+        message = str(read_bridge_result(result, "message", "游戏启动任务已结束。"))
+        client_display = str(payload.get("client_display") or self.game_client_selector.currentText() or "碧蓝航线")
+        server_display = str(payload.get("server_display") or get_azur_lane_server_display(self.game_server_selector.currentData()))
+        selected_client = payload.get("selected_client", {})
+        selected_client_payload = selected_client if isinstance(selected_client, dict) else {}
+        package_name = str(payload.get("package_name") or selected_client_payload.get("package_name", "")).strip()
+        status = str(read_bridge_result(result, "status", "unknown"))
+        screen_state = str(payload.get("screen_state") or payload.get("scene_hint") or "unknown")
+        if success:
+            if status == "ready" and screen_state == "harbor":
+                self.game_login_status_label.setText(f"已进入主页：{client_display}；服务器：{server_display}。")
+            else:
+                self.game_login_status_label.setText(f"已启动：{client_display}；服务器：{server_display}；状态：{screen_state}。")
+            self.logger.info(
+                "游戏启动摘要：客户端=%s，服务器=%s，包=%s，状态=%s",
+                client_display,
+                server_display,
+                package_name or "未知",
+                status,
+            )
+        else:
+            if status == "needs_confirmation":
+                self.game_login_status_label.setText(f"未确认主页：{message}")
+            else:
+                self.game_login_status_label.setText(f"未启动：{message}")
+
+    def _update_emulator_connection_status(self, result: object) -> None:
+        """根据 ADB 桥接结果刷新模拟器连接状态面板。"""
+        payload = read_bridge_result(result, "payload", {})
+        payload = payload if isinstance(payload, dict) else {}
+        success = bool(read_bridge_result(result, "success", False))
+        status = str(payload.get("connection_status") or read_bridge_result(result, "status", "unknown"))
+        message = str(read_bridge_result(result, "message", "ADB 检测已结束。"))
+        warnings = read_bridge_result(result, "warnings", ())
+        warning_list = list(warnings) if isinstance(warnings, (list, tuple)) else []
+        connected = bool(success and status == "ready")
+        badge = "● 已连接" if connected else self._emulator_status_badge_text(status)
+        self.emulator_status_badge.setText(badge)
+        self.emulator_status_badge.setProperty("connectionState", "ready" if connected else "error")
+        self.emulator_status_badge.style().unpolish(self.emulator_status_badge)
+        self.emulator_status_badge.style().polish(self.emulator_status_badge)
+        connected_text = f"已连接：{payload.get('simulator_name') or '模拟器'}"
+        if message.strip() == "ADB 设备连接正常。":
+            connected_text += "（ADB 设备连接正常）"
+        self.emulator_status_label.setText(
+            connected_text if connected else f"未连接：{self._short_connection_message(status, message)}"
+        )
+        simulator_name = str(payload.get("simulator_name") or payload.get("simulator_key") or "自动选择")
+        device_serial = str(payload.get("device_serial") or payload.get("default_device_serial") or "未发现")
+        port = str(payload.get("port") or self._port_from_serial(device_serial) or "未设置")
+        self.emulator_detail_label.setText(f"模拟器：{simulator_name}；设备：{device_serial}；端口：{port}")
+        candidates = payload.get("detected_simulators") or payload.get("candidates") or []
+        candidate_count = len(candidates) if isinstance(candidates, list) else 0
+        display_environment = payload.get("display_environment") if isinstance(payload.get("display_environment"), dict) else {}
+        resolution = display_environment.get("resolution") if isinstance(display_environment, dict) else None
+        if isinstance(resolution, (list, tuple)) and len(resolution) >= 2:
+            display_text = f"{display_environment.get('status', 'unknown')}({resolution[0]}x{resolution[1]})"
+        else:
+            display_text = str(display_environment.get("status", "unknown") if isinstance(display_environment, dict) else "unknown")
+        self.logger.info(
+            "模拟器连接摘要：状态=%s，模拟器=%s，设备=%s，端口=%s，ADB来源=%s，候选数=%s，显示=%s，告警数=%s",
+            status,
+            simulator_name,
+            device_serial,
+            port,
+            payload.get("adb_source") or "missing",
+            candidate_count,
+            display_text,
+            len(warning_list),
+        )
+        if status == "multiple_devices":
+            self.emulator_candidates_label.setText("发现多台设备：请填写 Serial 后重试。")
+            self.emulator_candidates_label.show()
+        else:
+            self.emulator_candidates_label.clear()
+            self.emulator_candidates_label.hide()
+
+    @staticmethod
+    def _emulator_status_badge_text(status: str) -> str:
+        """把 ADB 状态转换成紧凑的状态徽标。"""
+        status_map = {
+            "ready": "● 已连接",
+            "not_connected": "● 未连接",
+            "unavailable": "● 未连接",
+            "offline": "● 离线",
+            "multiple_devices": "● 多设备",
+            "error": "● 异常",
+        }
+        return status_map.get(str(status or "").strip(), f"● {status or '未知'}")
+
+    @staticmethod
+    def _short_connection_message(status: str, message: str) -> str:
+        """把过长的连接错误压成适合状态栏的一行。"""
+        base = str(message or "").strip() or str(status or "未知异常")
+        if len(base) > 26:
+            return f"{base[:26]}…"
+        return base
+
+    @staticmethod
+    def _port_from_serial(serial: object) -> str:
+        """从 serial 中提取端口号。"""
+        text = str(serial or "").strip()
+        if ":" not in text:
+            return ""
+        return text.rsplit(":", 1)[-1]
 
     def _build_automation_task_panel(self) -> QFrame:
         """
@@ -3592,12 +4643,14 @@ class AutomationLabPage(BasePage):
         if not callable(runner):
             status_label.setText("自动化桥接入口暂不可用，请稍后再试。")
             return
-        if not self.task_manager.start_task(definition.to_background_spec(), runner, lambda result, task_key=key, label=status_label: self._on_automation_task_finished(task_key, result, label)):
-            status_label.setText("已有长任务正在运行，请等待完成后再启动该任务。")
-            return
         self._set_automation_buttons_enabled(False)
         self.busy_overlay.show_busy(definition.start_message)
         status_label.setText(definition.start_message)
+        if not self.task_manager.start_task(definition.to_background_spec(), runner, lambda result, task_key=key, label=status_label: self._on_automation_task_finished(task_key, result, label)):
+            self.busy_overlay.hide_busy()
+            self._set_automation_buttons_enabled(True)
+            status_label.setText("已有长任务正在运行，请等待完成后再启动该任务。")
+            return
         self.featureRequested.emit(definition.feature_key)
 
     def _on_automation_task_finished(self, key: str, result: object, status_label: QLabel) -> None:
@@ -3614,11 +4667,35 @@ class AutomationLabPage(BasePage):
         """
         self.busy_overlay.hide_busy()
         self._set_automation_buttons_enabled(True)
+        if key in {"adb_connection_check", "adb_auto_connect"}:
+            self._set_emulator_controls_enabled(True)
+        if key == "design_chart_flow_test":
+            self._set_design_flow_controls_enabled(True)
+        if key == "design_fragment_scan":
+            self._set_design_scan_controls_enabled(True)
+        if key in {"game_auto_login", "game_enter_home"}:
+            self._set_game_login_controls_enabled(True)
         success = bool(read_bridge_result(result, "success", False))
         message = str(read_bridge_result(result, "message", "任务已结束。"))
         detail_text = str(read_bridge_result(result, "detail", ""))
         detail = f"\n{detail_text}" if detail_text and success else ""
         status_label.setText(f"{message}{detail}")
+        if key in {"adb_connection_check", "adb_auto_connect"}:
+            self._update_emulator_connection_status(result)
+        if key == "design_chart_flow_test":
+            self.logger.info(
+                f"[设计图] UI 任务完成 | success={success}；status={read_bridge_result(result, 'status', 'unknown')}"
+                f"；message={message}"
+            )
+            self.design_flow_status_label.setText(f"{message}{detail}")
+        if key == "design_fragment_scan":
+            self.logger.info(
+                f"[设计图扫图] UI 任务完成 | success={success}；status={read_bridge_result(result, 'status', 'unknown')}"
+                f"；message={message}"
+            )
+            self.design_scan_status_label.setText(f"{message}{detail}")
+        if key in {"game_auto_login", "game_enter_home"}:
+            self._update_game_login_status(result)
         if key == "crawler_update":
             self.crawler_status_label.setText(f"{message}{detail}")
 

@@ -546,6 +546,19 @@ def build_stylesheet(tokens: ThemeTokens | None = None) -> str:
         font-weight: 700;
     }}
 
+    /* 模拟器连接徽标：连接完成后使用主题成功色，失败/未知状态使用对应提示色。 */
+    QLabel#panel_title[connectionState="ready"] {{
+        color: {t.success};
+    }}
+
+    QLabel#panel_title[connectionState="error"] {{
+        color: {t.danger};
+    }}
+
+    QLabel#panel_title[connectionState="unknown"] {{
+        color: {t.text_muted};
+    }}
+
     QLabel#panel_body {{
         color: {t.text_muted};
         line-height: 150%;

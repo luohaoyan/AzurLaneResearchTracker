@@ -16,11 +16,14 @@ from __future__ import annotations
 # ============================================================
 
 import sys
+import logging
+from pathlib import Path
 from types import ModuleType
 
 import pytest
 
 from core.state.runtime_state import get_runtime_state_manager
+from core.utils.path_manager import PathManager
 from ui.automation_bridge import AutomationBridge
 
 
@@ -103,3 +106,90 @@ def test_automation_bridge_catches_crawler_exception(monkeypatch: pytest.MonkeyP
     assert "执行失败" in result.message
     assert "site changed" in result.detail
     assert get_runtime_state_manager().get_full_state()["task"]["kind"] == "error"
+
+
+def test_automation_bridge_runs_design_chart_flow_with_resume_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """设计图完整流程应自动读取最新 summary 的断点游标并返回结构化结果。"""
+    work_dir = tmp_path / "workdir"
+    summary_path = work_dir / "automation" / "equipment_page" / "design_rarity_runs" / "run_demo" / "summary.json"
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text("{\"resume_cursor\": 1, \"next_resume_cursor\": 3}", encoding="utf-8")
+
+    class FakeDesignReadyResult:
+        success = True
+        status = "ready"
+        message = "已切到设计图页"
+        detail = "page_type=design"
+        warnings = ("design-tab-check",)
+
+        def __init__(self) -> None:
+            self.payload = {"design_tab_confirmed": True}
+
+        def to_dict(self) -> dict[str, object]:
+            return {
+                "success": self.success,
+                "status": self.status,
+                "message": self.message,
+                "detail": self.detail,
+                "payload": self.payload,
+                "warnings": list(self.warnings),
+            }
+
+    class FakeDesignSessionResult:
+        success = True
+        status = "ready"
+        message = "设计图稀有度流程完成"
+        detail = "run ok"
+        warnings = ("sweep-ok",)
+
+        def __init__(self) -> None:
+            self.run_dir = str(tmp_path / "run")
+            self.summary_path = str(tmp_path / "run" / "summary.json")
+
+        def to_dict(self) -> dict[str, object]:
+            return {
+                "success": self.success,
+                "status": self.status,
+                "message": self.message,
+                "detail": self.detail,
+                "payload": {"frames": []},
+                "warnings": list(self.warnings),
+                "run_dir": self.run_dir,
+                "summary_path": self.summary_path,
+            }
+
+    class FakeEquipmentPageApi:
+        def ensure_warehouse_design_page_ready(self, task_context=None):
+            return FakeDesignReadyResult()
+
+        def capture_design_rarity_sequence(self, *, rarities=None, resume_cursor=0, task_context=None):
+            assert resume_cursor == 3
+            assert tuple(rarities or ())[:2] == ("common", "rare")
+            return FakeDesignSessionResult()
+
+        def load_design_rarity_resume_cursor(self, summary_path: str | Path) -> int:
+            assert Path(summary_path) == summary_path.resolve()
+            return 3
+
+    monkeypatch.setattr(PathManager, "get_work_dir", lambda: work_dir)
+    monkeypatch.setattr("ui.automation_bridge.get_equipment_page_adb_api", lambda: FakeEquipmentPageApi())
+
+    bridge = AutomationBridge()
+    caplog.set_level(logging.INFO)
+    result = bridge.run_design_chart_flow()
+
+    assert result.success is True
+    assert result.status == "ready"
+    assert result.payload is not None
+    assert result.payload["resume_cursor_loaded"] == 3
+    assert "resume_cursor=3" in result.detail
+    messages = [record.message for record in caplog.records if "[设计图]" in record.message]
+    assert any("桥接任务开始" in message for message in messages)
+    assert any("断点解析完成" in message for message in messages)
+    assert any("桥接任务完成" in message for message in messages)
+    assert not any('"frames"' in message or '"payload"' in message for message in messages)
+    assert get_runtime_state_manager().get_full_state()["task"]["kind"] == "idle"

@@ -150,6 +150,37 @@ def test_detector_missing_cv2_or_numpy_returns_unavailable(monkeypatch: pytest.M
     assert result.status == "unavailable"
 
 
+def test_detector_recognizes_empty_design_state_from_red_warning_and_text_band() -> None:
+    """“暂无设计图”空状态应直接返回 empty。"""
+    cv2 = pytest.importorskip("cv2")
+    image = np.zeros((720, 1280, 3), dtype=np.uint8)
+    image[:] = (100, 120, 150)
+    # 右侧红色警告图标区域
+    cv2.rectangle(image, (1080, 310), (1190, 410), (40, 40, 200), -1)
+    # 中部提示条偏亮区域
+    cv2.rectangle(image, (120, 330), (500, 380), (220, 220, 220), -1)
+
+    result = DesignFragmentDetector().detect(image)
+
+    assert result.status == "empty"
+    assert result.success is False
+    assert len(result.candidates) == 0
+
+
+def test_detector_does_not_treat_normal_card_screen_as_empty() -> None:
+    """普通卡片网格不应被误判为空页面。"""
+    cv2 = pytest.importorskip("cv2")
+    image = np.zeros((720, 1280, 3), dtype=np.uint8)
+    for y in (70, 223, 376, 529):
+        for x in (133, 690):
+            cv2.rectangle(image, (x, y), (x + 541, y + 135), (255, 255, 255), 2)
+
+    result = DesignFragmentDetector().detect(image)
+
+    assert result.status != "empty"
+    assert result.success is True
+
+
 def test_detector_finds_synthetic_1280_design_grid() -> None:
     """在合成 1280x720 双列卡片边框图上，应能找到主体卡片网格。"""
     cv2 = pytest.importorskip("cv2")

@@ -57,6 +57,35 @@
     "max_aspect_delta": 0.12,
     "message": "模拟器截图必须接近 1280x720；疑似半截图或宽高比异常时跳过识别，避免输出脏数据。"
   },
+  "screen_state_detection": {
+    "enabled": true,
+    "confidence_threshold": 0.58,
+    "ambiguous_margin": 0.06,
+    "ocr_text_probe_enabled": false,
+    "ocr_text_confidence_threshold": 0.55,
+    "states": {
+      "login": {
+        "scene": "unknown",
+        "description": "登录页/公告页只做状态识别，不执行点击；需要点击时通过 suggested_action 交给 ADB/Integration 层。"
+      },
+      "loading": {
+        "scene": "unknown",
+        "description": "加载页只做状态识别，不阻塞等待；等待下一帧由 ADB/Integration 层处理。"
+      },
+      "harbor": {
+        "scene": "harbor",
+        "description": "港区主页使用顶部资源栏、右上功能栏、底部导航和仓库入口等视觉特征确认。"
+      },
+      "unknown": {
+        "scene": "unknown",
+        "description": "低置信或半截图保守返回 unknown，避免误判为装备/科研页面。"
+      }
+    },
+    "calibration": {
+      "status": "pending",
+      "message": "登录页和加载页尚缺真实标注截图；当前仅使用保守 OpenCV 视觉特征，待样例补齐后校准阈值。"
+    }
+  },
   "card_digits": {
     "stack_count_ratios": [
       [0.70, 0.57, 0.28, 0.36],
@@ -329,6 +358,14 @@
           "confidence_threshold": 0.8
         }
       ]
+    },
+    "unknown": {
+      "description": "登录页、加载页、低置信或无法归类页面的保守输出场景。",
+      "calibration": {
+        "status": "pending",
+        "message": "unknown 不做 ROI OCR，只保留 screen_state 和建议动作，避免脏数据进入资源/装备记录。"
+      },
+      "rois": []
     }
   }
 }

@@ -64,6 +64,7 @@ CSV_FIELDS = (
     "name_ocr_status", "name_ocr_text", "name_ocr_confidence", "name_resolve_status", "name_resolve_equipment_id",
     "name_resolve_equipment_name", "name_resolve_score", "name_resolve_candidates",
     "nn_invoked", "nn_status", "nn_equipment_id", "nn_equipment_name", "nn_confidence", "nn_top_candidates",
+    "nn_provider",
     "final_status", "final_equipment_id", "final_equipment_name", "recognition_source",
     "ocr_status", "fragment_count", "required_count", "ocr_confidence", "ocr_text", "warnings",
 )
@@ -105,6 +106,45 @@ def infer_rarity(filename: str) -> str:
         if alias in lowered:
             return rarity
     return "unknown"
+
+
+RARITY_ID_BY_STATE = {
+    "common": 1,
+    "rare": 2,
+    "elite": 3,
+    "super_rare": 4,
+    "ultra_rare": 5,
+}
+
+
+def normalize_rarity_state(value: str) -> str:
+    """把 manifest/文件名中的稀有度统一成内部代码。"""
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return "unknown"
+    return RARITY_ALIASES.get(raw, raw if raw in RARITY_ID_BY_STATE else "unknown")
+
+
+def load_rarity_equipment_ids(path: Path) -> Dict[str, set[str]]:
+    """读取当前装备库的稀有度候选集合，供设计图筛选页缩小搜索空间。"""
+    result: Dict[str, set[str]] = {key: set() for key in RARITY_ID_BY_STATE}
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            for row in csv.DictReader(handle):
+                equipment_id = str(row.get("equipment_id", "")).strip()
+                if not equipment_id:
+                    continue
+                try:
+                    rarity_id = int(str(row.get("rarity_id", "")).strip())
+                except (TypeError, ValueError):
+                    continue
+                for state, expected_id in RARITY_ID_BY_STATE.items():
+                    if rarity_id == expected_id:
+                        result[state].add(equipment_id)
+                        break
+    except OSError:
+        return result
+    return result
 
 
 def relative_child_roi(parent: RoiRegion, child: RoiRegion) -> RoiRegion:
@@ -310,9 +350,13 @@ def process_image(
     disable_nn: bool,
     image_mode: str,
     write_preview: bool = True,
+    rarity_override: str = "",
+    allowed_equipment_ids: Optional[Sequence[str]] = None,
+    nn_mode: str = "fallback",
+    nn_trigger_threshold: float = 0.82,
 ) -> Dict[str, Any]:
     """Process one screenshot and return its JSON payload."""
-    rarity = infer_rarity(image_path.name)
+    rarity = normalize_rarity_state(rarity_override) if rarity_override else infer_rarity(image_path.name)
     detection = detector.detect(image_path, image_mode=image_mode)
     payload: Dict[str, Any] = {
         "filename": image_path.name,
@@ -359,6 +403,7 @@ def process_image(
             "nn_equipment_name": "",
             "nn_confidence": 0.0,
             "nn_top_candidates": "",
+            "nn_provider": "",
             "final_status": "rejected_partial" if candidate.visibility != "full" else "unknown",
             "final_equipment_id": "",
             "final_equipment_name": "",
@@ -389,7 +434,16 @@ def process_image(
                 "ocr_text": quantity.get("text", ""),
             })
         if matcher is not None:
-            icon_result = matcher.match_icon(image, icon_roi=candidate.icon_roi, top_n=5).to_dict()
+            try:
+                icon_result = matcher.match_icon(
+                    image,
+                    icon_roi=candidate.icon_roi,
+                    top_n=5,
+                    allowed_equipment_ids=allowed_equipment_ids,
+                ).to_dict()
+            except TypeError:
+                # 兼容旧的测试替身/第三方 matcher；正式 matcher 支持稀有度候选过滤。
+                icon_result = matcher.match_icon(image, icon_roi=candidate.icon_roi, top_n=5).to_dict()
             opencv_id = str(icon_result.get("equipment_id", "") or "")
             base.update({
                 "opencv_status": icon_result.get("status", ""),
@@ -462,14 +516,40 @@ def process_image(
                 "name_resolve_candidates": format_name_candidates(name_result.get("candidates", [])),
             })
         nn_result = None
-        if nn_detector is not None and not disable_nn and should_use_nn_fallback(
-            str(base["opencv_status"]), float(base["opencv_confidence"]), threshold=opencv_threshold,
-        ):
+        normalized_nn_mode = str(nn_mode or "fallback").strip().lower()
+        invoke_nn = normalized_nn_mode == "always" or (
+            normalized_nn_mode == "assist"
+            or should_use_nn_fallback(
+                str(base["opencv_status"]),
+                float(base["opencv_confidence"]),
+                threshold=float(nn_trigger_threshold),
+            )
+        )
+        if nn_detector is not None and not disable_nn and invoke_nn:
             if _cv2 is not None:
                 icon_path = icon_dir / f"{image_path.stem}_card{candidate.index:02d}_icon.png"
                 ix, iy, iw, ih = candidate.icon_roi
                 write_png(icon_path, image[iy:iy + ih, ix:ix + iw])
                 nn_result = nn_detector.predict_file(icon_path, top_k=3)
+                if allowed_equipment_ids:
+                    allowed_set = {str(item).strip() for item in allowed_equipment_ids if str(item).strip()}
+                    filtered_candidates = tuple(
+                        item for item in nn_result.candidates
+                        if str(getattr(item, "equipment_id", "") or "") in allowed_set
+                    )
+                    try:
+                        nn_result = type(nn_result)(
+                            status=nn_result.status,
+                            message=nn_result.message,
+                            candidates=filtered_candidates,
+                            provider=getattr(nn_result, "provider", ""),
+                        )
+                    except TypeError:
+                        nn_result = type(nn_result)(
+                            status=nn_result.status,
+                            message=nn_result.message,
+                            candidates=filtered_candidates,
+                        )
                 nn_candidates = tuple(nn_result.candidates)
                 top = nn_candidates[0] if nn_candidates else None
                 base.update({
@@ -479,6 +559,7 @@ def process_image(
                     "nn_equipment_name": names.get(top.equipment_id, top.equipment_name) if top else "",
                     "nn_confidence": float(top.confidence) if top else 0.0,
                     "nn_top_candidates": nn_text(nn_candidates),
+                    "nn_provider": str(getattr(nn_result, "provider", "") or ""),
                 })
         final_id, final_name, source, final_status, decision_warnings = choose_final_result(
             {

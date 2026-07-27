@@ -281,8 +281,9 @@ class EquipmentIconMatcher:
         icon_roi: Optional[Sequence[int]] = None,
         top_n: Optional[int] = None,
         reference_vertical_ratio: Optional[float] = None,
+        allowed_equipment_ids: Optional[Sequence[str]] = None,
     ) -> EquipmentIconMatchResult:
-        """匹配一张已经裁好的装备图标，或从 image 的 icon_roi 裁剪后匹配。"""
+        """匹配一张装备图标，并可按当前稀有度限制候选装备集合。"""
         unavailable = self._dependency_warning()
         if unavailable:
             return EquipmentIconMatchResult(False, "unavailable", unavailable, warnings=(unavailable,))
@@ -297,8 +298,28 @@ class EquipmentIconMatcher:
             message = "装备图标图库为空，无法识别 equipment_id。"
             return EquipmentIconMatchResult(True, "no_gallery", message, icon_roi=safe_roi, warnings=tuple(self._gallery_warnings))
 
+        allowed_ids = {
+            str(item).strip()
+            for item in (allowed_equipment_ids or ())
+            if str(item).strip()
+        }
+        candidate_gallery = (
+            [item for item in self._gallery if item["equipment_id"] in allowed_ids]
+            if allowed_ids
+            else self._gallery
+        )
+        if not candidate_gallery:
+            message = "当前稀有度没有可用的装备图标图库候选。"
+            return EquipmentIconMatchResult(
+                True,
+                "no_gallery",
+                message,
+                icon_roi=safe_roi,
+                warnings=tuple(self._gallery_warnings),
+            )
+
         ranked_records: List[Tuple[Dict[str, Any], ImagePair, EquipmentIconCandidate]] = []
-        for item in self._gallery:
+        for item in candidate_gallery:
             prepared = self._reference_prepared_for_ratio(item, reference_vertical_ratio)
             ranked_records.append(
                 (

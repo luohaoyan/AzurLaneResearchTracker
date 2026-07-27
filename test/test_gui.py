@@ -515,7 +515,7 @@ def test_user_data_main_table_refreshes_from_local_sources(
     qapp: QApplication,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """用户数据主表应能主动重新读取本地装备表和今日用户记录。"""
+    """用户数据主表刷新应只重绘当前记录，不重复重载装备库 CSV。"""
     window = MainWindow()
     page = window.pages["user_data"]
     reload_calls: list[str] = []
@@ -532,12 +532,15 @@ def test_user_data_main_table_refreshes_from_local_sources(
 
     monkeypatch.setattr(page.equipment_manager, "reload", lambda: reload_calls.append("equipment"))
     monkeypatch.setattr(page.research_manager, "reload", lambda: reload_calls.append("research"))
-    monkeypatch.setattr(page.equipment_manager, "get_equipment_with_image", lambda: refreshed_rows)
+    page.all_equipment_rows = refreshed_rows
 
     page.refresh_user_table_button.click()
-    QTest.qWait(120)
+    for _ in range(30):
+        if page.refresh_user_table_button.isEnabled():
+            break
+        QTest.qWait(100)
 
-    assert reload_calls == ["equipment", "research"]
+    assert reload_calls == []
     assert page.table.rowCount() == 1
     assert page.table.item(0, 0).text() == "刷新测试装备"
     assert page.table.item(0, 0).data(Qt.ItemDataRole.UserRole) == "S8-901"
@@ -545,6 +548,133 @@ def test_user_data_main_table_refreshes_from_local_sources(
     assert page.table.item(0, 4).text() == "0"
     assert page.refresh_user_table_button.isEnabled() is True
     assert "已刷新用户数据表" in page.user_data_status_label.text()
+
+    window.close()
+
+
+def test_user_data_refresh_uses_deferred_table_and_overlay_callback(
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """用户数据刷新应走分批填表，并在完成后关闭等待层。"""
+    window = MainWindow()
+    page = window.pages["user_data"]
+    calls: list[tuple[str, bool, bool]] = []
+    log_messages: list[str] = []
+
+    class FakeLogger:
+        """收集刷新进度日志。"""
+
+        def info(self, message: str) -> None:
+            log_messages.append(message)
+
+        def error(self, message: str) -> None:
+            log_messages.append(message)
+
+    def fake_deferred_refresh(
+        deferred: bool = False,
+        finished_callback: object = None,
+    ) -> None:
+        calls.append(("player", deferred, not page.busy_overlay.isHidden()))
+        if callable(finished_callback):
+            finished_callback()
+
+    monkeypatch.setattr(page, "refresh_equipment_table", fake_deferred_refresh)
+    monkeypatch.setattr("ui.main_window.get_logger", lambda: FakeLogger())
+
+    page.refresh_user_table_button.click()
+    QTest.qWait(100)
+
+    assert calls == [("player", True, True)]
+    assert any("本地表格刷新 0%" in message for message in log_messages)
+    assert any("本地表格刷新 25%" in message for message in log_messages)
+    assert any("本地表格刷新 100%" in message for message in log_messages)
+    assert page.refresh_user_table_button.isEnabled() is True
+    assert page.busy_overlay.isHidden() is True
+
+    window.close()
+
+
+def test_equipment_library_refresh_uses_deferred_table_and_keeps_icon_cache(
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """装备库刷新应后台读取并分批刷新当前表格，同时保留图标缓存。"""
+    window = MainWindow()
+    page = window.pages["user_data"]
+    page.view_stack.setCurrentWidget(page.library_view)
+    page._icon_cache["sentinel"] = page._load_equipment_icon("")
+    calls: list[object] = []
+    log_messages: list[str] = []
+
+    class FakeLogger:
+        """收集刷新进度日志。"""
+
+        def info(self, message: str) -> None:
+            log_messages.append(message)
+
+        def error(self, message: str) -> None:
+            log_messages.append(message)
+
+    def fake_refresh_library_table(
+        deferred: bool = False,
+        finished_callback: object = None,
+    ) -> None:
+        calls.append(("library", deferred, not page.busy_overlay.isHidden()))
+        if callable(finished_callback):
+            finished_callback()
+
+    def fake_start_worker() -> None:
+        calls.append(("worker", not page.busy_overlay.isHidden(), page.refresh_library_button.isEnabled()))
+        page._on_equipment_sources_loaded(page.all_equipment_rows)
+
+    monkeypatch.setattr(page, "_start_equipment_sources_reload_worker", fake_start_worker)
+    monkeypatch.setattr(page, "refresh_library_table", fake_refresh_library_table)
+    monkeypatch.setattr("ui.main_window.get_logger", lambda: FakeLogger())
+
+    page.refresh_library_button.click()
+    QTest.qWait(100)
+
+    assert ("worker", True, False) in calls
+    assert ("library", True, True) in calls
+    assert any("本地表格刷新 0%" in message for message in log_messages)
+    assert any("本地表格刷新 75%" in message for message in log_messages)
+    assert any("本地表格刷新 100%" in message for message in log_messages)
+    assert "sentinel" in page._icon_cache
+    assert page.refresh_library_button.isEnabled() is True
+    assert page.busy_overlay.isHidden() is True
+
+    window.close()
+
+
+def test_user_data_can_copy_equipment_name_to_clipboard(qapp: QApplication) -> None:
+    """用户数据页应能复制装备名称，方便搜索和反馈。"""
+    window = MainWindow()
+    user_page = window.pages["user_data"]
+    item = user_page.table.item(0, 0)
+    assert item is not None
+    equipment_name = item.text()
+
+    user_page._copy_equipment_name(equipment_name, user_page.user_data_status_label)
+
+    assert QApplication.clipboard().text() == equipment_name
+    assert equipment_name in user_page.user_data_status_label.text()
+
+    window.close()
+
+
+def test_add_equipment_trend_confirm_dialog_uses_active_skin_tokens(qapp: QApplication) -> None:
+    """添加趋势确认弹窗应使用当前皮肤配色，避免深色皮肤下出现白框浅字。"""
+    tokens = get_theme_skin("iron_blood").tokens
+    window = MainWindow(theme_tokens=tokens)
+    user_page = window.pages["user_data"]
+
+    stylesheet = user_page._message_box_stylesheet()
+
+    assert tokens.surface in stylesheet
+    assert tokens.text in stylesheet
+    assert tokens.surface_soft in stylesheet
+    assert tokens.line in stylesheet
 
     window.close()
 
@@ -739,8 +869,16 @@ def test_user_data_equipment_library_buttons_use_separate_update_steps(qapp: QAp
     assert "资料更新完成" in page.library_status_label.text()
     assert "刷新装备表" in page.library_status_label.text()
 
+    for _ in range(20):
+        if page.refresh_library_button.isEnabled():
+            break
+        QTest.qWait(50)
+    assert page.refresh_library_button.isEnabled() is True
     page.refresh_library_button.click()
-    QTest.qWait(100)
+    for _ in range(50):
+        if "已从正式装备表载入" in page.library_status_label.text():
+            break
+        QTest.qWait(100)
 
     assert "已从正式装备表载入" in page.library_status_label.text()
     assert page.library_table.rowCount() == len(page._filtered_library_rows())
@@ -764,11 +902,7 @@ def test_user_data_library_can_add_equipment_to_trend_lines(
     equipment_id = str(item.data(Qt.ItemDataRole.UserRole))
     equipment_name = item.text()
 
-    monkeypatch.setattr(
-        QMessageBox,
-        "question",
-        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
-    )
+    monkeypatch.setattr(user_page, "_ask_add_equipment_to_trend", lambda _name: True)
     user_page._confirm_add_equipment_to_trend(equipment_id, equipment_name)
 
     assert trend_page.trend_tabs.currentIndex() == 1
@@ -796,11 +930,7 @@ def test_user_data_main_table_can_add_equipment_to_trend_lines(
     assert equipment_id
     assert equipment_id not in equipment_name
 
-    monkeypatch.setattr(
-        QMessageBox,
-        "question",
-        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
-    )
+    monkeypatch.setattr(user_page, "_ask_add_equipment_to_trend", lambda _name: True)
     user_page._confirm_add_equipment_to_trend(equipment_id, equipment_name)
 
     assert trend_page.trend_tabs.currentIndex() == 1
@@ -1332,6 +1462,15 @@ def test_automation_lab_has_crawler_update_entry(qapp: QApplication) -> None:
         def run_crawler_update(self) -> AutomationBridgeResult:
             return AutomationBridgeResult(True, "success", "formal sync done", "装备: 2；告警: 0", {"equipment_count": 2})
 
+        def run_design_chart_flow(self, task_context=None, rarities=None, resume_cursor=None) -> AutomationBridgeResult:
+            return AutomationBridgeResult(
+                True,
+                "ready",
+                "design flow done",
+                f"resume_cursor={resume_cursor}; rarities={rarities}",
+                {"resume_cursor_loaded": resume_cursor, "rarities_requested": list(rarities or [])},
+            )
+
     manager = get_runtime_state_manager()
     manager.reset()
     window = MainWindow()
@@ -1347,6 +1486,15 @@ def test_automation_lab_has_crawler_update_entry(qapp: QApplication) -> None:
     assert "formal sync done" in page.crawler_status_label.text()
     assert "装备: 2" in page.crawler_status_label.text()
     assert "GitHub" in page.crawler_notice_label.text()
+
+    assert page.design_flow_button.text() == "设计图功能测试"
+    assert page.design_flow_start_button.text() == "测试筛选"
+    page.design_flow_rarities_edit.setText("rare elite ultra_rare")
+    page.design_flow_resume_cursor_edit.setText("1")
+    page.design_flow_start_button.click()
+    QTest.qWait(600)
+    assert "design flow done" in page.design_flow_status_label.text()
+    assert emitted_keys[-1] == "design_chart_flow_test"
 
     window.close()
     manager.reset()
