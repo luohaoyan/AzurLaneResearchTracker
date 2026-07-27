@@ -1,4 +1,4 @@
-﻿# AzurLaneResearchTracker — Release Notes
+# AzurLaneResearchTracker — Release Notes
 
 ---
 
@@ -11,6 +11,17 @@
 - 按期汇总后取排名百分比，排名越靠前欧气越足
 - luck_calculator.py 重写核心算法
 - formula_manager.py 公式配置扩展
+
+
+### GUI 手动修正与右键菜单优化
+- 用户数据页右键可修改装备数量/碎片数（EquipmentCountEditDialog 皮肤化弹窗）
+- 科研进度页右键可修改单件科研装备数据
+- 科研进度页右键支持添加装备到历史趋势折线
+- 右键菜单宽度与样式统一（polish_equipment_context_menu）
+- 输入限制为非负整数，禁止小数/负数/非法文本
+- 写入 UserDataManager.update_record(...)，保存后同步刷新关联页面
+- 新增 7 项手动修正专项测试（	est/v0.6.0_manual_record_edit/）
+- GUI 全量测试保持 61/61 通过
 
 ### Bug 修复（4项）
 - BUG-003：用户数据按日分文件路径拼接错误
